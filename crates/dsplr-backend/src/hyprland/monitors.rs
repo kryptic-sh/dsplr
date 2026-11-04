@@ -9,6 +9,8 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Monitor {
+    /// Hyprland's own number for the monitor; what `mirrorOf` refers to.
+    pub id: i64,
     /// The connector, such as `HDMI-A-1`.
     pub name: String,
     /// Make, model and serial in one string, as `desc:` monitor rules match.
@@ -34,7 +36,8 @@ pub struct Monitor {
     /// Whether adaptive sync is active right now.
     pub vrr: bool,
     pub disabled: bool,
-    /// The connector this monitor mirrors, or `none`.
+    /// The `id` of the monitor this one mirrors, or `none`. Hyprland writes
+    /// the id, not the connector (`HyprCtl.cpp`, 0.56 and 0.57 alike).
     pub mirror_of: String,
     /// Every mode the monitor offers, as `WIDTHxHEIGHT@REFRESHHz` strings.
     pub available_modes: Vec<String>,
@@ -50,10 +53,17 @@ impl Monitor {
         serde_json::from_str(reply)
     }
 
-    /// The connector this monitor mirrors, if any.
-    #[must_use]
-    pub fn mirror_source(&self) -> Option<&str> {
-        (self.mirror_of != NOT_MIRRORING).then_some(self.mirror_of.as_str())
+    /// The `id` of the monitor this one mirrors: `Ok(None)` when it mirrors
+    /// nothing, `Err` with the text when `mirrorOf` is neither `none` nor an
+    /// id.
+    pub fn mirror_source(&self) -> Result<Option<i64>, &str> {
+        if self.mirror_of == NOT_MIRRORING {
+            return Ok(None);
+        }
+        self.mirror_of
+            .parse()
+            .map(Some)
+            .map_err(|_| self.mirror_of.as_str())
     }
 
     /// The modes in [`Monitor::available_modes`], parsed.
@@ -126,7 +136,7 @@ mod tests {
             (external.physical_width, external.physical_height),
             (600, 340)
         );
-        assert_eq!(external.mirror_source(), None);
+        assert_eq!(external.mirror_source(), Ok(None));
 
         let modes = external.modes().expect("every mode parses");
         assert_eq!(modes.len(), external.available_modes.len());
@@ -167,9 +177,11 @@ mod tests {
     }
 
     #[test]
-    fn a_mirror_names_its_source() {
+    fn a_mirror_names_its_source_by_id() {
         let mut monitor = Monitor::parse_all(OWNER).expect("parses").remove(1);
+        monitor.mirror_of = "0".to_owned();
+        assert_eq!(monitor.mirror_source(), Ok(Some(0)));
         monitor.mirror_of = "eDP-1".to_owned();
-        assert_eq!(monitor.mirror_source(), Some("eDP-1"));
+        assert_eq!(monitor.mirror_source(), Err("eDP-1"), "a name is not an id");
     }
 }

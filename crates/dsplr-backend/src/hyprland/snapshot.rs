@@ -18,11 +18,8 @@ pub enum SnapshotError {
     Transform { connector: String, value: u8 },
     #[error("{connector}: refresh rate {hertz} Hz is not a refresh rate")]
     Refresh { connector: String, hertz: f64 },
-    #[error("{connector} mirrors {source_connector}, which Hyprland did not list")]
-    MirrorSource {
-        connector: String,
-        source_connector: String,
-    },
+    #[error("{connector} mirrors monitor {mirrored:?}, which is not an id Hyprland listed")]
+    MirrorSource { connector: String, mirrored: String },
 }
 
 /// Converts Hyprland's `j/monitors all` reply into a [`Layout`], one entry
@@ -61,18 +58,20 @@ fn entry(monitor: &Monitor, all: &[Monitor]) -> Result<OutputEntry, SnapshotErro
             value: monitor.transform,
         }
     })?;
-    let mirror_of = monitor
-        .mirror_source()
-        .map(|source| {
+    let unknown_mirror = |mirrored: String| SnapshotError::MirrorSource {
+        connector: connector(),
+        mirrored,
+    };
+    let mirror_of = match monitor.mirror_source() {
+        Ok(None) => None,
+        Ok(Some(source)) => Some(
             all.iter()
-                .find(|other| other.name == source)
+                .find(|other| other.id == source)
                 .map(id)
-                .ok_or_else(|| SnapshotError::MirrorSource {
-                    connector: connector(),
-                    source_connector: source.to_owned(),
-                })
-        })
-        .transpose()?;
+                .ok_or_else(|| unknown_mirror(source.to_string()))?,
+        ),
+        Err(text) => return Err(unknown_mirror(text.to_owned())),
+    };
 
     let state = if monitor.disabled {
         OutputState {
@@ -190,7 +189,7 @@ mod tests {
         external.width = 3840;
         external.height = 2160;
         external.refresh_rate = 59.94;
-        monitors[0].mirror_of = "HDMI-A-1".into();
+        monitors[0].mirror_of = monitors[1].id.to_string();
 
         let layout = layout(&monitors).expect("converts");
         let state = &layout.entries[1].state;
@@ -229,12 +228,18 @@ mod tests {
             })
         );
 
-        let mut bad_mirror = owner();
-        bad_mirror[1].mirror_of = "DP-9".into();
-        assert!(matches!(
-            layout(&bad_mirror),
-            Err(SnapshotError::MirrorSource { source_connector, .. }) if source_connector == "DP-9"
-        ));
+        for unknown in ["9", "eDP-1"] {
+            let mut bad_mirror = owner();
+            bad_mirror[1].mirror_of = unknown.into();
+            assert_eq!(
+                layout(&bad_mirror),
+                Err(SnapshotError::MirrorSource {
+                    connector: "HDMI-A-1".into(),
+                    mirrored: unknown.into()
+                }),
+                "{unknown}"
+            );
+        }
 
         let mut bad_refresh = owner();
         bad_refresh[1].refresh_rate = f64::NAN;
