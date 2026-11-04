@@ -30,16 +30,16 @@ Listed with defaults in `docs/plan/12-open-questions.md`. The ones that block a
 milestone:
 
 - **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7).
-- **The managed-file content hash** (`docs/plan/05`): a stable hash needs a
-  dependency, since std's `DefaultHasher` is not stable across Rust releases.
-  `sha2` is the obvious choice and is not on the approved list. Blocks the
-  managed-file header and the hand-edit check, and with them the first save.
 
 ## Open work in the Windows-owned crates
 
-- **`monitors.lua` writing to disk**: `dsplr-persist` has the pure writer and
-  reader (`dsplr_persist::hyprland`); the managed header, the hand-edit check
-  and the atomic write are not written (they wait on the hash above).
+- **Saving `monitors.lua`**: the pieces exist (`dsplr_persist::hyprland`'s
+  writer and reader, `dsplr_persist::managed`'s header, hand-edit check and
+  atomic write) but nothing composes them into a save yet: read the existing
+  file, refuse an `EditedByHand` one without `--force` or a confirm showing the
+  diff, offer to replace a `Foreign` one (nwg-displays') after a confirm, write.
+  It belongs with `Backend::persist` (the Linux session's) or a helper in
+  `dsplr-persist` it calls; agree which before writing it.
 - **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written.
   The Linux session offered to run a generated file through headless Hyprland
   0.57.1 to check it.

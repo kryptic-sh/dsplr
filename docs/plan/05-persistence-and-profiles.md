@@ -7,8 +7,10 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
 ## Rules for files dsplr writes
 
 - **dsplr only writes files it owns.** A managed file starts with a header
-  naming dsplr, the date and a content hash. Before overwriting, dsplr checks
-  the hash: a file edited by hand since dsplr wrote it is not overwritten
+  naming dsplr and a SHA-256 of the rest of the file (`sha2`, the owner's call,
+  2026-11-04); no date, which would need a date library for a value the file's
+  mtime already holds (`dsplr_persist::managed`). Before overwriting, dsplr
+  checks the hash: a file edited by hand since dsplr wrote it is not overwritten
   without `--force` (CLI) or a confirm (GUI) that shows the diff.
 - A managed file that does not exist yet is created, and dsplr tells the user
   the one line their main config needs to include it, rather than editing the
