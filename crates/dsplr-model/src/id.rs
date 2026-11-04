@@ -1,10 +1,13 @@
+use serde::{Deserialize, Serialize};
+
 /// Stable identity of a monitor, for matching it across reconnects, between
 /// backends and against saved layouts.
 ///
 /// `make` is kept as the backend reported it. The plan normalises it to the
 /// EDID's PNP vendor code before comparing, because backends disagree on the
 /// form; that normalisation is not implemented yet.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OutputId {
     /// The monitor's own identity, used whenever it reports a serial.
     Edid {

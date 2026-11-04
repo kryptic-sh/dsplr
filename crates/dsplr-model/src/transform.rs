@@ -1,6 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 /// The eight Wayland output transforms. XRandR's rotation and reflection
 /// pairs map onto the same eight.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Transform {
     #[default]
     Normal,

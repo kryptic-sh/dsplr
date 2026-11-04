@@ -1,8 +1,10 @@
+use serde::{Deserialize, Serialize};
+
 /// One display mode an output offers, or the mode an output is set to.
 ///
 /// A setting whose mode is not among its output's listed modes is a custom
 /// mode; a mode read back from a config file has only its size and refresh.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mode {
     /// Pixels.
     pub width: u32,
@@ -11,12 +13,16 @@ pub struct Mode {
     /// Millihertz, the unit `wlr-output-management` and KDE use. Backends
     /// reporting hertz convert with [`hz_to_mhz`].
     pub refresh_mhz: u32,
+    #[serde(default)]
     pub preferred: bool,
     /// Scales valid with this mode, where the backend lists them per mode
     /// (GNOME). Empty when it does not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scales: Vec<f64>,
     /// The backend's own key for this exact mode, so it is passed back
-    /// rather than matched again by number.
+    /// rather than matched again by number. Never serialised: it means
+    /// nothing outside the session that read it.
+    #[serde(skip)]
     pub handle: Option<ModeHandle>,
 }
 

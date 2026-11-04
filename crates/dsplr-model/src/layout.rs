@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{Mode, OutputId, Transform};
 
 /// Every monitor and its settings: the one struct the GUI edits, the CLI
@@ -7,13 +9,13 @@ use crate::{Mode, OutputId, Transform};
 /// desktop applies a configuration atomically. Fields will be added (the
 /// fallback rule for unlisted monitors, GNOME's layout mode), so build one
 /// with `..Default::default()`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Layout {
     pub entries: Vec<OutputEntry>,
 }
 
 /// One monitor: its hardware facts, when known, and its settings.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OutputEntry {
     pub id: OutputId,
     /// `None` for a layout read back from a config file, which knows a
@@ -24,7 +26,7 @@ pub struct OutputEntry {
 }
 
 /// Hardware facts about a connected monitor.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Output {
     /// `HDMI-A-1`, `DP-2`, `eDP-1`.
     pub connector: String,
@@ -41,7 +43,8 @@ pub struct Output {
 /// Fields will be added, so build one with `..Default::default()`. The
 /// default is an enabled output at the origin, scale 1, untransformed, with
 /// no mode chosen and no optional setting.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OutputState {
     pub enabled: bool,
     /// The mode it is set to; a custom mode when its output does not list it.
@@ -88,7 +91,8 @@ impl Default for OutputState {
 
 /// Variable refresh rate, one form for every desktop: wlroots' bool, KDE's
 /// policy and Hyprland's integer `vrr` each map onto it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AdaptiveSync {
     #[default]
     Off,
@@ -99,7 +103,8 @@ pub enum AdaptiveSync {
 }
 
 /// KDE's RGB range setting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RgbRange {
     Automatic,
     Full,
