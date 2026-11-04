@@ -1,0 +1,123 @@
+# 02 — Architecture
+
+## Process
+
+One process. The GUI and the CLI share everything below the front end.
+
+```
+            main thread                                  backend thread
+ ┌──────────────────────────────────┐            ┌──────────────────────────────────────┐
+ │ crcbl-shell loop (Wayland / X11) │  wake +    │ the detected backend                 │
+ │                                  │◄───────────┤  Wayland event queue · zbus signals  │
+ │ editor state (dsplr-core)        │  Snapshot  │  · Hyprland socket2 · RandR events   │
+ │   ──► DrawList ──► crcbl-ui      │            │                                      │
+ │ pointer / keys ──► hit test      │  Request   │  read state · test · apply · revert  │
+ │   ──► edit / Apply / Save ───────├───────────►│  · persist                           │
+ └──────────────────────────────────┘            └──────────────────────────────────────┘
+```
+
+- The **main thread** owns the window, the editor state and the renderer. It
+  never blocks on the display server.
+- The **backend thread** owns the connection to the desktop. It sends a
+  `Snapshot` (the full current state, [03](03-display-model.md)) on start and
+  whenever the desktop reports a change, with a crcbl wakeup. It receives
+  `Request`s (`Test(Layout)`, `Apply(Layout)`, `Revert`, `Persist(Layout)`) and
+  answers each with a result.
+- Whether the backend thread runs a tokio runtime is decided at M1: zbus wants
+  one (KDE does not, GNOME does), the Wayland and X11 backends do not. A single
+  current-thread runtime that also drives the Wayland fd is the default, so
+  there is one event loop shape for every backend.
+- The **editor state is plain data**. `dsplr-core` turns
+  `(snapshot, pending edits, theme)` into a `DrawList` and hit regions with no
+  platform types, so the canvas logic, snapping and validation are tested
+  without a display.
+- The **CLI** uses the same backend and `Request`s synchronously and has no
+  window.
+
+## Apply, confirm, revert
+
+The safety net, shared by every backend and both front ends:
+
+1. **Validate** the pending layout locally
+   ([03](03-display-model.md#validation)). Refused here: no enabled output,
+   overlapping outputs where the backend forbids it, a mode the output does not
+   list (unless it is a custom mode on a backend that accepts them).
+2. **Test** it where the backend can (`wlr-output-management`'s `test`, GNOME's
+   `verify` method, KDE's management protocol). A refusal is shown with the
+   backend's reason and nothing changes.
+3. **Remember** the current state as the revert point, then **apply**.
+4. **Confirm.** If the change can hide or move a screen (any mode, position,
+   scale, transform or enable change), open a confirm prompt — in the GUI a
+   dialog on every enabled output ([06](06-gui.md#confirm-dialog)), in the CLI a
+   prompt on the terminal unless `--yes`. The timeout is a named constant
+   (`CONFIRM_TIMEOUT`) with a config override.
+5. **Revert** on timeout, on Escape, or if the process is killed: the revert
+   point is also written to `$XDG_STATE_HOME/dsplr/revert.json` before apply,
+   and `dsplr restore --revert` (bound in the docs to a fallback key) applies
+   it.
+6. **Persist** only after confirmation, and only when the user asked to save.
+   Apply without save is a valid, deliberate choice.
+
+Revert on X11 and wlroots is dsplr re-applying the old state. GNOME reverts on
+its own for a `temporary` apply that is never made `persistent`; dsplr still
+runs its own timer so the behaviour is the same everywhere.
+
+## Workspace layout
+
+Follows the org convention of `apps/<bin>` + `crates/<bin>-*`.
+
+| Path                   | Crate           | Owns                                                                                                                                                                                                           |
+| ---------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/dsplr`           | `dsplr`         | The binary: CLI parsing, logging, wiring backend + GUI or CLI together                                                                                                                                         |
+| `crates/dsplr-model`   | `dsplr-model`   | The single `Layout` struct every other crate converts to and from ([03](03-display-model.md#one-struct-many-formats)): `Output`, `Mode`, `Transform`, scale rules, validation, snapping, the JSON form; no I/O |
+| `crates/dsplr-backend` | `dsplr-backend` | Detection, the `Backend` enum and one module per backend (`hyprland/`, `wlr/`, `kde/`, `gnome/`, `randr/`)                                                                                                     |
+| `crates/dsplr-persist` | `dsplr-persist` | Pure writers and readers for each native config format (Hyprland Lua, sway, niri KDL) and dsplr's own profile store                                                                                            |
+| `crates/dsplr-core`    | `dsplr-core`    | Editor state, pending edits, undo, `DrawList` building, hit testing, the confirm timer as data                                                                                                                 |
+| `crates/dsplr-gui`     | `dsplr-gui`     | crcbl-shell windows (main, identify overlays, confirm dialogs), the device and swapchains, translating `DrawList` into crcbl                                                                                   |
+| `crates/dsplr-config`  | `dsplr-config`  | dsplr's own TOML settings (theme, keys, timeout, persistence mode), loaded through `hjkl-config` / `hjkl-xdg`                                                                                                  |
+
+`dsplr-model`, `dsplr-persist`, `dsplr-core` and `dsplr-config` have **no
+platform code**. That rule keeps the geometry, the config writers and the editor
+testable on every CI runner without a display.
+
+`dsplr-backend` is the crate most likely to sprawl. Each backend is a directory
+from day one. The backends are an **enum**, not a trait object: the set is
+closed and lives in one crate, as lyr's `lyr-wm` does. A backend that cannot do
+something returns a typed `Unsupported { what, reason }` error, never a silent
+no-op ([08](08-platforms.md)).
+
+## Prior art
+
+Read when choosing the design (2026-11-04). Nothing here is a dependency.
+
+| Tool               | Desktops       | Took from it                                                                                  |
+| ------------------ | -------------- | --------------------------------------------------------------------------------------------- |
+| nwg-displays       | Hyprland, sway | The editing surface; the generated `monitors.lua` the owner runs today                        |
+| wdisplays          | wlroots        | A canvas over `wlr-output-management` alone                                                   |
+| kanshi             | wlroots        | Profile matching on the set of connected outputs; the profile file format as an import source |
+| wlr-randr          | wlroots        | Cross-check in tests                                                                          |
+| kscreen-doctor     | KDE            | Cross-check in tests                                                                          |
+| gnome-randr(-rust) | GNOME          | How `ApplyMonitorsConfig` is driven from outside gnome-control-center                         |
+| arandr, autorandr  | X11            | Canvas on RandR; autorandr's EDID-based profile matching                                      |
+
+## Dependencies (initial)
+
+Each is added with `cargo add` in the milestone that first uses it, not at
+scaffold time. Anything not on this list needs a call before it is added.
+
+| Crate                                                              | Used by         | Notes                                                                                                     |
+| ------------------------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------- |
+| `crcbl-app`, `crcbl-shell`, `crcbl-hal`, `crcbl-ui`, `crcbl-frame` | gui             | House UI stack, as pikr. Every crcbl crate names the same version; bumps are their own commit             |
+| `glam`                                                             | gui             | crcbl-ui and crcbl-frame take glam vectors and do not re-export it (pikr precedent)                       |
+| `clap` 4 (derive)                                                  | app             | CLI                                                                                                       |
+| `anyhow`                                                           | app             | Binary-level errors                                                                                       |
+| `thiserror`                                                        | library crates  | Typed errors                                                                                              |
+| `tracing`, `tracing-subscriber`                                    | all             | Logs to `$XDG_STATE_HOME/dsplr/logs/`                                                                     |
+| `serde`, `serde_json`, `toml`                                      | model, config   | The JSON form, Hyprland's `j/` replies, config                                                            |
+| `hjkl-config`, `hjkl-xdg`                                          | config          | TOML loading and paths, as tmxr and lyr do                                                                |
+| `wayland-client`, `wayland-protocols-wlr`                          | backend (wlr)   | **New to the org; needs the owner's approval.** Alternative: crcbl's own protocol scanner (open question) |
+| `wayland-protocols-plasma`                                         | backend (kde)   | **New to the org; needs the owner's approval.** `kde_output_device_v2` / `kde_output_management_v2`       |
+| `zbus` (no default features; `tokio`)                              | backend (gnome) | `org.gnome.Mutter.DisplayConfig`; house precedent in lyr                                                  |
+| `x11rb` (`randr` feature)                                          | backend (randr) | **New to the org; needs the owner's approval.** Alternative: crcbl-shell's own X11 FFI (open question)    |
+| `tokio`                                                            | backend         | Only if zbus forces it ([12](12-open-questions.md))                                                       |
+| dev: `tempfile`                                                    | tests           | Temp config dirs                                                                                          |
