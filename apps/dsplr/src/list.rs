@@ -1,6 +1,6 @@
 //! `dsplr list`: the layout as text, one block per output.
 
-use dsplr_model::{AdaptiveSync, Layout, Mode, Output, OutputEntry, OutputId, Transform};
+use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, Transform};
 
 /// The text `dsplr list` prints.
 pub fn describe(layout: &Layout) -> String {
@@ -11,7 +11,11 @@ pub fn describe(layout: &Layout) -> String {
 }
 
 fn describe_entry(entry: &OutputEntry) -> String {
-    let name = output_name(&entry.id, entry.output.as_ref());
+    // The connector when it is known, else the name the identity carries.
+    let name = entry
+        .output
+        .as_ref()
+        .map_or_else(|| entry.id.to_string(), |output| output.connector.clone());
     let mut lines = vec![match &entry.output {
         Some(output) if !output.description.is_empty() => {
             format!("{name}: {}", output.description)
@@ -31,7 +35,7 @@ fn describe_entry(entry: &OutputEntry) -> String {
             format!("adaptive sync {}", adaptive_sync_name(state.adaptive_sync)),
         ];
         if let Some(source) = &state.mirror_of {
-            settings.push(format!("mirrors {}", output_name(source, None)));
+            settings.push(format!("mirrors {source}"));
         }
         if state.primary {
             settings.push("primary".to_owned());
@@ -55,22 +59,6 @@ fn describe_entry(entry: &OutputEntry) -> String {
         lines.push(format!("  modes: {}", modes.join(", ")));
     }
     lines.into_iter().map(|line| line + "\n").collect()
-}
-
-/// The connector when it is known, else the name the identity carries.
-fn output_name(id: &OutputId, output: Option<&Output>) -> String {
-    match (output, id) {
-        (Some(output), _) => output.connector.clone(),
-        (None, OutputId::Connector(connector)) => connector.clone(),
-        (
-            None,
-            OutputId::Edid {
-                make,
-                model,
-                serial,
-            },
-        ) => format!("{make} {model} {serial}"),
-    }
 }
 
 /// `2560x1440 @ 143.998 Hz`: refresh in hertz, exact to the millihertz, with

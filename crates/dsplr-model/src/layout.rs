@@ -89,6 +89,34 @@ impl Default for OutputState {
     }
 }
 
+impl OutputState {
+    /// The output's size on the canvas, in layout coordinates: its mode's
+    /// size, turned by its transform, divided by its scale. `None` without a
+    /// mode, or with a scale that is not a positive number.
+    ///
+    /// Rounded to the nearest whole pixel. Each backend rounds a fractional
+    /// size its own way (2560 at scale 1.75); recording those is open, and
+    /// until then this is the one rule.
+    pub fn logical_size(&self) -> Option<(u32, u32)> {
+        let mode = self.mode.as_ref()?;
+        if !(self.scale.is_finite() && self.scale > 0.0) {
+            return None;
+        }
+        let (width, height) = if self.transform.swaps_axes() {
+            (mode.height, mode.width)
+        } else {
+            (mode.width, mode.height)
+        };
+        let logical = |pixels: u32| {
+            let size = (f64::from(pixels) / self.scale).round();
+            // Whole and inside u32's range, checked here, so the cast is exact.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            (size <= f64::from(u32::MAX)).then_some(size as u32)
+        };
+        Some((logical(width)?, logical(height)?))
+    }
+}
+
 /// Variable refresh rate, one form for every desktop: wlroots' bool, KDE's
 /// policy and Hyprland's integer `vrr` each map onto it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -114,7 +142,57 @@ pub enum RgbRange {
 #[cfg(test)]
 mod tests {
     use super::{AdaptiveSync, OutputState};
-    use crate::Transform;
+    use crate::{Mode, Transform};
+
+    fn state(transform: Transform, scale: f64) -> OutputState {
+        OutputState {
+            mode: Some(Mode::new(2560, 1440, 60_000)),
+            transform,
+            scale,
+            ..OutputState::default()
+        }
+    }
+
+    #[test]
+    fn the_logical_size_is_the_mode_turned_and_scaled() {
+        assert_eq!(
+            state(Transform::Normal, 1.0).logical_size(),
+            Some((2560, 1440))
+        );
+        assert_eq!(
+            state(Transform::Rotate90, 1.0).logical_size(),
+            Some((1440, 2560))
+        );
+        assert_eq!(
+            state(Transform::Flipped270, 2.0).logical_size(),
+            Some((720, 1280))
+        );
+        assert_eq!(
+            state(Transform::Rotate180, 1.25).logical_size(),
+            Some((2048, 1152))
+        );
+    }
+
+    #[test]
+    fn a_fractional_logical_size_rounds_to_the_nearest_pixel() {
+        // 2560 / 1.75 = 1462.86, 1440 / 1.75 = 822.86.
+        assert_eq!(
+            state(Transform::Normal, 1.75).logical_size(),
+            Some((1463, 823))
+        );
+    }
+
+    #[test]
+    fn no_mode_or_no_usable_scale_has_no_logical_size() {
+        assert_eq!(OutputState::default().logical_size(), None);
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-12] {
+            assert_eq!(
+                state(Transform::Normal, scale).logical_size(),
+                None,
+                "scale {scale}"
+            );
+        }
+    }
 
     #[test]
     fn the_default_state_is_an_enabled_untouched_output() {

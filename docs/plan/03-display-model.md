@@ -102,24 +102,36 @@ size, rotated by its transform, divided by its scale.
   MVP because it blurs and costs performance. Xft DPI is out of scope.
 - Rounding: positions are integers. A logical size that is not a whole number
   (2560 wide at scale 1.75) is rounded the way the target backend rounds it,
-  recorded per backend with a test against a recorded reply.
+  recorded per backend with a test against a recorded reply. Until those are
+  recorded, `OutputState::logical_size` rounds to the nearest pixel for every
+  backend.
 
 ## Validation
 
-`Layout::validate(&Capabilities) -> Result<(), Vec<Problem>>`. Every problem
-names the output and the field. Checked:
+`Layout::validate(&Capabilities) -> Vec<Problem>`. Each `Problem` names the
+output (none for a layout-wide problem), its kind, the field the kind is about,
+and a severity: the layout is refused when any problem is an error, and warnings
+are shown without stopping it. A `Result<(), _>` would drop the warnings on
+success, so it is not one. Checked:
 
-- at least one output enabled;
+- at least one output enabled, and no output listed twice;
 - every enabled output has a mode it lists, or a custom mode on a backend that
-  accepts them;
-- scale in the mode's valid set, and the same scale on every output when GNOME
-  reports `global-scale-required`;
+  accepts them. A mode is matched to the list within `REFRESH_TOLERANCE_MHZ`; an
+  entry without hardware facts (read from a file) is not checked until it is
+  matched to a live output;
+- scale a positive number, whole unless the backend has fractional scaling, in
+  the mode's valid set where the mode lists one, and the same on every output
+  when the backend has no per-output scale (X11, GNOME's
+  `global-scale-required`);
 - no overlap between enabled, non-mirrored outputs;
-- no gap: every enabled output touches another. An **error on KDE**, whose
-  management protocol says "There may be no gaps or overlaps between outputs"; a
-  warning elsewhere (Hyprland and sway allow gaps, but the pointer cannot cross
-  one);
-- mirror sources exist, are enabled and are not mirrors themselves.
+- no gap: the enabled, non-mirrored outputs are connected edge to edge (a shared
+  corner is not a connection, and two islands are a gap even though each output
+  in them touches another). An **error** where `Capabilities::gaps_allowed` is
+  off, as on KDE, whose management protocol says "There may be no gaps or
+  overlaps between outputs"; a warning elsewhere (Hyprland and sway allow gaps,
+  but the pointer cannot cross one);
+- mirroring supported, and mirror sources exist, are enabled and are not mirrors
+  themselves.
 
 ## Snapping
 

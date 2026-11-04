@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// Stable identity of a monitor, for matching it across reconnects, between
@@ -36,6 +38,20 @@ impl OutputId {
     }
 }
 
+/// The connector name, or `make model serial`.
+impl fmt::Display for OutputId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connector(connector) => f.write_str(connector),
+            Self::Edid {
+                make,
+                model,
+                serial,
+            } => write!(f, "{make} {model} {serial}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::OutputId;
@@ -49,6 +65,15 @@ mod tests {
                 model: "Q27G2G4".into(),
                 serial: "1A2B3C".into(),
             }
+        );
+    }
+
+    #[test]
+    fn an_identity_reads_as_its_connector_or_its_monitor() {
+        assert_eq!(OutputId::Connector("DP-1".into()).to_string(), "DP-1");
+        assert_eq!(
+            OutputId::new("AOC", "Q27G2G4", "1A2B3C", "DP-1").to_string(),
+            "AOC Q27G2G4 1A2B3C"
         );
     }
 

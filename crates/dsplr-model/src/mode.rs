@@ -39,7 +39,20 @@ impl Mode {
             handle: None,
         }
     }
+
+    /// Whether `other` names the same mode: the same size, and a refresh
+    /// within [`REFRESH_TOLERANCE_MHZ`], since config formats round it.
+    pub const fn matches(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.refresh_mhz.abs_diff(other.refresh_mhz) <= REFRESH_TOLERANCE_MHZ
+    }
 }
+
+/// How far apart two refresh rates may be and still name the same mode.
+/// Hyprland writes refresh in hertz with two decimals, a step of 10 mHz, so
+/// its rounding moves a rate by at most half that.
+pub const REFRESH_TOLERANCE_MHZ: u32 = 5;
 
 /// A backend's key for one of its modes: an index into its own mode table, or
 /// an id such as a RandR mode XID. Only the backend that made it reads it.
@@ -62,7 +75,18 @@ pub fn hz_to_mhz(hz: f64) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, hz_to_mhz};
+    use super::{Mode, REFRESH_TOLERANCE_MHZ, hz_to_mhz};
+
+    #[test]
+    fn modes_match_by_size_and_refresh_within_the_tolerance() {
+        let mode = Mode::new(1920, 1080, 59_940);
+        let at = |mhz| Mode::new(1920, 1080, mhz);
+        assert!(mode.matches(&at(59_940 + REFRESH_TOLERANCE_MHZ)));
+        assert!(mode.matches(&at(59_940 - REFRESH_TOLERANCE_MHZ)));
+        assert!(!mode.matches(&at(59_940 + REFRESH_TOLERANCE_MHZ + 1)));
+        assert!(!mode.matches(&Mode::new(1920, 1200, 59_940)));
+        assert!(!mode.matches(&Mode::new(1680, 1080, 59_940)));
+    }
 
     #[test]
     fn hertz_convert_to_the_nearest_millihertz() {
