@@ -121,6 +121,9 @@ name = "dsplr"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dsplr-backend",
+ "dsplr-model",
+ "tokio",
 ]
 
 [[package]]
