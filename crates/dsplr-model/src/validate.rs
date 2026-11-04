@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::rect::Rect;
 use crate::{Capabilities, Layout, Mode, OutputEntry, OutputId};
 
 /// Two scales closer than this are the same scale. Backends report scales as
@@ -136,55 +137,6 @@ impl fmt::Display for Problem {
             ProblemKind::MirrorSourceDisabled => f.write_str("mirrors a disabled output"),
             ProblemKind::MirrorOfMirror => f.write_str("mirrors an output that is a mirror"),
         }
-    }
-}
-
-/// An output's place on the canvas, in whole layout pixels.
-#[derive(Debug, Clone, Copy)]
-struct Rect {
-    x: i64,
-    y: i64,
-    width: i64,
-    height: i64,
-}
-
-impl Rect {
-    fn of(entry: &OutputEntry) -> Option<Self> {
-        let (width, height) = entry.state.logical_size()?;
-        Some(Self {
-            x: entry.state.x.into(),
-            y: entry.state.y.into(),
-            width: width.into(),
-            height: height.into(),
-        })
-    }
-
-    const fn right(self) -> i64 {
-        self.x + self.width
-    }
-
-    const fn bottom(self) -> i64 {
-        self.y + self.height
-    }
-
-    /// Whether the two share any area.
-    const fn overlaps(self, other: Self) -> bool {
-        self.x < other.right()
-            && other.x < self.right()
-            && self.y < other.bottom()
-            && other.y < self.bottom()
-    }
-
-    /// Whether the two share a stretch of edge the pointer can cross; a
-    /// shared corner alone is not one.
-    const fn touches(self, other: Self) -> bool {
-        let side_by_side = (self.right() == other.x || other.right() == self.x)
-            && self.y < other.bottom()
-            && other.y < self.bottom();
-        let stacked = (self.bottom() == other.y || other.bottom() == self.y)
-            && self.x < other.right()
-            && other.x < self.right();
-        side_by_side || stacked
     }
 }
 

@@ -10,6 +10,7 @@ mod id;
 mod json;
 mod layout;
 mod mode;
+mod rect;
 mod transform;
 mod validate;
 
