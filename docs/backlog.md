@@ -5,18 +5,31 @@ verified. Delete an entry when it ships; `git log` keeps the history.
 
 ## Where the project stands (2026-11-04)
 
-Plan only. No code, no Cargo workspace, no CI. The plan is `docs/plan/`; build
-order is `docs/plan/11-milestones.md`, and M0 (scaffold) is next.
+M0 (scaffold) is done: the workspace with every crate as an empty, documented
+stub, CI on ubuntu, and repo meta. The binary only answers `--version` and
+`--help`, and otherwise exits saying nothing is implemented (on non-Linux
+targets, that dsplr is Linux-only). Build order is `docs/plan/11-milestones.md`;
+M1 is next.
+
+Two sessions work on it, each owning crates: the Linux session owns
+`dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
+`dsplr-model`, `dsplr-persist`, `dsplr-core`, `dsplr-config` and the CLI wiring
+in `apps/dsplr`. Changes to shared files (workspace manifest, lockfile, CI, root
+config, `docs/`) are agreed between them first.
 
 ## Decisions waiting on the owner
 
 Listed with defaults in `docs/plan/12-open-questions.md`. The ones that block a
 milestone:
 
-- **New dependencies** `wayland-client`, `wayland-protocols-wlr`,
-  `wayland-protocols-plasma` (blocks M2) and `x11rb` (blocks M7), or crcbl's own
-  scanner and X11 FFI instead.
-- **Async runtime** on the backend thread (blocks M1's event loop shape).
+- **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7).
+- **Monitor naming in `monitors.lua`** (blocks M2's writer).
+
+## Waiting on crcbl
+
+- **`crcbl-wayland`**: a public crate exporting crcbl-shell's libwayland-client
+  binding and a raw connection API, so `crcbl-wl-scanner` output works outside
+  crcbl. Agreed with the crcbl session on 2026-11-04; blocks dsplr's M2.
 
 ## Verified while planning
 

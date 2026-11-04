@@ -4,20 +4,21 @@ Decisions the plan made provisionally that the owner may want to overrule. Each
 has the default the implementation follows until told otherwise.
 
 Answered by the owner (2026-11-04): the name (`dsplr`), the GUI stack (crcbl, as
-pikr and lyr), and X11 in the MVP.
+pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
+(3).
 
-1. **Wayland protocol bindings.** Default: `wayland-client` +
-   `wayland-protocols-wlr` + `wayland-protocols-plasma` from crates.io. The
-   alternative is generating them with crcbl's own protocol scanner
-   (`crcbl-wl-scanner`), which keeps dsplr on one Wayland stack with its GUI but
-   means a second client connection either way. New dependencies; needs the
-   owner's approval before M2.
+1. **Wayland protocol bindings.** **Decided by the owner (2026-11-04): crcbl's
+   own scanner**, `crcbl-wl-scanner`, generating dsplr's bindings from vendored
+   protocol XML in its build script. The scanner's output calls into a
+   libwayland-client binding that only `crcbl-shell` had, privately; crcbl is
+   adding a public `crcbl-wayland` crate for it, with a raw connection API, and
+   dsplr's M2 waits for that ([02](02-architecture.md#dependencies-initial)).
 2. **X11 bindings.** Default: `x11rb` with the `randr` feature. Alternative:
    crcbl-shell's own X11 FFI, which would have to grow RandR. New dependency;
    needs approval before M7.
-3. **Async runtime.** Default: a current-thread tokio runtime on the backend
-   thread, because zbus is house precedent with tokio. Alternative: zbus's own
-   executor and plain blocking loops for the Wayland and X11 backends.
+3. **Async runtime.** **Decided by the owner (2026-11-04): a current-thread
+   tokio runtime on the backend thread**, driving the Wayland fd (through
+   `AsyncFd`), the Hyprland sockets and zbus.
 4. **How Hyprland outputs are named in `monitors.lua`.** Default: by description
    (`desc:…`) when the serial is non-empty, so settings follow the monitor
    across ports. nwg-displays writes connector names; switching costs nothing on

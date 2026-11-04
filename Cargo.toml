@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/kryptic-sh/dsplr"
+homepage = "https://github.com/kryptic-sh/dsplr"
+authors = ["mxaddict <mxaddict@kryptic.sh>"]
+readme = "README.md"
+
+[workspace.lints.clippy]
+or_fun_call = "deny"
+unused_peekable = "deny"
+assigning_clones = "warn"
+format_push_string = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+use_self = "warn"
+redundant_pub_crate = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

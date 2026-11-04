@@ -1,0 +1,10 @@
+# Check every text file out with LF, on every platform, so a Windows checkout
+# (`core.autocrlf=true`) does not rewrite what dsplr embeds or golden-tests.
+* text=auto eol=lf
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.lua text eol=lf
+*.xml text eol=lf

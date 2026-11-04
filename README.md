@@ -12,9 +12,9 @@ Part of the [kryptic.sh](https://kryptic.sh) suite.
 
 ## Status
 
-**Planning.** There is no code yet. The plan is in
-[`docs/plan/`](docs/plan/00-index.md); what is open is in
-[`docs/backlog.md`](docs/backlog.md).
+**Scaffold.** The workspace builds, but nothing is implemented yet; the first
+commands land in M1. The plan is in [`docs/plan/`](docs/plan/00-index.md); what
+is open is in [`docs/backlog.md`](docs/backlog.md).
 
 ## License
 

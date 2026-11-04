@@ -23,10 +23,9 @@ One process. The GUI and the CLI share everything below the front end.
   whenever the desktop reports a change, with a crcbl wakeup. It receives
   `Request`s (`Test(Layout)`, `Apply(Layout)`, `Revert`, `Persist(Layout)`) and
   answers each with a result.
-- Whether the backend thread runs a tokio runtime is decided at M1: zbus wants
-  one (KDE does not, GNOME does), the Wayland and X11 backends do not. A single
-  current-thread runtime that also drives the Wayland fd is the default, so
-  there is one event loop shape for every backend.
+- The backend thread runs a **current-thread tokio runtime** (the owner's
+  decision, 2026-11-04). It drives the Wayland fd through `AsyncFd`, the
+  Hyprland sockets and zbus, so there is one event loop shape for every backend.
 - The **editor state is plain data**. `dsplr-core` turns
   `(snapshot, pending edits, theme)` into a `DrawList` and hit regions with no
   platform types, so the canvas logic, snapping and validation are tested
@@ -133,19 +132,18 @@ Read when choosing the design (2026-11-04). Nothing here is a dependency.
 Each is added with `cargo add` in the milestone that first uses it, not at
 scaffold time. Anything not on this list needs a call before it is added.
 
-| Crate                                                              | Used by         | Notes                                                                                                     |
-| ------------------------------------------------------------------ | --------------- | --------------------------------------------------------------------------------------------------------- |
-| `crcbl-app`, `crcbl-shell`, `crcbl-hal`, `crcbl-ui`, `crcbl-frame` | gui             | House UI stack, as pikr. Every crcbl crate names the same version; bumps are their own commit             |
-| `glam`                                                             | gui             | crcbl-ui and crcbl-frame take glam vectors and do not re-export it (pikr precedent)                       |
-| `clap` 4 (derive)                                                  | app             | CLI                                                                                                       |
-| `anyhow`                                                           | app             | Binary-level errors                                                                                       |
-| `thiserror`                                                        | library crates  | Typed errors                                                                                              |
-| `tracing`, `tracing-subscriber`                                    | all             | Logs to `$XDG_STATE_HOME/dsplr/logs/`                                                                     |
-| `serde`, `serde_json`, `toml`                                      | model, config   | The JSON form, Hyprland's `j/` replies, config                                                            |
-| `hjkl-config`, `hjkl-xdg`                                          | config          | TOML loading and paths, as tmxr and lyr do                                                                |
-| `wayland-client`, `wayland-protocols-wlr`                          | backend (wlr)   | **New to the org; needs the owner's approval.** Alternative: crcbl's own protocol scanner (open question) |
-| `wayland-protocols-plasma`                                         | backend (kde)   | **New to the org; needs the owner's approval.** `kde_output_device_v2` / `kde_output_management_v2`       |
-| `zbus` (no default features; `tokio`)                              | backend (gnome) | `org.gnome.Mutter.DisplayConfig`; house precedent in lyr                                                  |
-| `x11rb` (`randr` feature)                                          | backend (randr) | **New to the org; needs the owner's approval.** Alternative: crcbl-shell's own X11 FFI (open question)    |
-| `tokio`                                                            | backend         | Only if zbus forces it ([12](12-open-questions.md))                                                       |
-| dev: `tempfile`                                                    | tests           | Temp config dirs                                                                                          |
+| Crate                                                              | Used by            | Notes                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crcbl-app`, `crcbl-shell`, `crcbl-hal`, `crcbl-ui`, `crcbl-frame` | gui                | House UI stack, as pikr. Every crcbl crate names the same version; bumps are their own commit                                                                                                                                                  |
+| `glam`                                                             | gui                | crcbl-ui and crcbl-frame take glam vectors and do not re-export it (pikr precedent)                                                                                                                                                            |
+| `clap` 4 (derive)                                                  | app                | CLI                                                                                                                                                                                                                                            |
+| `anyhow`                                                           | app                | Binary-level errors                                                                                                                                                                                                                            |
+| `thiserror`                                                        | library crates     | Typed errors                                                                                                                                                                                                                                   |
+| `tracing`, `tracing-subscriber`                                    | all                | Logs to `$XDG_STATE_HOME/dsplr/logs/`                                                                                                                                                                                                          |
+| `serde`, `serde_json`, `toml`                                      | model, config      | The JSON form, Hyprland's `j/` replies, config                                                                                                                                                                                                 |
+| `hjkl-config`, `hjkl-xdg`                                          | config             | TOML loading and paths, as tmxr and lyr do                                                                                                                                                                                                     |
+| `crcbl-wl-scanner` (build), `crcbl-wayland`                        | backend (wlr, kde) | The owner's choice (2026-11-04) over `wayland-client`: bindings generated from vendored protocol XML (`wlr-output-management`, later KDE's), calling crcbl's libwayland-client binding. `crcbl-wayland` is being added to crcbl for dsplr's M2 |
+| `zbus` (no default features; `tokio`)                              | backend (gnome)    | `org.gnome.Mutter.DisplayConfig`; house precedent in lyr                                                                                                                                                                                       |
+| `x11rb` (`randr` feature)                                          | backend (randr)    | **New to the org; needs the owner's approval.** Alternative: crcbl-shell's own X11 FFI (open question)                                                                                                                                         |
+| `tokio` (current-thread runtime, `net`)                            | backend            | The owner's choice (2026-11-04); `AsyncFd` for the Wayland fd                                                                                                                                                                                  |
+| dev: `tempfile`                                                    | tests              | Temp config dirs                                                                                                                                                                                                                               |
