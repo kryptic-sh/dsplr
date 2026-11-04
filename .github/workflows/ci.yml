@@ -175,6 +175,7 @@ jobs:
         include:
           - desktop: hyprland
             packages: hyprland kwin mesa
+            tests: dsplr-backend dsplr
     env:
       IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
     steps:
@@ -185,15 +186,20 @@ jobs:
           cache: false
       - run: rustup update --no-self-update stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build the test and fill the VM's share
+      - name: Build the tests and fill the VM's share
         run: |
-          test_bin=$(cargo test --locked -p dsplr-backend --test "${{ matrix.desktop }}_e2e" --no-run --message-format=json \
-            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "${{ matrix.desktop }}_e2e") | .executable')
-          [ -x "$test_bin" ] || { echo "no test binary for ${{ matrix.desktop }}"; exit 1; }
           share="$RUNNER_TEMP/e2e"
-          mkdir -p "$share/out"
+          mkdir -p "$share/out" "$share/tests"
           chmod 777 "$share/out"
-          cp "$test_bin" "$share/test"
+          # Every package's <desktop>_e2e test, and dsplr itself for the CLI's.
+          for package in ${{ matrix.tests }}; do
+            test_bin=$(cargo test --locked -p "$package" --test "${{ matrix.desktop }}_e2e" --no-run --message-format=json \
+              | jq -r 'select(.reason == "compiler-artifact" and .target.name == "${{ matrix.desktop }}_e2e") | .executable')
+            [ -x "$test_bin" ] || { echo "no ${{ matrix.desktop }} test in $package"; exit 1; }
+            cp "$test_bin" "$share/tests/$package"
+          done
+          cargo build --locked -p dsplr
+          cp target/debug/dsplr "$share/"
           cp "tests/e2e/headless-${{ matrix.desktop }}.sh" "$share/harness.sh"
           cp tests/e2e/vm/guest.sh "$share/"
           echo "${{ matrix.packages }}" > "$share/packages"
@@ -225,7 +231,7 @@ jobs:
             -vga none -device virtio-gpu-pci -nic user,model=virtio-net-pci \
             > vm-console.log 2>&1 || true
           out="$RUNNER_TEMP/e2e/out"
-          cat "$out/test.log" || true
+          cat "$out"/test-*.log || true
           status=$(cat "$out/status" 2>/dev/null || echo "missing: the VM did not finish")
           echo "status: $status"
           if [ "$status" != 0 ]; then

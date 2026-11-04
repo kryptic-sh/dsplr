@@ -17,10 +17,12 @@ headless e2e test applies edited snapshots and reads them back.
 steps 1 to 6): validate, revert point in `$XDG_STATE_HOME/dsplr/revert.json`, a
 detached watchdog (`dsplr restore --revert --after <secs> --token <t>`), apply,
 re-read until the layout settles, ask, then keep or revert;
-`dsplr restore --revert` goes back by hand. Not written yet: `dsplr set`,
-saving, and an e2e test of `dsplr apply` (the Linux session's, in the headless
-harness). The Windows session owns the CLI, model and persist crates; the Linux
-session the backend and their e2e coverage.
+`dsplr restore --revert` goes back by hand. `apps/dsplr/tests/hyprland_e2e.rs`
+drives `dsplr apply` in the headless harness, locally and in CI's VM: kept with
+`--yes` then reverted by hand, declined, timed out, and dsplr killed at the
+prompt so its watchdog reverts. Not written yet: `dsplr set` and saving. The
+Windows session owns the CLI, model and persist crates; the Linux session the
+backend and their e2e coverage.
 
 Two sessions work on it, each owning crates: the Linux session owns
 `dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
@@ -156,6 +158,10 @@ and the `monitors.lua` writer:
   (`applyWlrOutputConfig`), so a later `eval` or reload does not change them.
   The live path must pick one mechanism per field.
 - `mirrorOf` in `hyprctl -j monitors` is the source's numeric id.
+- A headless output never reports adaptive sync active: after `vrr = 1` or
+  `vrr = 2` through `eval` (both answered `ok`), `j/monitors` still says
+  `vrr: false` (Hyprland 0.57.1, 2026-11-04). An e2e test can check that a vrr
+  rule is accepted, not that it took effect.
 - `vrr` in `hyprctl -j monitors` is whether adaptive sync is active now, not the
   rule: a fullscreen-only rule reads as false outside fullscreen, and as true
   inside it. So the snapshot reports `adaptive_sync` as `None` (not known), and

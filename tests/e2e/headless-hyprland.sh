@@ -53,6 +53,9 @@ if [ -z "$sig" ] || ! [ -S "$runtime/hypr/$sig/.socket.sock" ]; then
 fi
 
 export XDG_RUNTIME_DIR="$runtime" HYPRLAND_INSTANCE_SIGNATURE="$sig"
+# dsplr keeps its revert point under XDG_STATE_HOME: a private one, so a test
+# never writes the user's.
+export XDG_STATE_HOME="$runtime/state"
 # The e2e tests refuse to run without this, so they never reach a real
 # Hyprland when started some other way.
 export DSPLR_E2E_HYPRLAND="$runtime"

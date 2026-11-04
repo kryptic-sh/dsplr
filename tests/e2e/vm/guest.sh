@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs inside CI's e2e VM as root, from cloud-init. /e2e is the host's share:
-# `harness.sh` and `test` (one desktop's e2e harness and test binary) and
-# `packages` (what to install). Installs them, runs the test under the harness
-# as an unprivileged user, leaves the logs and the exit status in /e2e/out and
-# powers off.
+# `harness.sh` (one desktop's e2e harness), `tests/` (that desktop's e2e test
+# binaries, one per package), `dsplr` (the binary the CLI's test runs) and
+# `packages` (what to install). Installs them, runs each test under its own
+# harness as an unprivileged user, leaves the logs and the exit status (0 only
+# when every test passed) in /e2e/out and powers off.
 set -x
 out=/e2e/out
 read -r -a packages < /e2e/packages
@@ -20,9 +21,14 @@ systemctl start seatd
 useradd -m -G video,render,seat t
 ls -l /dev/dri > "$out/dri.txt" 2>&1
 
-cp /e2e/harness.sh /e2e/test /home/t/
-chown t: /home/t/harness.sh /home/t/test
-su t -c "cd && ./harness.sh ./test --ignored --test-threads=1" > "$out/test.log" 2>&1
-echo $? > "$out/status"
+cp -r /e2e/harness.sh /e2e/dsplr /e2e/tests /home/t/
+chown -R t: /home/t/harness.sh /home/t/dsplr /home/t/tests
+status=0
+for test in /home/t/tests/*; do
+  name=$(basename "$test")
+  su t -c "cd && DSPLR_BIN=/home/t/dsplr ./harness.sh ./tests/$name --ignored --test-threads=1" \
+    > "$out/test-$name.log" 2>&1 || status=1
+done
+echo "$status" > "$out/status"
 sync
 poweroff
