@@ -120,8 +120,15 @@ async fn a_headless_hyprland_shows_each_applied_layout() {
 
     // Lay the outputs out in a row with a gap, from what Hyprland chose for
     // the new ones. The revert point is this layout.
+    // Other outputs may be there too (the CI VM's own display): only these
+    // three are laid out, and the rest are applied as they are.
     let first = snapshot_until(&backend, "both new outputs", |layout| {
-        layout.entries.len() == 3
+        ["DSPLR-1", "DSPLR-2"].iter().all(|name| {
+            layout
+                .entries
+                .iter()
+                .any(|e| e.output.as_ref().is_some_and(|o| o.connector == *name))
+        })
     })
     .await;
     let start = edited(&first, |layout| {
