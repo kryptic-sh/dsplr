@@ -71,6 +71,10 @@ impl Backend {
 
     /// Sets the desktop to `layout`. Returning does not mean the desktop
     /// shows it yet, or shows it as asked: take a snapshot to see.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(unused_variables, reason = "no backend exists off Linux")
+    )]
     pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
         match *self {
             #[cfg(target_os = "linux")]
