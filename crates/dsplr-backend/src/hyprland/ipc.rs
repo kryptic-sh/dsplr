@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use dsplr_model::Layout;
+use dsplr_persist::hyprland::{MonitorNaming, MonitorsLua, WriteError, monitor_calls};
 
 use super::{Monitor, SnapshotError, layout};
 
@@ -49,6 +50,8 @@ pub enum Error {
     Snapshot(#[from] SnapshotError),
     #[error("Hyprland refused `{request}`: {reply}")]
     Refused { request: String, reply: String },
+    #[error("the layout cannot be put into monitor rules: {0}")]
+    Write(#[from] WriteError),
 }
 
 /// A connection point to one Hyprland instance.
@@ -103,6 +106,26 @@ impl Hyprland {
                 reply: reply.trim().to_owned(),
             })
         }
+    }
+
+    /// Sets every output to `layout`, in one `eval` of a monitor rule per
+    /// output with every setting stated, so nothing is left over from an
+    /// earlier rule. Rules name outputs by connector: unlike `desc:`, which
+    /// Hyprland matches by prefix, a connector names exactly one monitor.
+    ///
+    /// The rules are runtime-only, and a config reload drops them. As with
+    /// [`Hyprland::eval`], the change shows on Hyprland's next frame, so read
+    /// the state back to see what it made of it. Adaptive sync turned off is
+    /// not written (see [`dsplr_persist::hyprland::monitor_call`]).
+    pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
+        let rules = monitor_calls(
+            &MonitorsLua {
+                layout: layout.clone(),
+                catch_all: None,
+            },
+            MonitorNaming::Connector,
+        )?;
+        self.eval(&rules).await
     }
 
     /// The current state as a [`Layout`].
@@ -258,6 +281,55 @@ mod tests {
         let layout = hyprland.snapshot().await.expect("snapshot");
         assert_eq!(requests.recv().await.as_deref(), Some("j/monitors all"));
         assert_eq!(layout.entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_evals_a_rule_per_output_named_by_connector() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut requests = fake_hyprland(dir.path(), |request| {
+            if request.starts_with("/eval ") {
+                "ok"
+            } else {
+                owner(request)
+            }
+        });
+        let hyprland = at(dir.path());
+        let layout = hyprland.snapshot().await.expect("snapshot");
+        requests.recv().await.expect("the snapshot's request");
+
+        hyprland.apply(&layout).await.expect("applied");
+        let request = requests.recv().await.expect("the apply's request");
+        let rules = request.strip_prefix("/eval ").expect("an eval");
+        assert_eq!(rules.matches("hl.monitor(").count(), 2, "{rules}");
+        // eDP-1 is disabled; HDMI-A-1 carries every setting.
+        assert!(rules.contains(r#"output = "eDP-1""#), "{rules}");
+        assert!(rules.contains("disabled = true"), "{rules}");
+        for field in [
+            r#"output = "HDMI-A-1""#,
+            "disabled = false",
+            r#"mode = "2560x1440@120""#,
+            r#"position = "0x0""#,
+            r#"mirror = """#,
+        ] {
+            assert!(rules.contains(field), "{field} in {rules}");
+        }
+        assert!(!rules.contains("desc:"), "{rules}");
+    }
+
+    #[tokio::test]
+    async fn a_layout_that_cannot_be_written_is_not_sent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut requests = fake_hyprland(dir.path(), owner);
+        let hyprland = at(dir.path());
+        let mut layout = hyprland.snapshot().await.expect("snapshot");
+        requests.recv().await.expect("the snapshot's request");
+
+        layout.entries[1].state.mode = None;
+        assert!(matches!(
+            hyprland.apply(&layout).await,
+            Err(Error::Write(_))
+        ));
+        assert!(requests.try_recv().is_err(), "nothing was sent");
     }
 
     fn at(dir: &Path) -> Hyprland {

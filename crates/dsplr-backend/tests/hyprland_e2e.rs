@@ -17,6 +17,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use dsplr_backend::Backend;
 use dsplr_backend::hyprland::Hyprland;
 use dsplr_model::{Layout, Mode, OutputEntry, OutputId, Transform};
 
@@ -65,16 +66,20 @@ fn entry<'a>(layout: &'a Layout, connector: &str) -> &'a OutputEntry {
         .unwrap_or_else(|| panic!("{connector} is in the snapshot: {layout:#?}"))
 }
 
+fn entry_mut<'a>(layout: &'a mut Layout, connector: &str) -> &'a mut OutputEntry {
+    layout
+        .entries
+        .iter_mut()
+        .find(|e| e.output.as_ref().is_some_and(|o| o.connector == connector))
+        .unwrap_or_else(|| panic!("{connector} is in the layout"))
+}
+
 /// Takes snapshots until `shown` holds or [`SETTLE`] passes: Hyprland
 /// applies monitor rules on its next frame, not when `eval` returns.
-async fn snapshot_until(
-    hyprland: &Hyprland,
-    what: &str,
-    shown: impl Fn(&Layout) -> bool,
-) -> Layout {
+async fn snapshot_until(backend: &Backend, what: &str, shown: impl Fn(&Layout) -> bool) -> Layout {
     let deadline = Instant::now() + SETTLE;
     loop {
-        let layout = hyprland.snapshot().await.expect("snapshot");
+        let layout = backend.snapshot().await.expect("snapshot");
         if shown(&layout) {
             return layout;
         }
@@ -86,40 +91,66 @@ async fn snapshot_until(
     }
 }
 
-/// The whole layout in one `eval`, every field explicit: a rule for an
-/// output merges onto that output's previous rule, so a field left out keeps
-/// its old value (`hlMonitor`, Hyprland 0.56 and 0.57).
-fn layout_lua(dsplr_1: &str, dsplr_2: &str) -> String {
-    format!(
-        r#"hl.monitor({{ output = "WAYLAND-1", mode = "1280x720@60", position = "0x0", scale = 1, transform = 0, disabled = false, mirror = "" }}); hl.monitor({{ output = "DSPLR-1", mode = "1920x1080@60", position = "1280x0", scale = 1, transform = 0, disabled = false, mirror = "" {dsplr_1} }}); hl.monitor({{ output = "DSPLR-2", mode = "1920x1080@60", position = "3200x0", scale = 1, transform = 0, disabled = false, mirror = "" {dsplr_2} }})"#
-    )
+/// `layout` with `edit` made to it: what a user does to a snapshot before
+/// applying it.
+fn edited(layout: &Layout, edit: impl FnOnce(&mut Layout)) -> Layout {
+    let mut layout = layout.clone();
+    edit(&mut layout);
+    layout
 }
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
-async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
+async fn a_headless_hyprland_shows_each_applied_layout() {
     harness_runtime();
     for name in ["DSPLR-1", "DSPLR-2"] {
         let reply = hyprctl(&format!("/output create headless {name}"));
         assert_eq!(reply.trim(), "ok", "creating {name}: {reply}");
     }
-    let hyprland = Hyprland::from_env().expect("the harness's Hyprland");
-    let eval = |lua: String| {
-        let hyprland = hyprland.clone();
-        async move { hyprland.eval(&lua).await.expect("Hyprland accepted it") }
-    };
 
     let detection = dsplr_backend::detect().await;
-    assert_eq!(
-        detection.backend.as_ref().map(dsplr_backend::Backend::name),
-        Some("hyprland"),
-        "{:?}",
-        detection.checks
-    );
+    let backend = detection.backend.unwrap_or_else(|| {
+        panic!("no backend: {:?}", detection.checks);
+    });
+    assert_eq!(backend.name(), "hyprland");
+    let apply = |layout: Layout| {
+        let backend = backend.clone();
+        async move { backend.apply(&layout).await.expect("Hyprland accepted it") }
+    };
 
-    // Positions, a fractional scale and a rotation.
-    eval(layout_lua(", scale = 1.5, transform = 1", "")).await;
-    let layout = snapshot_until(&hyprland, "scale and transform", |layout| {
+    // Lay the outputs out in a row with a gap, from what Hyprland chose for
+    // the new ones. The revert point is this layout.
+    let first = snapshot_until(&backend, "both new outputs", |layout| {
+        layout.entries.len() == 3
+    })
+    .await;
+    let start = edited(&first, |layout| {
+        for (connector, x) in [("WAYLAND-1", 0), ("DSPLR-1", 1280), ("DSPLR-2", 3200)] {
+            let state = &mut entry_mut(layout, connector).state;
+            (state.x, state.y) = (x, 0);
+        }
+        entry_mut(layout, "WAYLAND-1").state.mode = Some(Mode::new(1280, 720, 60_000));
+        entry_mut(layout, "DSPLR-1").state.mode = Some(Mode::new(1920, 1080, 60_000));
+        entry_mut(layout, "DSPLR-2").state.mode = Some(Mode::new(1920, 1080, 60_000));
+    });
+    apply(start.clone()).await;
+    let start = snapshot_until(&backend, "the row", |layout| {
+        entry(layout, "DSPLR-2").state.x == 3200
+    })
+    .await;
+    let two = entry(&start, "DSPLR-2");
+    assert_eq!(two.id, OutputId::Connector("DSPLR-2".into()), "no serial");
+    assert_eq!((two.state.x, two.state.y), (3200, 0), "the gap is kept");
+    assert_eq!(two.state.mode, Some(Mode::new(1920, 1080, 60_000)));
+
+    // A fractional scale and a rotation.
+    apply(edited(&start, |layout| {
+        let state = &mut entry_mut(layout, "DSPLR-1").state;
+        state.scale = 1.5;
+        state.transform = Transform::Rotate90;
+    }))
+    .await;
+    let layout = snapshot_until(&backend, "scale and transform", |layout| {
         entry(layout, "DSPLR-1").state.transform == Transform::Rotate90
     })
     .await;
@@ -132,38 +163,45 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
         one.scale
     );
     assert_eq!(one.mode, Some(Mode::new(1920, 1080, 60_000)));
-    let two = entry(&layout, "DSPLR-2");
-    assert_eq!(two.id, OutputId::Connector("DSPLR-2".into()), "no serial");
-    assert_eq!((two.state.x, two.state.y), (3200, 0));
+
+    // Applying the revert point puts every setting back, not just the ones
+    // the last apply named.
+    apply(start.clone()).await;
+    snapshot_until(&backend, "the revert point", |layout| *layout == start).await;
 
     // Disabled outputs stay in the snapshot, disabled, without a mode.
-    eval(layout_lua("", ", disabled = true")).await;
-    let layout = snapshot_until(&hyprland, "DSPLR-2 disabled", |layout| {
+    apply(edited(&start, |layout| {
+        entry_mut(layout, "DSPLR-2").state.enabled = false;
+    }))
+    .await;
+    let layout = snapshot_until(&backend, "DSPLR-2 disabled", |layout| {
         !entry(layout, "DSPLR-2").state.enabled
     })
     .await;
     assert_eq!(entry(&layout, "DSPLR-2").state.mode, None);
 
-    // And come back.
-    eval(layout_lua("", "")).await;
-    snapshot_until(&hyprland, "DSPLR-2 enabled again", |layout| {
-        entry(layout, "DSPLR-2").state.enabled
-    })
-    .await;
+    // And come back as they were.
+    apply(start.clone()).await;
+    snapshot_until(&backend, "DSPLR-2 back", |layout| *layout == start).await;
 
     // A mirror is reported by the source monitor's id, and resolves to the
     // source's entry.
-    eval(layout_lua(r#", mirror = "WAYLAND-1""#, "")).await;
-    let layout = snapshot_until(&hyprland, "DSPLR-1 mirroring", |layout| {
+    let wayland_1 = entry(&start, "WAYLAND-1").id.clone();
+    apply(edited(&start, |layout| {
+        entry_mut(layout, "DSPLR-1").state.mirror_of = Some(wayland_1.clone());
+    }))
+    .await;
+    let layout = snapshot_until(&backend, "DSPLR-1 mirroring", |layout| {
         entry(layout, "DSPLR-1").state.mirror_of.is_some()
     })
     .await;
     assert_eq!(
         entry(&layout, "DSPLR-1").state.mirror_of.as_ref(),
-        Some(&entry(&layout, "WAYLAND-1").id)
+        Some(&wayland_1)
     );
 
-    // A chunk Hyprland rejects is an error, not a silent no-op.
+    // A layout Hyprland rejects is an error, not a silent no-op.
+    let hyprland = Hyprland::from_env().expect("the harness's Hyprland");
     assert!(
         hyprland
             .eval(r#"hl.monitor({ output = "DSPLR-1", mode = "nonsense" })"#)
@@ -171,10 +209,7 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
             .is_err()
     );
 
-    // `mirror = ""` ends it.
-    eval(layout_lua("", "")).await;
-    snapshot_until(&hyprland, "DSPLR-1 not mirroring", |layout| {
-        entry(layout, "DSPLR-1").state.mirror_of.is_none()
-    })
-    .await;
+    // And the revert point ends the mirror.
+    apply(start.clone()).await;
+    snapshot_until(&backend, "DSPLR-1 not mirroring", |layout| *layout == start).await;
 }

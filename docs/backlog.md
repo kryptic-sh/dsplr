@@ -7,9 +7,16 @@ verified. Delete an entry when it ships; `git log` keeps the history.
 
 M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
-field with `hyprctl -j monitors all` and matched. Detection knows only Hyprland,
-and every backend is read-only: `Capabilities` is empty. Build order is
-`docs/plan/11-milestones.md`; M2 is next.
+field with `hyprctl -j monitors all` and matched. Detection knows only Hyprland.
+Build order is `docs/plan/11-milestones.md`.
+
+M2 is under way. `Backend::apply` sets a whole layout on Hyprland in one `eval`
+(`Hyprland::apply`, built on `dsplr_persist::hyprland::monitor_calls`), and the
+headless e2e test applies edited snapshots and reads them back. Not written yet:
+the revert point and watchdog, the confirm prompt, the re-read comparison
+(`docs/plan/02-architecture.md`, steps 3 to 6) and a CLI command that applies.
+The Linux session proposed that the Windows session take those (CLI, persist,
+model) and that it keeps the backend and their e2e coverage; not yet agreed.
 
 Two sessions work on it, each owning crates: the Linux session owns
 `dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
@@ -109,9 +116,18 @@ Not verified by anyone: that KWin saves on every protocol apply; that Mutter
 reports `vendor` as a PNP code (why `OutputId` normalises make from the EDID);
 COSMIC's protocol offer and whether it persists outputs itself; GNOME Shell
 accepting `ShowMonitorLabels` from another client; the Xorg dummy driver giving
-several RandR outputs; whether `hyprctl eval` of `hl.monitor` applies
-immediately and survives a protocol apply; KDE's confirm timeout; the RandR 1.5
-details. Each is checked in its backend's milestone.
+several RandR outputs; whether an `eval` of `hl.monitor` survives a protocol
+apply; KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
+backend's milestone.
+
+- **One unexplained failure of `hyprland_e2e`**: its first local run after the
+  switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
+  before the panic message. The next 27 runs passed, including one that
+  recompiled inside the harness. If it recurs, keep the whole log.
+- **Input injection in the headless Hyprland harness**: office-pikr reported
+  that keys sent with `wtype` do not trigger Hyprland binds under
+  `tests/e2e/headless-hyprland.sh`. Not reproduced or investigated here; dsplr's
+  own tests send no input.
 
 ## Hyprland facts found while building M2 (2026-11-04)
 
@@ -132,6 +148,14 @@ and the `monitors.lua` writer:
   (`applyWlrOutputConfig`), so a later `eval` or reload does not change them.
   The live path must pick one mechanism per field.
 - `mirrorOf` in `hyprctl -j monitors` is the source's numeric id.
+- `vrr` in `hyprctl -j monitors` is whether adaptive sync is active now, not the
+  rule: a fullscreen-only rule reads as false outside fullscreen, and as true
+  inside it. So the snapshot cannot tell off, on and automatic apart, and the
+  writer cannot write off (see the Windows-crate entry above). Until the model
+  can say "not known", Hyprland's `Capabilities` leave `adaptive_sync` empty.
+- `dsplr` applies with rules named by connector, not `desc:`: since `desc:` is a
+  prefix match, a description ending in serial `SER1` would also catch a monitor
+  with serial `SER12`. Inferred from the prefix rule above, not seen.
 - Hyprland's wlr `test` is a stub that always succeeds.
 - A nested Hyprland tries libseat's logind backend before falling back; on a
   desktop that asks to take control of the user's session.

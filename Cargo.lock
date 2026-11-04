@@ -196,6 +196,7 @@ name = "dsplr-backend"
 version = "0.1.0"
 dependencies = [
  "dsplr-model",
+ "dsplr-persist",
  "serde",
  "serde_json",
  "tempfile",

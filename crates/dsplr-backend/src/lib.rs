@@ -2,9 +2,10 @@
 //! compositors, KDE Plasma, GNOME and X11 (`docs/plan/04-backends.md`).
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
-//! looked at. So far only Hyprland exists, and it can only be read: applying
-//! and the other desktops are not written yet. Every backend is Linux-only;
-//! on other targets [`Backend`] has no variants and detection says why.
+//! looked at. So far only Hyprland exists; it reads and applies, while
+//! testing, persisting and the other desktops are not written yet. Every
+//! backend is Linux-only; on other targets [`Backend`] has no variants and
+//! detection says why.
 
 use dsplr_model::{Capabilities, Layout};
 
@@ -41,13 +42,22 @@ impl Backend {
         }
     }
 
-    /// What dsplr can do through this backend now. Every backend is
-    /// read-only so far, so none can set anything optional yet.
+    /// What dsplr can do through this backend now.
+    ///
+    /// Hyprland's are the ones its e2e test applies and reads back. Adaptive
+    /// sync is left out because turning it off cannot be applied yet, and
+    /// colour presets and bit depth because the snapshot does not read them.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         match *self {
             #[cfg(target_os = "linux")]
-            Self::Hyprland(_) => Capabilities::default(),
+            Self::Hyprland(_) => Capabilities {
+                mirroring: true,
+                fractional_scale: true,
+                per_output_scale: true,
+                gaps_allowed: true,
+                ..Capabilities::default()
+            },
         }
     }
 
@@ -56,6 +66,15 @@ impl Backend {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(hyprland.snapshot().await?),
+        }
+    }
+
+    /// Sets the desktop to `layout`. Returning does not mean the desktop
+    /// shows it yet, or shows it as asked: take a snapshot to see.
+    pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(ref hyprland) => Ok(hyprland.apply(layout).await?),
         }
     }
 }
