@@ -37,6 +37,27 @@ milestone:
 
 - **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7).
 
+## Open work in the Linux-owned crates
+
+- **Hyprland adaptive sync**: the model now says "not known" (`None`) and the
+  writer writes `vrr = 0` for off, so `Backend::capabilities` can list
+  `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
+  headless output that can only check Hyprland accepts the rule (see the
+  Hyprland facts below), not that VRR changed.
+- **`wlr-output-management` apply and test** (shared with M4's `Wlr`): waits for
+  the crcbl release under "Waiting on crcbl". Hyprland needs it only for a real
+  change stream; applying already works through `eval`. Whether an `eval` mirror
+  survives a protocol apply is unchecked.
+- **`Backend::persist`**: not written. Agree with the Windows session where the
+  `monitors.lua` save is composed (their entry "Saving `monitors.lua`").
+- **Testing on the owner's desktop**: only after the headless suite passes, and
+  only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
+- **The GUI (M3)**: `dsplr-gui` is still a stub; nothing is built against crcbl.
+- **e2e for the other desktops**: each backend (M4 to M7) adds a
+  `headless-<desktop>.sh` harness and a CI matrix entry. niri has no headless
+  mode of its own; nest it (winit) in a headless sway, which was verified for
+  the lyr project.
+
 ## Open work in the Windows-owned crates
 
 - **Saving `monitors.lua`**: the pieces exist (`dsplr_persist::hyprland`'s
@@ -63,8 +84,6 @@ milestone:
 - **The watchdog's output goes nowhere**: its stdin, stdout and stderr are
   closed, since the terminal may be gone when it fires, so a watchdog that fails
   to revert says so to no one. A log file in the state directory would fix that.
-  Not run on Linux yet: the watchdog, the prompt and the settle loop are covered
-  only by CI's build and the unit tests until the e2e drives `dsplr apply`.
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
   not written; needs a vendor-name table with a source, and waits for M6 to see
   what Mutter reports.
