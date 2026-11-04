@@ -25,6 +25,51 @@ pub struct OutputEntry {
     pub state: OutputState,
 }
 
+impl OutputEntry {
+    /// The connector this monitor is on: its hardware facts' connector, or
+    /// the one its identity names. `None` when neither is known or it is
+    /// empty.
+    pub fn connector(&self) -> Option<&str> {
+        self.output
+            .as_ref()
+            .map(|output| output.connector.as_str())
+            .filter(|connector| !connector.is_empty())
+            .or(match &self.id {
+                OutputId::Connector(connector) if !connector.is_empty() => Some(connector),
+                _ => None,
+            })
+    }
+
+    /// The monitor's description: the one the backend reported, the one its
+    /// identity holds, or rebuilt from its EDID identity as Hyprland builds
+    /// it (`make model serial`, commas removed, trimmed). `None` when there
+    /// is none, or it is blank.
+    pub fn description(&self) -> Option<String> {
+        let reported = self
+            .output
+            .as_ref()
+            .map(|output| output.description.trim())
+            .filter(|description| !description.is_empty());
+        let description = match (reported, &self.id) {
+            (Some(reported), _) => reported.to_owned(),
+            (None, OutputId::Description(description)) => description.trim().to_owned(),
+            (
+                None,
+                OutputId::Edid {
+                    make,
+                    model,
+                    serial,
+                },
+            ) => format!("{make} {model} {serial}")
+                .replace(',', "")
+                .trim()
+                .to_owned(),
+            (None, OutputId::Connector(_)) => return None,
+        };
+        (!description.is_empty()).then_some(description)
+    }
+}
+
 /// Hardware facts about a connected monitor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Output {

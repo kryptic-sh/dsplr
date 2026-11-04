@@ -37,51 +37,21 @@ pub struct MonitorsLua {
     pub catch_all: Option<String>,
 }
 
-/// The connector an entry is known by: its hardware facts' connector, or the
-/// connector its identity names.
-fn connector_of(entry: &OutputEntry) -> Option<&str> {
-    entry
-        .output
-        .as_ref()
-        .map(|output| output.connector.as_str())
-        .filter(|connector| !connector.is_empty())
-        .or(match &entry.id {
-            OutputId::Connector(connector) if !connector.is_empty() => Some(connector),
-            _ => None,
-        })
-}
-
-/// The description an entry's monitor goes by, when it has a serial: the one
-/// Hyprland reported, or rebuilt from the identity as Hyprland builds it
-/// (`make model serial`, trimmed, commas removed).
+/// The description to name an entry's monitor by: only when it has a
+/// serial, since Hyprland matches `desc:` by prefix and a description without
+/// one would catch every monitor of that model.
 fn description_of(entry: &OutputEntry) -> Option<String> {
-    let description = match &entry.id {
-        OutputId::Connector(_) => return None,
-        OutputId::Description(description) => description.clone(),
-        OutputId::Edid {
-            make,
-            model,
-            serial,
-        } => {
-            if serial.trim().is_empty() {
-                return None;
-            }
-            entry
-                .output
-                .as_ref()
-                .map(|output| output.description.trim().to_owned())
-                .filter(|description| !description.is_empty())
-                .unwrap_or_else(|| format!("{make} {model} {serial}").replace(',', ""))
-        }
-    };
-    let description = description.trim();
-    (!description.is_empty()).then(|| description.to_owned())
+    match &entry.id {
+        OutputId::Connector(_) => None,
+        OutputId::Edid { serial, .. } if serial.trim().is_empty() => None,
+        OutputId::Edid { .. } | OutputId::Description(_) => entry.description(),
+    }
 }
 
 /// The `output` value naming `entry`, or `None` when it has no usable name.
 fn output_name(entry: &OutputEntry, naming: MonitorNaming) -> Option<String> {
     let by_description = || description_of(entry).map(|description| format!("desc:{description}"));
-    let by_connector = || connector_of(entry).map(str::to_owned);
+    let by_connector = || entry.connector().map(str::to_owned);
     match naming {
         MonitorNaming::Description => by_description().or_else(by_connector),
         MonitorNaming::Connector => by_connector().or_else(by_description),

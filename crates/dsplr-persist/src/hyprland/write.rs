@@ -5,7 +5,7 @@
 
 use dsplr_model::{AdaptiveSync, Layout, OutputEntry, OutputId, mhz_to_hz_text};
 
-use super::{MonitorNaming, MonitorsLua, connector_of, output_name};
+use super::{MonitorNaming, MonitorsLua, output_name};
 
 /// Why a layout could not be written.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -66,7 +66,7 @@ pub fn monitor_call(
             .entries
             .iter()
             .find(|other| other.id == *source)
-            .and_then(connector_of)
+            .and_then(OutputEntry::connector)
             .or(match source {
                 OutputId::Connector(connector) => Some(connector.as_str()),
                 _ => None,
