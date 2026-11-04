@@ -29,8 +29,15 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   from `hyprland.conf`.
 - Outputs are written by **description** (`desc:AOC Q27G4 18DQ2HA004850`) when
   the serial is non-empty, so a monitor keeps its settings on another port; by
-  connector name otherwise. Open question whether to default to connector names
-  to match nwg-displays ([12](12-open-questions.md)).
+  connector name otherwise. A GUI toggle names them all by connector instead, as
+  nwg-displays does (the owner's answer to [12](12-open-questions.md)'s question
+  4). Hyprland matches `desc:X` when the monitor's description _starts with_ X,
+  so an empty or serial-less description is never written.
+- Every call states every setting dsplr owns (`disabled = false`,
+  `mirror = ""`): Hyprland merges a rule onto the existing one of the same name,
+  so a setting left out keeps its old value. Positions are always explicit.
+  `vrr` is written only when on or automatic, so a fullscreen-only rule that
+  Hyprland reports as off is never overwritten.
 - The catch-all `hl.monitor({ output = "", mode = "preferred", … })` from the
   template is preserved if present.
 - Importing: an existing nwg-displays-generated `monitors.lua` is read as a

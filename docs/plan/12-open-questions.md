@@ -19,10 +19,12 @@ pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
 3. **Async runtime.** **Decided by the owner (2026-11-04): a current-thread
    tokio runtime on the backend thread**, driving the Wayland fd (through
    `AsyncFd`), the Hyprland sockets and zbus.
-4. **How Hyprland outputs are named in `monitors.lua`.** Default: by description
-   (`desc:…`) when the serial is non-empty, so settings follow the monitor
-   across ports. nwg-displays writes connector names; switching costs nothing on
-   the owner's single external monitor but changes the file.
+4. **How Hyprland outputs are named in `monitors.lua`.** Answered by the owner
+   (2026-11-04): by description (`desc:…`) by default, so settings follow the
+   monitor across ports, with a GUI toggle to name them by connector as
+   nwg-displays does (`MonitorNaming` in `dsplr-persist`, saved in
+   `dsplr-config`). Either way a monitor without a serial is named by its
+   connector, since Hyprland matches `desc:` by prefix.
 5. **Confirm timeout.** Default: 20 seconds, the same as Mutter's
    `DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT`, in the `CONFIRM_TIMEOUT` constant
    with a config override. KDE's own value was not checked.

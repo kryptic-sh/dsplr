@@ -232,6 +232,10 @@ dependencies = [
 [[package]]
 name = "dsplr-persist"
 version = "0.1.0"
+dependencies = [
+ "dsplr-model",
+ "thiserror",
+]
 
 [[package]]
 name = "equivalent"

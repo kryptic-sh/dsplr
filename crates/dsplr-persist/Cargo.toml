@@ -11,6 +11,8 @@ authors.workspace = true
 readme.workspace = true
 
 [dependencies]
+dsplr-model.workspace = true
+thiserror = "2.0.21"
 
 [lints]
 workspace = true

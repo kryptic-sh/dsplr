@@ -23,7 +23,34 @@ Listed with defaults in `docs/plan/12-open-questions.md`. The ones that block a
 milestone:
 
 - **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7).
-- **Monitor naming in `monitors.lua`** (blocks M2's writer).
+- **The managed-file content hash** (`docs/plan/05`): a stable hash needs a
+  dependency, since std's `DefaultHasher` is not stable across Rust releases.
+  `sha2` is the obvious choice and is not on the approved list. Blocks the
+  managed-file header and the hand-edit check, and with them the first save.
+
+## Open work in the Windows-owned crates
+
+- **`monitors.lua` writing to disk**: `dsplr-persist` has the pure writer and
+  reader (`dsplr_persist::hyprland`); the managed header, the hand-edit check
+  and the atomic write are not written (they wait on the hash above).
+- **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written.
+  The Linux session offered to run a generated file through headless Hyprland
+  0.57.1 to check it.
+- **Turning adaptive sync off cannot be written** to `monitors.lua`: the writer
+  leaves `vrr` out when the layout says off, so it never clobbers a
+  fullscreen-only rule Hyprland reports as off. A user who needs an explicit
+  `vrr = 0` against a global `misc:vrr` cannot get it from dsplr yet; fixing it
+  needs the model to tell "off" from "not set".
+- **The reader refuses Hyprland forms a layout cannot hold**: `preferred` and
+  `highres` modes, a mode without a refresh, `auto` positions and scales, and
+  the SDR, luminance, `icc` and `reserved` keys. A hand-written file using them
+  cannot be imported; a lossless pass-through of unknown keys would fix the
+  latter.
+- **`vrr = 3` reads back as automatic**, the same as 2, since a layout does not
+  tell fullscreen-only from fullscreen-video-and-games.
+- **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
+  not written; needs a vendor-name table with a source, and waits for M6 to see
+  what Mutter reports.
 
 ## Waiting on crcbl
 
