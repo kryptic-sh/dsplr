@@ -8,7 +8,9 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use super::Monitor;
+use dsplr_model::Layout;
+
+use super::{Monitor, SnapshotError, layout};
 
 /// How long a request may take before dsplr gives up on it. `hyprctl` uses
 /// the same receive timeout.
@@ -16,6 +18,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The request for every monitor, disabled ones included.
 const MONITORS_REQUEST: &str = "j/monitors all";
+
+/// The request for Hyprland's version.
+const VERSION_REQUEST: &str = "j/version";
 
 /// What went wrong talking to Hyprland.
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +42,8 @@ pub enum Error {
         request: String,
         source: serde_json::Error,
     },
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
 }
 
 /// A connection point to one Hyprland instance.
@@ -56,6 +63,27 @@ impl Hyprland {
         Ok(Self {
             socket_dir: socket_dir(var)?,
         })
+    }
+
+    /// Hyprland's version, such as `0.56.2`. Also how detection checks that
+    /// the socket answers.
+    pub async fn version(&self) -> Result<String, Error> {
+        #[derive(serde::Deserialize)]
+        struct Version {
+            version: String,
+        }
+        let reply = self.request(VERSION_REQUEST).await?;
+        serde_json::from_str::<Version>(&reply)
+            .map(|v| v.version)
+            .map_err(|source| Error::Json {
+                request: VERSION_REQUEST.to_owned(),
+                source,
+            })
+    }
+
+    /// The current state as a [`Layout`].
+    pub async fn snapshot(&self) -> Result<Layout, Error> {
+        Ok(layout(&self.monitors().await?)?)
     }
 
     /// Every monitor Hyprland knows, disabled ones included.
@@ -144,7 +172,7 @@ mod tests {
     /// with `reply`, and reports what it was asked.
     fn fake_hyprland(
         dir: &Path,
-        reply: &'static str,
+        reply: fn(&str) -> &'static str,
     ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
         let listener = UnixListener::bind(dir.join(".socket.sock")).expect("bind");
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -153,12 +181,36 @@ mod tests {
                 let (mut stream, _) = listener.accept().await.expect("accept");
                 let mut buf = vec![0; 4096];
                 let n = stream.read(&mut buf).await.expect("read");
-                stream.write_all(reply.as_bytes()).await.expect("write");
-                tx.send(String::from_utf8_lossy(&buf[..n]).into_owned())
-                    .expect("send");
+                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                stream
+                    .write_all(reply(&request).as_bytes())
+                    .await
+                    .expect("write");
+                tx.send(request).expect("send");
             }
         });
         rx
+    }
+
+    /// The owner's Hyprland, as recorded.
+    fn owner(request: &str) -> &'static str {
+        match request {
+            "j/monitors all" => include_str!("../../tests/fixtures/hyprland/monitors-all.json"),
+            "j/version" => r#"{"branch": "v0.56.2", "version": "0.56.2", "tag": "v0.56.2"}"#,
+            _ => "unknown request",
+        }
+    }
+
+    #[tokio::test]
+    async fn the_version_and_snapshot_come_from_their_requests() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut requests = fake_hyprland(dir.path(), owner);
+        let hyprland = at(dir.path());
+        assert_eq!(hyprland.version().await.expect("version"), "0.56.2");
+        assert_eq!(requests.recv().await.as_deref(), Some("j/version"));
+        let layout = hyprland.snapshot().await.expect("snapshot");
+        assert_eq!(requests.recv().await.as_deref(), Some("j/monitors all"));
+        assert_eq!(layout.entries.len(), 2);
     }
 
     fn at(dir: &Path) -> Hyprland {
@@ -170,8 +222,7 @@ mod tests {
     #[tokio::test]
     async fn monitors_asks_for_every_monitor_and_parses_the_reply() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let reply = include_str!("../../tests/fixtures/hyprland/monitors-all.json");
-        let mut requests = fake_hyprland(dir.path(), reply);
+        let mut requests = fake_hyprland(dir.path(), owner);
 
         let monitors = at(dir.path()).monitors().await.expect("monitors");
         assert_eq!(requests.recv().await.as_deref(), Some("j/monitors all"));
@@ -182,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn a_reply_that_is_not_monitors_is_an_error() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let _requests = fake_hyprland(dir.path(), "unknown request");
+        let _requests = fake_hyprland(dir.path(), |_| "unknown request");
         assert!(matches!(
             at(dir.path()).monitors().await,
             Err(Error::Json { request, .. }) if request == "j/monitors all"
@@ -211,5 +262,12 @@ mod tests {
         for monitor in &monitors {
             monitor.modes().expect("every mode Hyprland lists parses");
         }
+        let hyprland = Hyprland::from_env().expect("found");
+        hyprland
+            .version()
+            .await
+            .expect("Hyprland reports its version");
+        let layout = hyprland.snapshot().await.expect("the state converts");
+        assert_eq!(layout.entries.len(), monitors.len());
     }
 }

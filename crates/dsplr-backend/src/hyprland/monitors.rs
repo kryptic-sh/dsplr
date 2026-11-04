@@ -1,7 +1,6 @@
 //! Hyprland's `j/monitors all` reply, as Hyprland writes it.
 
-use std::fmt;
-
+use dsplr_model::{Mode, hz_to_mhz};
 use serde::Deserialize;
 
 /// One monitor from `j/monitors all`: every output Hyprland knows, disabled
@@ -61,19 +60,9 @@ impl Monitor {
     pub fn modes(&self) -> Result<Vec<Mode>, ModeError> {
         self.available_modes
             .iter()
-            .map(|mode| mode.parse())
+            .map(|mode| parse_mode(mode))
             .collect()
     }
-}
-
-/// One of Hyprland's `WIDTHxHEIGHT@REFRESHHz` modes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Mode {
-    pub width: u32,
-    pub height: u32,
-    /// Refresh in millihertz, the unit dsplr's model uses, rounded from
-    /// Hyprland's hertz with two decimals.
-    pub refresh_mhz: u32,
 }
 
 /// A mode string Hyprland wrote that is not `WIDTHxHEIGHT@REFRESHHz`.
@@ -81,43 +70,32 @@ pub struct Mode {
 #[error("Hyprland mode {0:?} is not WIDTHxHEIGHT@REFRESHHz")]
 pub struct ModeError(String);
 
-/// Millihertz in a hertz.
-const MHZ_PER_HZ: f64 = 1000.0;
-
-impl std::str::FromStr for Mode {
-    type Err = ModeError;
-
-    fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let invalid = || ModeError(text.to_owned());
-        let (size, refresh) = text
-            .strip_suffix("Hz")
-            .and_then(|mode| mode.split_once('@'))
-            .ok_or_else(invalid)?;
-        let (width, height) = size.split_once('x').ok_or_else(invalid)?;
-        let hertz: f64 = refresh.parse().map_err(|_| invalid())?;
-        let millihertz = (hertz * MHZ_PER_HZ).round();
-        if !(millihertz > 0.0 && millihertz <= f64::from(u32::MAX)) {
-            return Err(invalid());
-        }
-        Ok(Self {
-            width: width.parse().map_err(|_| invalid())?,
-            height: height.parse().map_err(|_| invalid())?,
-            // Whole and within `u32`, checked above, so the cast is exact.
-            refresh_mhz: millihertz as u32,
-        })
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hertz = f64::from(self.refresh_mhz) / MHZ_PER_HZ;
-        write!(f, "{}x{}@{hertz:.2}Hz", self.width, self.height)
-    }
+/// Parses one of Hyprland's `WIDTHxHEIGHT@REFRESHHz` modes, such as
+/// `2560x1440@120.00Hz`. Hyprland lists no preferred mode and no per-mode
+/// scales here, so those stay empty.
+pub fn parse_mode(text: &str) -> Result<Mode, ModeError> {
+    let invalid = || ModeError(text.to_owned());
+    let (size, refresh) = text
+        .strip_suffix("Hz")
+        .and_then(|mode| mode.split_once('@'))
+        .ok_or_else(invalid)?;
+    let (width, height) = size.split_once('x').ok_or_else(invalid)?;
+    let hertz: f64 = refresh.parse().map_err(|_| invalid())?;
+    let refresh_mhz = hz_to_mhz(hertz)
+        .filter(|&mhz| mhz > 0)
+        .ok_or_else(invalid)?;
+    Ok(Mode::new(
+        width.parse().map_err(|_| invalid())?,
+        height.parse().map_err(|_| invalid())?,
+        refresh_mhz,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, ModeError, Monitor};
+    use dsplr_model::Mode;
+
+    use super::{ModeError, Monitor, parse_mode};
 
     /// `hyprctl -j monitors all` on the owner's machine (Hyprland 0.56.2,
     /// 2026-11-04): the laptop panel disabled, one external monitor. The
@@ -152,27 +130,18 @@ mod tests {
 
         let modes = external.modes().expect("every mode parses");
         assert_eq!(modes.len(), external.available_modes.len());
-        assert!(modes.contains(&Mode {
-            width: 2560,
-            height: 1440,
-            refresh_mhz: 120_000,
-        }));
-        assert!(modes.contains(&Mode {
-            width: 3840,
-            height: 2160,
-            refresh_mhz: 59_940,
-        }));
+        assert!(modes.contains(&Mode::new(2560, 1440, 120_000)));
+        assert!(modes.contains(&Mode::new(3840, 2160, 59_940)));
     }
 
     #[test]
-    fn a_mode_round_trips_through_hyprland_s_form() {
-        for text in [
-            "2560x1440@120.00Hz",
-            "1920x1080@119.88Hz",
-            "640x480@59.94Hz",
+    fn modes_parse_to_millihertz() {
+        for (text, mode) in [
+            ("2560x1440@120.00Hz", Mode::new(2560, 1440, 120_000)),
+            ("1920x1080@119.88Hz", Mode::new(1920, 1080, 119_880)),
+            ("640x480@59.94Hz", Mode::new(640, 480, 59_940)),
         ] {
-            let mode: Mode = text.parse().expect(text);
-            assert_eq!(mode.to_string(), text);
+            assert_eq!(parse_mode(text), Ok(mode), "{text}");
         }
     }
 
@@ -190,7 +159,7 @@ mod tests {
             "1920x1080@1e12Hz",
         ] {
             assert_eq!(
-                text.parse::<Mode>(),
+                parse_mode(text),
                 Err(ModeError(text.to_owned())),
                 "{text:?}"
             );
