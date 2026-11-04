@@ -1,16 +1,25 @@
 //! The `dsplr` binary: a display settings editor for Linux.
 //!
-//! The commands so far read the desktop: `dsplr list` and `dsplr backend`.
-//! The GUI and every command that changes something are not written yet.
+//! `dsplr list` and `dsplr backend` read the desktop; `dsplr apply` changes
+//! it from a layout file and `dsplr restore --revert` goes back. The GUI,
+//! `dsplr set`, saving and profiles are not written yet.
 
+use std::fs;
 use std::io::{self, Write};
+use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use dsplr_backend::{Detection, detect};
+use dsplr_backend::{Backend, Detection, detect};
+use dsplr_config::Config;
+use dsplr_model::Layout;
 
+mod apply;
 mod backend;
 mod list;
+mod restore;
 
 /// Arrange, size and configure monitors on Hyprland, wlroots compositors,
 /// KDE Plasma, GNOME and X11.
@@ -31,15 +40,51 @@ enum Command {
     },
     /// Which backend was detected, what was checked, and its capabilities.
     Backend,
+    /// Apply a whole layout from a JSON file, as `dsplr list --json` writes
+    /// it, and ask whether to keep it.
+    Apply {
+        /// The layout file.
+        file: PathBuf,
+        /// Keep the change without asking. The revert point is still
+        /// written, for `dsplr restore --revert`.
+        #[arg(long)]
+        yes: bool,
+        /// Check the layout without applying it.
+        #[arg(long)]
+        dry_run: bool,
+        /// Seconds to wait for an answer before reverting, in place of the
+        /// configured `confirm.timeout_secs`.
+        #[arg(long, hide = true, value_name = "SECS")]
+        confirm_timeout: Option<NonZeroU32>,
+    },
+    /// Go back to the layout from before the last change.
+    Restore {
+        /// Apply the last revert point. Profiles are not written yet, so
+        /// this is the only thing restore does.
+        #[arg(long, required = true)]
+        revert: bool,
+        /// Run as a change's watchdog: wait this many seconds first.
+        #[arg(long, hide = true, value_name = "SECS", requires = "token")]
+        after: Option<u64>,
+        /// Run as a change's watchdog: revert only while the revert point
+        /// holds this token.
+        #[arg(long, hide = true, requires = "after")]
+        token: Option<String>,
+    },
 }
 
 /// dsplr's exit codes (`docs/plan/07-cli.md`). Usage errors exit with
-/// clap's own code; the codes for refused and reverted changes are added
-/// with the commands that make changes.
+/// clap's own code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exit {
     Success = 0,
     Failure = 1,
+    /// Validation refused the layout.
+    Refused = 3,
+    /// The desktop refused the layout.
+    BackendRefused = 4,
+    /// The change was reverted: declined, or not confirmed in time.
+    Reverted = 5,
     NoBackend = 6,
 }
 
@@ -82,15 +127,68 @@ async fn run(cli: Cli) -> Exit {
             print(&backend::describe(&detection)).unwrap_or(code)
         }
         Some(Command::List { json }) => list(json).await,
+        Some(Command::Apply {
+            file,
+            yes,
+            dry_run,
+            confirm_timeout,
+        }) => apply(&file, yes, dry_run, confirm_timeout).await,
+        Some(Command::Restore {
+            revert: _,
+            after,
+            token,
+        }) => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
     }
 }
 
-async fn list(json: bool) -> Exit {
+/// The backend for this desktop, or, when there is none, the checks that
+/// found none, reported, and the exit code.
+async fn find_backend() -> Result<Backend, Exit> {
     let Detection { checks, backend } = detect().await;
-    let Some(backend) = backend else {
+    backend.ok_or_else(|| {
         eprintln!("dsplr: no backend for this desktop");
         eprint!("{}", backend::describe_checks(&checks));
-        return Exit::NoBackend;
+        Exit::NoBackend
+    })
+}
+
+async fn apply(file: &Path, yes: bool, dry_run: bool, confirm_timeout: Option<NonZeroU32>) -> Exit {
+    let layout = match fs::read_to_string(file)
+        .map_err(|error| error.to_string())
+        .and_then(|text| Layout::from_json(&text).map_err(|error| error.to_string()))
+    {
+        Ok(layout) => layout,
+        Err(error) => {
+            eprintln!("dsplr: {}: {error}", file.display());
+            return Exit::Failure;
+        }
+    };
+    let confirm_timeout = match confirm_timeout {
+        Some(secs) => Duration::from_secs(secs.get().into()),
+        None => match Config::load() {
+            Ok((config, _)) => config.confirm.timeout(),
+            Err(error) => {
+                eprintln!("dsplr: {error}");
+                return Exit::Failure;
+            }
+        },
+    };
+    let backend = match find_backend().await {
+        Ok(backend) => backend,
+        Err(exit) => return exit,
+    };
+    let options = apply::Options {
+        yes,
+        dry_run,
+        confirm_timeout,
+    };
+    apply::run(&backend, &layout, &options).await
+}
+
+async fn list(json: bool) -> Exit {
+    let backend = match find_backend().await {
+        Ok(backend) => backend,
+        Err(exit) => return exit,
     };
     let layout = match backend.snapshot().await {
         Ok(layout) => layout,
@@ -157,9 +255,45 @@ mod tests {
     }
 
     #[test]
+    fn restore_needs_revert_and_the_watchdog_needs_both_its_arguments() {
+        assert!(Cli::try_parse_from(["dsplr", "restore"]).is_err());
+        assert!(Cli::try_parse_from(["dsplr", "restore", "--revert", "--after", "25"]).is_err());
+        assert!(Cli::try_parse_from(["dsplr", "restore", "--revert", "--token", "t"]).is_err());
+        let cli = Cli::try_parse_from([
+            "dsplr", "restore", "--revert", "--after", "25", "--token", "t",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Restore { after: Some(25), token: Some(ref t), .. }) if t == "t"
+        ));
+    }
+
+    #[test]
+    fn apply_takes_a_file_and_its_flags() {
+        let cli = Cli::try_parse_from(["dsplr", "apply", "l.json", "--yes", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Apply {
+                yes: true,
+                dry_run: true,
+                confirm_timeout: None,
+                ..
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["dsplr", "apply", "l.json", "--confirm-timeout", "0"]).is_err(),
+            "a zero timeout could never be confirmed"
+        );
+    }
+
+    #[test]
     fn exit_codes_are_the_documented_numbers() {
         assert_eq!(ExitCode::from(Exit::Success), ExitCode::from(0));
         assert_eq!(ExitCode::from(Exit::Failure), ExitCode::from(1));
+        assert_eq!(ExitCode::from(Exit::Refused), ExitCode::from(3));
+        assert_eq!(ExitCode::from(Exit::BackendRefused), ExitCode::from(4));
+        assert_eq!(ExitCode::from(Exit::Reverted), ExitCode::from(5));
         assert_eq!(ExitCode::from(Exit::NoBackend), ExitCode::from(6));
     }
 }

@@ -1,0 +1,373 @@
+//! `dsplr apply <FILE>`: a whole layout from a file, through the confirm flow
+//! (`docs/plan/02-architecture.md`, "Apply, confirm, revert").
+
+use std::io::{self, BufRead, IsTerminal};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use dsplr_backend::Backend;
+use dsplr_model::{Capabilities, Difference, Layout, OutputEntry, OutputId, Problem, Setting};
+use dsplr_persist::revert::{self, RevertPoint};
+
+use crate::{Exit, restore};
+
+/// How long a re-read waits for the desktop to show a layout it was sent:
+/// Hyprland's `eval` replies before its rules take effect, on its next
+/// frame.
+pub const SETTLE: Duration = Duration::from_secs(5);
+
+/// How often a re-read looks again while the desktop settles.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// How `dsplr apply` was asked to run.
+pub struct Options {
+    /// Keep the change without asking.
+    pub yes: bool,
+    /// Validate only.
+    pub dry_run: bool,
+    /// How long the confirm prompt waits before reverting.
+    pub confirm_timeout: Duration,
+}
+
+/// Applies `file`, read from a layout file, on `backend`.
+pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
+    let current = match backend.snapshot().await {
+        Ok(layout) => layout,
+        Err(error) => {
+            eprintln!(
+                "dsplr: cannot read the displays from {}: {error}",
+                backend.name()
+            );
+            return Exit::Failure;
+        }
+    };
+    let asked = match bind(file, &current) {
+        Ok(layout) => layout,
+        Err(missing) => {
+            for output in missing {
+                eprintln!("dsplr: {output}: not connected");
+            }
+            return Exit::Refused;
+        }
+    };
+    let capabilities = backend.capabilities();
+    let problems = asked.validate(&capabilities);
+    for problem in &problems {
+        let severity = if problem.is_error() {
+            "error"
+        } else {
+            "warning"
+        };
+        eprintln!("dsplr: {severity}: {problem}");
+    }
+    if problems.iter().any(Problem::is_error) {
+        return Exit::Refused;
+    }
+    if options.dry_run {
+        eprintln!(
+            "dsplr: validated locally only; testing a layout before applying it is not written for {}",
+            backend.name()
+        );
+        return Exit::Success;
+    }
+    let ask = !options.yes && needs_confirm(&asked, &current, &capabilities);
+    if ask && !io::stdin().is_terminal() {
+        eprintln!(
+            "dsplr: this change can hide or move a screen, and there is no terminal to confirm it on; pass --yes to keep it without asking"
+        );
+        return Exit::Failure;
+    }
+
+    let path = match revert::default_path() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("dsplr: cannot keep a revert point: {error}");
+            return Exit::Failure;
+        }
+    };
+    let point = RevertPoint::new(current);
+    if let Err(error) = revert::save(&path, &point) {
+        eprintln!("dsplr: cannot keep a revert point: {error}");
+        return Exit::Failure;
+    }
+    if let Err(error) = restore::spawn_watchdog(
+        &point.token,
+        restore::watchdog_delay(options.confirm_timeout),
+    ) {
+        eprintln!("dsplr: cannot start the revert watchdog: {error}");
+        if let Err(error) = revert::remove_if(&path, &point.token) {
+            eprintln!("dsplr: {error}");
+        }
+        return Exit::Failure;
+    }
+
+    if let Err(error) = backend.apply(&asked).await {
+        eprintln!("dsplr: {} refused the layout: {error}", backend.name());
+        restore::go_back(backend, &path, &point).await;
+        return Exit::BackendRefused;
+    }
+    match settle(backend, &asked, &capabilities).await {
+        Ok(differences) => report(&differences),
+        Err(error) => {
+            // Without a re-read nothing says what the screens show: go back
+            // rather than keep it unseen.
+            eprintln!("dsplr: cannot read the displays back: {error}");
+            restore::go_back(backend, &path, &point).await;
+            return Exit::Failure;
+        }
+    }
+
+    if ask && !confirm(options.confirm_timeout) {
+        eprintln!("dsplr: reverting");
+        return if restore::go_back(backend, &path, &point).await {
+            Exit::Reverted
+        } else {
+            Exit::BackendRefused
+        };
+    }
+    match revert::keep(&path, &point.token) {
+        Ok(true) => Exit::Success,
+        Ok(false) => {
+            eprintln!("dsplr: the revert point was replaced by another change; this one is kept");
+            Exit::Success
+        }
+        Err(error) => {
+            eprintln!(
+                "dsplr: cannot mark the change kept, so the watchdog will revert it: {error}"
+            );
+            Exit::Failure
+        }
+    }
+}
+
+/// Pairs each entry of `file` with the live output its identity matches,
+/// taking the live identity and hardware facts so the backend can name it,
+/// and mirrors likewise. Live outputs the file does not mention keep their
+/// current state. The error lists the file's outputs that are not connected.
+fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<OutputId>> {
+    let find = |id: &OutputId| live.entries.iter().find(|entry| id.matches(entry));
+    let mut missing = Vec::new();
+    let mut entries = Vec::new();
+    for entry in &file.entries {
+        let Some(found) = find(&entry.id) else {
+            missing.push(entry.id.clone());
+            continue;
+        };
+        let mut state = entry.state.clone();
+        state.mirror_of = entry
+            .state
+            .mirror_of
+            .as_ref()
+            .map(|source| find(source).map_or_else(|| source.clone(), |live| live.id.clone()));
+        entries.push(OutputEntry {
+            id: found.id.clone(),
+            output: found.output.clone(),
+            state,
+        });
+    }
+    if !missing.is_empty() {
+        return Err(missing);
+    }
+    entries.extend(
+        live.entries
+            .iter()
+            .filter(|live| !file.entries.iter().any(|entry| entry.id.matches(live)))
+            .cloned(),
+    );
+    Ok(Layout { entries })
+}
+
+/// Whether going from `current` to `asked` can hide or move a screen: an
+/// output enabled or disabled, or its mode, position, scale or transform
+/// changed.
+fn needs_confirm(asked: &Layout, current: &Layout, capabilities: &Capabilities) -> bool {
+    asked
+        .differences(current, capabilities)
+        .iter()
+        .any(|difference| match difference {
+            Difference::Setting { setting, .. } => matches!(
+                setting,
+                Setting::Enabled
+                    | Setting::Mode
+                    | Setting::Position
+                    | Setting::Scale
+                    | Setting::Transform
+            ),
+            Difference::Missing(_) | Difference::Added(_) => true,
+        })
+}
+
+/// Reads the layout back until it shows `asked` or [`SETTLE`] has passed,
+/// and returns what still differs.
+///
+/// # Errors
+///
+/// When the layout cannot be read.
+pub async fn settle(
+    backend: &Backend,
+    asked: &Layout,
+    capabilities: &Capabilities,
+) -> Result<Vec<Difference>, dsplr_backend::Error> {
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        let differences = asked.differences(&backend.snapshot().await?, capabilities);
+        if differences.is_empty() || Instant::now() >= deadline {
+            return Ok(differences);
+        }
+        tokio::time::sleep(SETTLE_POLL).await;
+    }
+}
+
+/// Shows what the desktop did not take as asked, if anything.
+pub fn report(differences: &[Difference]) {
+    if differences.is_empty() {
+        return;
+    }
+    eprintln!("dsplr: the displays show something other than was asked:");
+    for difference in differences {
+        eprintln!("  {difference}");
+    }
+}
+
+/// Asks on the terminal whether to keep the change, and waits at most
+/// `timeout` for the answer. Anything but yes, and no answer, is no.
+fn confirm(timeout: Duration) -> bool {
+    eprint!(
+        "Keep this layout? [y/N] (reverting in {} s) ",
+        timeout.as_secs()
+    );
+    let (answer, answered) = mpsc::channel();
+    // Reading stdin cannot be given a timeout, so it is read on a thread
+    // that is left blocked if no answer comes.
+    thread::spawn(move || {
+        let mut line = String::new();
+        let read = io::stdin().lock().read_line(&mut line).map(|_| line);
+        // The receiver is gone once the prompt has timed out; the answer
+        // then has nowhere to go.
+        let _ = answer.send(read);
+    });
+    match answered.recv_timeout(timeout) {
+        Ok(Ok(line)) => is_yes(&line),
+        Ok(Err(error)) => {
+            eprintln!("dsplr: cannot read the answer: {error}");
+            false
+        }
+        Err(_) => {
+            eprintln!();
+            false
+        }
+    }
+}
+
+fn is_yes(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use dsplr_model::{
+        Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
+    };
+
+    use super::{bind, is_yes, needs_confirm};
+
+    fn live_entry(connector: &str, serial: &str) -> OutputEntry {
+        OutputEntry {
+            id: OutputId::new("AOC", "Q27G4", serial, connector),
+            output: Some(Output {
+                connector: connector.into(),
+                description: format!("AOC Q27G4 {serial}"),
+                physical_size_mm: None,
+                modes: vec![Mode::new(2560, 1440, 120_000)],
+            }),
+            state: OutputState {
+                mode: Some(Mode::new(2560, 1440, 120_000)),
+                ..OutputState::default()
+            },
+        }
+    }
+
+    fn live() -> Layout {
+        Layout {
+            entries: vec![live_entry("DP-1", "AAA"), live_entry("HDMI-A-1", "BBB")],
+        }
+    }
+
+    #[test]
+    fn a_file_entry_takes_the_live_identity_and_facts_of_its_output() {
+        let file = Layout {
+            entries: vec![OutputEntry {
+                id: OutputId::Description("AOC Q27G4 BBB".into()),
+                output: None,
+                state: OutputState {
+                    x: 2560,
+                    mirror_of: Some(OutputId::Connector("DP-1".into())),
+                    ..live().entries[1].state.clone()
+                },
+            }],
+        };
+        let bound = bind(&file, &live()).unwrap();
+        assert_eq!(bound.entries.len(), 2);
+        let entry = &bound.entries[0];
+        assert_eq!(entry.id, live().entries[1].id);
+        assert_eq!(entry.output, live().entries[1].output);
+        assert_eq!(entry.state.x, 2560);
+        assert_eq!(entry.state.mirror_of, Some(live().entries[0].id.clone()));
+        assert_eq!(
+            bound.entries[1],
+            live().entries[0],
+            "not in the file: as it is"
+        );
+    }
+
+    #[test]
+    fn a_file_naming_an_output_not_connected_is_refused() {
+        let file = Layout {
+            entries: vec![OutputEntry {
+                id: OutputId::Connector("DP-9".into()),
+                output: None,
+                state: OutputState::default(),
+            }],
+        };
+        assert_eq!(
+            bind(&file, &live()),
+            Err(vec![OutputId::Connector("DP-9".into())])
+        );
+    }
+
+    #[test]
+    fn only_a_change_that_can_hide_or_move_a_screen_is_confirmed() {
+        let current = live();
+        let caps = Capabilities::default();
+        assert!(!needs_confirm(&current, &current, &caps));
+
+        // A difference, but one that moves nothing.
+        let with_primary = Capabilities {
+            primary: true,
+            ..Capabilities::default()
+        };
+        let mut primary = current.clone();
+        primary.entries[0].state.primary = true;
+        assert!(!primary.differences(&current, &with_primary).is_empty());
+        assert!(!needs_confirm(&primary, &current, &with_primary));
+
+        let mut rotated = current.clone();
+        rotated.entries[0].state.transform = Transform::Rotate90;
+        assert!(needs_confirm(&rotated, &current, &caps));
+
+        let mut disabled = current.clone();
+        disabled.entries[1].state.enabled = false;
+        assert!(needs_confirm(&disabled, &current, &caps));
+    }
+
+    #[test]
+    fn only_yes_keeps() {
+        for yes in ["y", "Y\n", " yes \r\n", "YES"] {
+            assert!(is_yes(yes), "{yes:?}");
+        }
+        for no in ["", "\n", "n", "no", "yess", "sure"] {
+            assert!(!is_yes(no), "{no:?}");
+        }
+    }
+}

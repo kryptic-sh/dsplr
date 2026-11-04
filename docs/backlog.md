@@ -12,13 +12,15 @@ Build order is `docs/plan/11-milestones.md`.
 
 M2 is under way. `Backend::apply` sets a whole layout on Hyprland in one `eval`
 (`Hyprland::apply`, built on `dsplr_persist::hyprland::monitor_calls`), and the
-headless e2e test applies edited snapshots and reads them back. The model can
-list how a re-read layout differs from the one asked for
-(`Layout::differences`), and `dsplr_persist::revert` keeps the revert point in
-`$XDG_STATE_HOME/dsplr/revert.json`. Not written yet: the watchdog, the confirm
-prompt and a CLI command that applies (`docs/plan/02-architecture.md`, steps 3
-to 6); the Windows session owns those, the Linux session the backend and their
-e2e coverage.
+headless e2e test applies edited snapshots and reads them back.
+`dsplr apply <FILE>` runs the confirm flow (`docs/plan/02-architecture.md`,
+steps 1 to 6): validate, revert point in `$XDG_STATE_HOME/dsplr/revert.json`, a
+detached watchdog (`dsplr restore --revert --after <secs> --token <t>`), apply,
+re-read until the layout settles, ask, then keep or revert;
+`dsplr restore --revert` goes back by hand. Not written yet: `dsplr set`,
+saving, and an e2e test of `dsplr apply` (the Linux session's, in the headless
+harness). The Windows session owns the CLI, model and persist crates; the Linux
+session the backend and their e2e coverage.
 
 Two sessions work on it, each owning crates: the Linux session owns
 `dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
@@ -52,6 +54,15 @@ milestone:
   latter.
 - **`vrr = 3` reads back as automatic**, the same as 2, since a layout does not
   tell fullscreen-only from fullscreen-video-and-games.
+- **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
+  layout files, which wait for the profile store's format.
+- **`dsplr apply --dry-run` validates locally only** on every backend, since no
+  backend has a test request wired up; Hyprland's is a stub anyway.
+- **The watchdog's output goes nowhere**: its stdin, stdout and stderr are
+  closed, since the terminal may be gone when it fires, so a watchdog that fails
+  to revert says so to no one. A log file in the state directory would fix that.
+  Not run on Linux yet: the watchdog, the prompt and the settle loop are covered
+  only by CI's build and the unit tests until the e2e drives `dsplr apply`.
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
   not written; needs a vendor-name table with a source, and waits for M6 to see
   what Mutter reports.

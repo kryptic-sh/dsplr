@@ -20,5 +20,14 @@ and this project adheres to
   only.
 - The Hyprland backend can apply a layout, as runtime monitor rules through
   Hyprland's `eval` (dropped on a config reload), so `dsplr backend` now lists
-  mirroring, fractional and per-output scale, and gaps between outputs. No
-  command applies one yet.
+  mirroring, fractional and per-output scale, and gaps between outputs.
+- `dsplr apply <FILE>` applies a layout from a JSON file (as `dsplr list --json`
+  writes it), matching its outputs to the connected ones by identity. A change
+  that can hide or move a screen asks to be kept and reverts after
+  `confirm.timeout_secs` without a yes; a detached watchdog reverts it even if
+  dsplr dies first. `--yes` keeps it without asking, and `--dry-run` only
+  validates. Whatever the desktop did not take as asked is listed after the
+  apply.
+- `dsplr restore --revert` goes back to the layout from before the last change.
+- Exit codes `3` (validation refused), `4` (the desktop refused) and `5`
+  (reverted).

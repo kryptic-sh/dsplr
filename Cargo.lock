@@ -231,7 +231,9 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dsplr-backend",
+ "dsplr-config",
  "dsplr-model",
+ "dsplr-persist",
  "tokio",
 ]
 
