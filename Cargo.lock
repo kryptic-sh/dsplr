@@ -279,6 +279,8 @@ name = "dsplr-persist"
 version = "0.1.0"
 dependencies = [
  "dsplr-model",
+ "hjkl-xdg",
+ "serde_json",
  "sha2",
  "tempfile",
  "thiserror",

@@ -1,0 +1,220 @@
+//! The revert point (`docs/plan/02-architecture.md`, step 3): the layout
+//! before a change, written to `$XDG_STATE_HOME/dsplr/revert.json` before the
+//! change is applied, so the watchdog can put it back if dsplr dies before
+//! the change is kept, and `dsplr restore --revert` can by hand.
+//!
+//! Each revert point carries a token. The watchdog started for a change is
+//! given its token and reverts only while the file still holds it, so a
+//! watchdog left over from an earlier change never reverts a later one.
+//! Keeping a change removes the file.
+
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, io};
+
+use dsplr_model::{JsonError, Layout};
+
+use crate::managed::write_atomic;
+
+/// A layout to go back to, and the token naming the change it guards.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RevertPoint {
+    pub token: String,
+    pub layout: Layout,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RevertError {
+    #[error("no home directory to keep the revert point in")]
+    NoHome,
+    #[error("{path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("{path} is not a dsplr revert point: {reason}")]
+    Invalid { path: PathBuf, reason: String },
+}
+
+/// The field the token is kept in, beside the layout's own fields.
+const TOKEN_KEY: &str = "revert_token";
+
+impl RevertPoint {
+    /// A revert point for `layout` with a new token: the process id and the
+    /// time tell processes apart, and a counter tells apart two made in one
+    /// process within the clock's resolution.
+    pub fn new(layout: Layout) -> Self {
+        static MADE: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let count = MADE.fetch_add(1, Ordering::Relaxed);
+        Self {
+            token: format!("{}-{nanos}-{count}", std::process::id()),
+            layout,
+        }
+    }
+}
+
+/// `$XDG_STATE_HOME/dsplr/revert.json`.
+///
+/// # Errors
+///
+/// When there is no home directory to resolve it from.
+pub fn default_path() -> Result<PathBuf, RevertError> {
+    hjkl_xdg::state_dir("dsplr")
+        .map(|dir| dir.join("revert.json"))
+        .map_err(|hjkl_xdg::Error::NoHomeDir| RevertError::NoHome)
+}
+
+/// Writes `point` to `path` atomically, creating its directory.
+///
+/// # Errors
+///
+/// When the directory or the file cannot be written.
+pub fn save(path: &Path, point: &RevertPoint) -> Result<(), RevertError> {
+    let io_error = |source| RevertError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let invalid = |reason: String| RevertError::Invalid {
+        path: path.to_owned(),
+        reason,
+    };
+    let text = point.layout.to_json().map_err(|e| invalid(e.to_string()))?;
+    let mut value: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+    value.insert(TOKEN_KEY.to_owned(), point.token.clone().into());
+    let text = serde_json::to_string_pretty(&value).map_err(|e| invalid(e.to_string()))?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(io_error)?;
+    }
+    write_atomic(path, &(text + "\n")).map_err(io_error)
+}
+
+/// The revert point at `path`, or `None` when there is none.
+///
+/// # Errors
+///
+/// When the file cannot be read or is not a revert point.
+pub fn load(path: &Path) -> Result<Option<RevertPoint>, RevertError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(RevertError::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    let invalid = |reason: String| RevertError::Invalid {
+        path: path.to_owned(),
+        reason,
+    };
+    let mut value: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
+    let Some(serde_json::Value::String(token)) = value.remove(TOKEN_KEY) else {
+        return Err(invalid(format!("no `{TOKEN_KEY}`")));
+    };
+    let layout_text = serde_json::to_string(&value).map_err(|e| invalid(e.to_string()))?;
+    let layout = Layout::from_json(&layout_text).map_err(|e: JsonError| invalid(e.to_string()))?;
+    Ok(Some(RevertPoint { token, layout }))
+}
+
+/// Removes the revert point at `path` if it holds `token`: the change it
+/// guarded was kept, or has been reverted. Returns whether it was removed;
+/// a missing file, or one for another change, is left alone.
+///
+/// # Errors
+///
+/// When the file cannot be read, is not a revert point, or cannot be
+/// removed.
+pub fn remove_if(path: &Path, token: &str) -> Result<bool, RevertError> {
+    match load(path)? {
+        Some(point) if point.token == token => {
+            fs::remove_file(path).map_err(|source| RevertError::Io {
+                path: path.to_owned(),
+                source,
+            })?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use dsplr_model::{Layout, Mode, OutputEntry, OutputId, OutputState};
+
+    use super::{RevertError, RevertPoint, load, remove_if, save};
+
+    fn layout() -> Layout {
+        Layout {
+            entries: vec![OutputEntry {
+                id: OutputId::Connector("HDMI-A-1".into()),
+                output: None,
+                state: OutputState {
+                    mode: Some(Mode::new(2560, 1440, 120_000)),
+                    scale: 1.25,
+                    ..OutputState::default()
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn a_saved_revert_point_loads_back_with_its_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("dsplr").join("revert.json");
+        let point = RevertPoint::new(layout());
+        save(&path, &point).unwrap();
+        assert_eq!(load(&path).unwrap(), Some(point));
+    }
+
+    #[test]
+    fn no_file_is_no_revert_point() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(&dir.path().join("revert.json")).unwrap(), None);
+    }
+
+    #[test]
+    fn two_revert_points_have_different_tokens() {
+        assert_ne!(
+            RevertPoint::new(layout()).token,
+            RevertPoint::new(layout()).token
+        );
+    }
+
+    #[test]
+    fn only_the_change_it_guards_removes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revert.json");
+        let point = RevertPoint::new(layout());
+        save(&path, &point).unwrap();
+        assert!(!remove_if(&path, "someone-else").unwrap());
+        assert!(path.exists());
+        assert!(remove_if(&path, &point.token).unwrap());
+        assert!(!path.exists());
+        assert!(!remove_if(&path, &point.token).unwrap(), "already gone");
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_revert_point_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revert.json");
+        let point = RevertPoint::new(layout());
+        save(&path, &point).unwrap();
+        let without_token = fs::read_to_string(&path)
+            .unwrap()
+            .replace("revert_token", "something_else");
+        fs::write(&path, without_token).unwrap();
+        assert!(matches!(load(&path), Err(RevertError::Invalid { .. })));
+        fs::write(&path, "not json").unwrap();
+        assert!(matches!(load(&path), Err(RevertError::Invalid { .. })));
+    }
+}
