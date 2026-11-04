@@ -44,10 +44,15 @@ milestone:
   `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
   headless output that can only check Hyprland accepts the rule (see the
   Hyprland facts below), not that VRR changed.
-- **`wlr-output-management` apply and test** (shared with M4's `Wlr`): waits for
-  the crcbl release under "Waiting on crcbl". Hyprland needs it only for a real
-  change stream; applying already works through `eval`. Whether an `eval` mirror
-  survives a protocol apply is unchecked.
+- **`wlr-output-management` apply and test** (shared with M4's `Wlr`): no longer
+  blocked. `crcbl-wayland` 0.17.2, crcbl-shell's libwayland-client binding with
+  a raw connection API so `crcbl-wl-scanner` output works outside crcbl, is on
+  crates.io (seen 2026-11-04); pin it with `cargo add`.
+  `crates/crcbl-wayland-probe/src/outputs.rs` in crcbl is a worked example.
+  `zwlr_output_configuration_v1` apply and test have not been exercised from
+  outside crcbl. Hyprland needs it only for a real change stream; applying
+  already works through `eval`. Whether an `eval` mirror survives a protocol
+  apply is unchecked.
 - **`Backend::persist`**: not written. Agree with the Windows session where the
   `monitors.lua` save is composed (their entry "Saving `monitors.lua`").
 - **Testing on the owner's desktop**: only after the headless suite passes, and
@@ -95,17 +100,6 @@ milestone:
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
   not written; needs a vendor-name table with a source, and waits for M6 to see
   what Mutter reports.
-
-## Waiting on crcbl
-
-- **A crcbl release carrying `crcbl-wayland`**: the public crate exporting
-  crcbl-shell's libwayland-client binding and a raw connection API, so
-  `crcbl-wl-scanner` output works outside crcbl. On crcbl main since 2026-11-04
-  (with `crates/crcbl-wayland-probe/src/outputs.rs` as a worked example);
-  dsplr's wlr apply path waits for the release, or takes a git dependency with a
-  `deny.toml` `allow-git` entry if the release lags.
-  `zwlr_output_configuration_v1` apply and test were not exercised from outside
-  crcbl before dsplr's M2.
 
 ## Verified while planning
 
