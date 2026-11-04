@@ -60,6 +60,14 @@ milestone:
 
 ## Open work in the Windows-owned crates
 
+- **`dsplr set <output> [--mode …] [--pos …] …`** (`docs/plan/07-cli.md`): not
+  written. It edits one output of a fresh snapshot and hands the result to the
+  same flow as `dsplr apply` (`apply::run` in `apps/dsplr/src/apply.rs`), so
+  only argument parsing (`WxH@R`, `X,Y`, transform and vrr names) and finding
+  the output by connector or description are new.
+- **`dsplr restore --revert` by hand applies without a confirm prompt**, on
+  purpose: it is the way back from a broken screen, so asking first would defeat
+  it. The revert point is removed once it has been applied.
 - **Saving `monitors.lua`**: the pieces exist (`dsplr_persist::hyprland`'s
   writer and reader, `dsplr_persist::managed`'s header, hand-edit check and
   atomic write) but nothing composes them into a save yet: read the existing
