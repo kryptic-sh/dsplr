@@ -57,12 +57,6 @@ fn hyprctl(request: &str) -> String {
     reply
 }
 
-/// Applies `lua` through `eval` and checks Hyprland accepted it.
-fn eval(lua: &str) {
-    let reply = hyprctl(&format!("/eval {lua}"));
-    assert_eq!(reply.trim(), "ok", "Hyprland refused {lua}: {reply}");
-}
-
 fn entry<'a>(layout: &'a Layout, connector: &str) -> &'a OutputEntry {
     layout
         .entries
@@ -110,6 +104,10 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
         assert_eq!(reply.trim(), "ok", "creating {name}: {reply}");
     }
     let hyprland = Hyprland::from_env().expect("the harness's Hyprland");
+    let eval = |lua: String| {
+        let hyprland = hyprland.clone();
+        async move { hyprland.eval(&lua).await.expect("Hyprland accepted it") }
+    };
 
     let detection = dsplr_backend::detect().await;
     assert_eq!(
@@ -120,7 +118,7 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
     );
 
     // Positions, a fractional scale and a rotation.
-    eval(&layout_lua(", scale = 1.5, transform = 1", ""));
+    eval(layout_lua(", scale = 1.5, transform = 1", "")).await;
     let layout = snapshot_until(&hyprland, "scale and transform", |layout| {
         entry(layout, "DSPLR-1").state.transform == Transform::Rotate90
     })
@@ -139,7 +137,7 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
     assert_eq!((two.state.x, two.state.y), (3200, 0));
 
     // Disabled outputs stay in the snapshot, disabled, without a mode.
-    eval(&layout_lua("", ", disabled = true"));
+    eval(layout_lua("", ", disabled = true")).await;
     let layout = snapshot_until(&hyprland, "DSPLR-2 disabled", |layout| {
         !entry(layout, "DSPLR-2").state.enabled
     })
@@ -147,7 +145,7 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
     assert_eq!(entry(&layout, "DSPLR-2").state.mode, None);
 
     // And come back.
-    eval(&layout_lua("", ""));
+    eval(layout_lua("", "")).await;
     snapshot_until(&hyprland, "DSPLR-2 enabled again", |layout| {
         entry(layout, "DSPLR-2").state.enabled
     })
@@ -155,7 +153,7 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
 
     // A mirror is reported by the source monitor's id, and resolves to the
     // source's entry.
-    eval(&layout_lua(r#", mirror = "WAYLAND-1""#, ""));
+    eval(layout_lua(r#", mirror = "WAYLAND-1""#, "")).await;
     let layout = snapshot_until(&hyprland, "DSPLR-1 mirroring", |layout| {
         entry(layout, "DSPLR-1").state.mirror_of.is_some()
     })
@@ -165,8 +163,16 @@ async fn a_headless_hyprland_s_monitors_are_read_back_as_set() {
         Some(&entry(&layout, "WAYLAND-1").id)
     );
 
+    // A chunk Hyprland rejects is an error, not a silent no-op.
+    assert!(
+        hyprland
+            .eval(r#"hl.monitor({ output = "DSPLR-1", mode = "nonsense" })"#)
+            .await
+            .is_err()
+    );
+
     // `mirror = ""` ends it.
-    eval(&layout_lua("", ""));
+    eval(layout_lua("", "")).await;
     snapshot_until(&hyprland, "DSPLR-1 not mirroring", |layout| {
         entry(layout, "DSPLR-1").state.mirror_of.is_none()
     })

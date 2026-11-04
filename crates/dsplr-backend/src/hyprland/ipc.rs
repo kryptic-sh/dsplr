@@ -22,6 +22,9 @@ const MONITORS_REQUEST: &str = "j/monitors all";
 /// The request for Hyprland's version.
 const VERSION_REQUEST: &str = "j/version";
 
+/// What Hyprland answers a request it carried out with.
+const OK_REPLY: &str = "ok";
+
 /// What went wrong talking to Hyprland.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,6 +47,8 @@ pub enum Error {
     },
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
+    #[error("Hyprland refused `{request}`: {reply}")]
+    Refused { request: String, reply: String },
 }
 
 /// A connection point to one Hyprland instance.
@@ -79,6 +84,25 @@ impl Hyprland {
                 request: VERSION_REQUEST.to_owned(),
                 source,
             })
+    }
+
+    /// Runs `lua` through Hyprland's `eval`, as `hyprctl eval` does. Under a
+    /// Lua config this is how settings change at runtime (`hyprctl keyword` is
+    /// refused there). The changes last until the next config reload.
+    ///
+    /// `Ok` means Hyprland accepted the chunk; a monitor rule it accepted
+    /// takes effect on Hyprland's next frame, not before this returns.
+    pub async fn eval(&self, lua: &str) -> Result<(), Error> {
+        let request = format!("/eval {lua}");
+        let reply = self.request(&request).await?;
+        if reply.trim() == OK_REPLY {
+            Ok(())
+        } else {
+            Err(Error::Refused {
+                request,
+                reply: reply.trim().to_owned(),
+            })
+        }
     }
 
     /// The current state as a [`Layout`].
@@ -199,6 +223,29 @@ mod tests {
             "j/version" => r#"{"branch": "v0.56.2", "version": "0.56.2", "tag": "v0.56.2"}"#,
             _ => "unknown request",
         }
+    }
+
+    #[tokio::test]
+    async fn eval_sends_the_chunk_and_checks_the_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut requests = fake_hyprland(dir.path(), |request| {
+            if request.contains("nonsense") {
+                "error: hl.monitor: error applying field 'mode'"
+            } else {
+                "ok"
+            }
+        });
+        let hyprland = at(dir.path());
+        let good = r#"hl.monitor({ output = "DP-1", disabled = true })"#;
+        hyprland.eval(good).await.expect("accepted");
+        assert_eq!(
+            requests.recv().await.as_deref(),
+            Some(format!("/eval {good}").as_str())
+        );
+        assert!(matches!(
+            hyprland.eval(r#"hl.monitor({ output = "DP-1", mode = "nonsense" })"#).await,
+            Err(Error::Refused { reply, .. }) if reply == "error: hl.monitor: error applying field 'mode'"
+        ));
     }
 
     #[tokio::test]
