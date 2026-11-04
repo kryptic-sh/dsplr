@@ -1,0 +1,215 @@
+//! Talking to a running Hyprland over its request socket.
+
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+use super::Monitor;
+
+/// How long a request may take before dsplr gives up on it. `hyprctl` uses
+/// the same receive timeout.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The request for every monitor, disabled ones included.
+const MONITORS_REQUEST: &str = "j/monitors all";
+
+/// What went wrong talking to Hyprland.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Hyprland is not running here: HYPRLAND_INSTANCE_SIGNATURE is not set")]
+    NotRunning,
+    #[error("XDG_RUNTIME_DIR is not set, so Hyprland's sockets cannot be found")]
+    NoRuntimeDir,
+    #[error("{what} {path}: {source}")]
+    Io {
+        what: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    #[error("Hyprland did not answer `{request}` within {REQUEST_TIMEOUT:?}")]
+    Timeout { request: String },
+    #[error("Hyprland's reply to `{request}` is not the JSON dsplr expects: {source}")]
+    Json {
+        request: String,
+        source: serde_json::Error,
+    },
+}
+
+/// A connection point to one Hyprland instance.
+#[derive(Clone, Debug)]
+pub struct Hyprland {
+    socket_dir: PathBuf,
+}
+
+impl Hyprland {
+    /// The Hyprland this process runs under, found from its environment.
+    pub fn from_env() -> Result<Self, Error> {
+        Self::from_vars(|name| std::env::var_os(name))
+    }
+
+    /// [`Hyprland::from_env`], reading the variables through `var`.
+    pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, Error> {
+        Ok(Self {
+            socket_dir: socket_dir(var)?,
+        })
+    }
+
+    /// Every monitor Hyprland knows, disabled ones included.
+    pub async fn monitors(&self) -> Result<Vec<Monitor>, Error> {
+        let reply = self.request(MONITORS_REQUEST).await?;
+        Monitor::parse_all(&reply).map_err(|source| Error::Json {
+            request: MONITORS_REQUEST.to_owned(),
+            source,
+        })
+    }
+
+    /// Sends one request and returns the whole reply. Hyprland takes one
+    /// request per connection and closes it after replying.
+    async fn request(&self, request: &str) -> Result<String, Error> {
+        let path = self.socket_dir.join(".socket.sock");
+        let exchange = async {
+            let mut stream = UnixStream::connect(&path).await?;
+            stream.write_all(request.as_bytes()).await?;
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).await?;
+            Ok::<_, io::Error>(reply)
+        };
+        match tokio::time::timeout(REQUEST_TIMEOUT, exchange).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(source)) => Err(Error::Io {
+                what: "requesting over",
+                path,
+                source,
+            }),
+            Err(_) => Err(Error::Timeout {
+                request: request.to_owned(),
+            }),
+        }
+    }
+}
+
+/// Where Hyprland's sockets are: `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`.
+fn socket_dir(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
+    let signature = var("HYPRLAND_INSTANCE_SIGNATURE").ok_or(Error::NotRunning)?;
+    let runtime = var("XDG_RUNTIME_DIR").ok_or(Error::NoRuntimeDir)?;
+    Ok(Path::new(&runtime).join("hypr").join(signature))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
+
+    use super::{Error, Hyprland, socket_dir};
+
+    fn vars<'a>(pairs: &'a [(&'a str, &'a Path)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.as_os_str().to_owned())
+        }
+    }
+
+    #[test]
+    fn the_environment_names_the_sockets() {
+        let runtime = Path::new("/run/user/1000");
+        let signature = Path::new("abc_123");
+        let env = [
+            ("HYPRLAND_INSTANCE_SIGNATURE", signature),
+            ("XDG_RUNTIME_DIR", runtime),
+        ];
+        assert_eq!(
+            socket_dir(vars(&env)).expect("found"),
+            Path::new("/run/user/1000/hypr/abc_123")
+        );
+        assert!(matches!(
+            socket_dir(vars(&env[1..])),
+            Err(Error::NotRunning)
+        ));
+        assert!(matches!(
+            socket_dir(vars(&env[..1])),
+            Err(Error::NoRuntimeDir)
+        ));
+    }
+
+    /// A stand-in Hyprland on `.socket.sock` in `dir`: answers each request
+    /// with `reply`, and reports what it was asked.
+    fn fake_hyprland(
+        dir: &Path,
+        reply: &'static str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<String> {
+        let listener = UnixListener::bind(dir.join(".socket.sock")).expect("bind");
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.expect("accept");
+                let mut buf = vec![0; 4096];
+                let n = stream.read(&mut buf).await.expect("read");
+                stream.write_all(reply.as_bytes()).await.expect("write");
+                tx.send(String::from_utf8_lossy(&buf[..n]).into_owned())
+                    .expect("send");
+            }
+        });
+        rx
+    }
+
+    fn at(dir: &Path) -> Hyprland {
+        Hyprland {
+            socket_dir: dir.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn monitors_asks_for_every_monitor_and_parses_the_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reply = include_str!("../../tests/fixtures/hyprland/monitors-all.json");
+        let mut requests = fake_hyprland(dir.path(), reply);
+
+        let monitors = at(dir.path()).monitors().await.expect("monitors");
+        assert_eq!(requests.recv().await.as_deref(), Some("j/monitors all"));
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(monitors[1].name, "HDMI-A-1");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_is_not_monitors_is_an_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _requests = fake_hyprland(dir.path(), "unknown request");
+        assert!(matches!(
+            at(dir.path()).monitors().await,
+            Err(Error::Json { request, .. }) if request == "j/monitors all"
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_socket_is_an_io_error_naming_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(matches!(
+            at(dir.path()).monitors().await,
+            Err(Error::Io { path, .. }) if path == dir.path().join(".socket.sock")
+        ));
+    }
+
+    /// Read-only, so it runs against the session's own Hyprland.
+    #[tokio::test]
+    #[ignore = "needs a running Hyprland in this session"]
+    async fn a_real_hyprland_lists_its_monitors() {
+        let monitors = Hyprland::from_env()
+            .expect("HYPRLAND_INSTANCE_SIGNATURE and XDG_RUNTIME_DIR are set")
+            .monitors()
+            .await
+            .expect("Hyprland answered");
+        assert!(!monitors.is_empty(), "Hyprland always has an output");
+        for monitor in &monitors {
+            monitor.modes().expect("every mode Hyprland lists parses");
+        }
+    }
+}
