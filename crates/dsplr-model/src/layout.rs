@@ -100,7 +100,11 @@ pub struct OutputState {
     pub y: i32,
     pub scale: f64,
     pub transform: Transform,
-    pub adaptive_sync: AdaptiveSync,
+    /// `None` when it is not known or not set: a backend that reports only
+    /// whether adaptive sync is active right now cannot say which rule is in
+    /// force, and a file may leave it to the desktop. Writers leave a `None`
+    /// out rather than guess.
+    pub adaptive_sync: Option<AdaptiveSync>,
     /// The output this one mirrors, if any.
     pub mirror_of: Option<OutputId>,
     pub primary: bool,
@@ -123,7 +127,7 @@ impl Default for OutputState {
             y: 0,
             scale: 1.0,
             transform: Transform::Normal,
-            adaptive_sync: AdaptiveSync::Off,
+            adaptive_sync: None,
             mirror_of: None,
             primary: false,
             colour_preset: None,
@@ -186,7 +190,7 @@ pub enum RgbRange {
 
 #[cfg(test)]
 mod tests {
-    use super::{AdaptiveSync, OutputState};
+    use super::OutputState;
     use crate::{Mode, Transform};
 
     fn state(transform: Transform, scale: f64) -> OutputState {
@@ -246,7 +250,7 @@ mod tests {
         assert_eq!((state.x, state.y), (0, 0));
         assert!((state.scale - 1.0).abs() < f64::EPSILON);
         assert_eq!(state.transform, Transform::Normal);
-        assert_eq!(state.adaptive_sync, AdaptiveSync::Off);
+        assert_eq!(state.adaptive_sync, None);
         assert!(state.mode.is_none() && state.mirror_of.is_none());
     }
 }

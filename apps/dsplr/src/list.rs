@@ -32,7 +32,10 @@ fn describe_entry(entry: &OutputEntry) -> String {
             format!("position {},{}", state.x, state.y),
             format!("scale {}", state.scale),
             format!("transform {}", transform_name(state.transform)),
-            format!("adaptive sync {}", adaptive_sync_name(state.adaptive_sync)),
+            format!(
+                "adaptive sync {}",
+                state.adaptive_sync.map_or("unknown", adaptive_sync_name)
+            ),
         ];
         if let Some(source) = &state.mirror_of {
             settings.push(format!("mirrors {source}"));
@@ -149,7 +152,7 @@ mod tests {
                         x: 1920,
                         scale: 1.25,
                         transform: Transform::Flipped90,
-                        adaptive_sync: AdaptiveSync::Automatic,
+                        adaptive_sync: Some(AdaptiveSync::Automatic),
                         mirror_of: Some(OutputId::Connector("eDP-1".into())),
                         primary: true,
                         ..OutputState::default()
@@ -178,7 +181,7 @@ mod tests {
         };
         assert_eq!(
             describe(&layout),
-            "AOC Q27G2G4 1A2B3C\n  no mode, position 0,0, scale 1, transform normal, adaptive sync off\n"
+            "AOC Q27G2G4 1A2B3C\n  no mode, position 0,0, scale 1, transform normal, adaptive sync unknown\n"
         );
     }
 }

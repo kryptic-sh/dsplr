@@ -43,11 +43,6 @@ milestone:
 - **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written.
   The Linux session offered to run a generated file through headless Hyprland
   0.57.1 to check it.
-- **Turning adaptive sync off cannot be written** to `monitors.lua`: the writer
-  leaves `vrr` out when the layout says off, so it never clobbers a
-  fullscreen-only rule Hyprland reports as off. A user who needs an explicit
-  `vrr = 0` against a global `misc:vrr` cannot get it from dsplr yet; fixing it
-  needs the model to tell "off" from "not set".
 - **The reader refuses Hyprland forms a layout cannot hold**: `preferred` and
   `highres` modes, a mode without a refresh, `auto` positions and scales, and
   the SDR, luminance, `icc` and `reserved` keys. A hand-written file using them

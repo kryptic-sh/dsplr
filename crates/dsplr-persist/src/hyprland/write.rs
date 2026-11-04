@@ -30,10 +30,9 @@ pub enum WriteError {
 /// - `disabled = false` on every enabled output, and `mirror = ""` when it
 ///   mirrors nothing, so a re-enabled or unmirrored output does not keep the
 ///   old setting.
-/// - `vrr` only when it is on or automatic: a monitor whose rule is
-///   fullscreen-only reads back from Hyprland as off, and writing `vrr = 0`
-///   would clobber that rule. Turning adaptive sync off against a global
-///   `misc:vrr` therefore cannot be written yet.
+/// - `vrr` only when the layout knows it: a rule a snapshot could not see
+///   (Hyprland reports whether adaptive sync is active, not its rule) is
+///   left as it is rather than overwritten with a guess.
 /// - `bitdepth` only when it is 10, the one value Hyprland acts on.
 /// - `cm` only when the layout has a colour preset.
 ///
@@ -96,10 +95,13 @@ pub fn monitor_call(
         format!("transform = {}", state.transform.to_wayland()),
         format!("mirror = {}", lua_string(&mirror)),
     ]);
-    match state.adaptive_sync {
-        AdaptiveSync::Off => {}
-        AdaptiveSync::On => fields.push("vrr = 1".to_owned()),
-        AdaptiveSync::Automatic => fields.push("vrr = 2".to_owned()),
+    if let Some(adaptive_sync) = state.adaptive_sync {
+        let vrr = match adaptive_sync {
+            AdaptiveSync::Off => 0,
+            AdaptiveSync::On => 1,
+            AdaptiveSync::Automatic => 2,
+        };
+        fields.push(format!("vrr = {vrr}"));
     }
     if state.bit_depth == Some(10) {
         fields.push("bitdepth = 10".to_owned());
@@ -260,7 +262,7 @@ hl.monitor({
         state.y = 240;
         state.scale = 1.25;
         state.transform = Transform::Flipped90;
-        state.adaptive_sync = AdaptiveSync::Automatic;
+        state.adaptive_sync = Some(AdaptiveSync::Automatic);
         state.mirror_of = Some(OutputId::Connector("eDP-1".into()));
         state.bit_depth = Some(10);
         state.colour_preset = Some("hdr".into());
@@ -289,15 +291,20 @@ hl.monitor({
     }
 
     #[test]
-    fn adaptive_sync_off_and_eight_bits_are_left_to_hyprland() {
+    fn unknown_adaptive_sync_and_eight_bits_are_left_to_hyprland() {
         let mut layout = owners_layout();
         layout.entries[1].state.bit_depth = Some(8);
         let call = monitor_call(&layout, &layout.entries[1], MonitorNaming::Connector).unwrap();
         assert!(!call.contains("vrr"), "{call}");
         assert!(!call.contains("bitdepth"), "{call}");
-        layout.entries[1].state.adaptive_sync = AdaptiveSync::On;
-        let call = monitor_call(&layout, &layout.entries[1], MonitorNaming::Connector).unwrap();
-        assert!(call.contains("    vrr = 1,\n"), "{call}");
+        for (setting, vrr) in [
+            (AdaptiveSync::Off, "    vrr = 0,\n"),
+            (AdaptiveSync::On, "    vrr = 1,\n"),
+        ] {
+            layout.entries[1].state.adaptive_sync = Some(setting);
+            let call = monitor_call(&layout, &layout.entries[1], MonitorNaming::Connector).unwrap();
+            assert!(call.contains(vrr), "{call}");
+        }
     }
 
     #[test]

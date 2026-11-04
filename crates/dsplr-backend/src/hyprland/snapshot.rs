@@ -1,8 +1,6 @@
 //! Hyprland's monitors as dsplr's [`Layout`].
 
-use dsplr_model::{
-    AdaptiveSync, Layout, Output, OutputEntry, OutputId, OutputState, Transform, hz_to_mhz,
-};
+use dsplr_model::{Layout, Output, OutputEntry, OutputId, OutputState, Transform, hz_to_mhz};
 
 use super::{ModeError, Monitor};
 
@@ -26,9 +24,9 @@ pub enum SnapshotError {
 /// per monitor, disabled ones included.
 ///
 /// A disabled monitor has no mode and sits at the origin, since Hyprland
-/// reports no geometry for it. `adaptive_sync` is whether VRR is active
-/// right now, which is all this reply says; Hyprland's configured `vrr`
-/// rule is not in it.
+/// reports no geometry for it. `adaptive_sync` is not known: this reply
+/// says only whether VRR is active right now, not Hyprland's configured
+/// `vrr` rule.
 pub fn layout(monitors: &[Monitor]) -> Result<Layout, SnapshotError> {
     let entries = monitors
         .iter()
@@ -104,11 +102,10 @@ fn entry(monitor: &Monitor, all: &[Monitor]) -> Result<OutputEntry, SnapshotErro
             y: monitor.y,
             scale: monitor.scale,
             transform,
-            adaptive_sync: if monitor.vrr {
-                AdaptiveSync::On
-            } else {
-                AdaptiveSync::Off
-            },
+            // `vrr` in this reply is whether adaptive sync is active right
+            // now, not the configured rule: a fullscreen-only rule reads as
+            // off outside fullscreen. So the rule is not known.
+            adaptive_sync: None,
             mirror_of,
             ..Default::default()
         }
@@ -130,7 +127,7 @@ fn entry(monitor: &Monitor, all: &[Monitor]) -> Result<OutputEntry, SnapshotErro
 
 #[cfg(test)]
 mod tests {
-    use dsplr_model::{AdaptiveSync, Mode, OutputId, Transform};
+    use dsplr_model::{Mode, OutputId, Transform};
 
     use super::{SnapshotError, layout};
     use crate::hyprland::Monitor;
@@ -170,7 +167,7 @@ mod tests {
         assert_eq!((state.x, state.y), (0, 0));
         assert!((state.scale - 1.0).abs() < f64::EPSILON);
         assert_eq!(state.transform, Transform::Normal);
-        assert_eq!(state.adaptive_sync, AdaptiveSync::Off);
+        assert_eq!(state.adaptive_sync, None);
         assert_eq!(state.mirror_of, None);
         let output = external.output.as_ref().expect("live output");
         assert_eq!(output.connector, "HDMI-A-1");
@@ -196,7 +193,10 @@ mod tests {
         assert_eq!((state.x, state.y), (1920, 120));
         assert!((state.scale - 1.25).abs() < f64::EPSILON);
         assert_eq!(state.transform, Transform::Rotate90);
-        assert_eq!(state.adaptive_sync, AdaptiveSync::On);
+        assert_eq!(
+            state.adaptive_sync, None,
+            "active VRR is not the configured rule"
+        );
         assert_eq!(state.mode, Some(Mode::new(3840, 2160, 59_940)));
         assert_eq!(
             layout.entries[0].state.mirror_of,

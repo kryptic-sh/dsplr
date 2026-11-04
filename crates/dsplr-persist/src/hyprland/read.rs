@@ -52,8 +52,8 @@ struct Rule {
 
 /// Reads a `monitors.lua`.
 ///
-/// Adaptive sync reads back as off when the file leaves `vrr` out or sets it
-/// to -1 (no override), and as automatic for both 2 (fullscreen only) and 3
+/// Adaptive sync reads back as not set when the file leaves `vrr` out or
+/// sets it to -1 (no override), and as automatic for both 2 (fullscreen only) and 3
 /// (fullscreen video and games), which a layout does not tell apart.
 ///
 /// # Errors
@@ -156,9 +156,10 @@ fn entry(name: &str, line: usize, rule: Rule) -> Result<OutputEntry, ReadError> 
     }
     if let Some((value, line)) = rule.vrr {
         state.adaptive_sync = match integer(&value) {
-            Some(-1 | 0) => AdaptiveSync::Off,
-            Some(1) => AdaptiveSync::On,
-            Some(2 | 3) => AdaptiveSync::Automatic,
+            Some(-1) => None,
+            Some(0) => Some(AdaptiveSync::Off),
+            Some(1) => Some(AdaptiveSync::On),
+            Some(2 | 3) => Some(AdaptiveSync::Automatic),
             _ => return Err(invalid("vrr", &value, line)),
         };
     }
@@ -352,7 +353,7 @@ mod tests {
                             y: 180,
                             scale: 1.25,
                             transform: Transform::Rotate270,
-                            adaptive_sync: AdaptiveSync::On,
+                            adaptive_sync: Some(AdaptiveSync::On),
                             bit_depth: Some(10),
                             colour_preset: Some("srgb".into()),
                             ..OutputState::default()
@@ -363,7 +364,7 @@ mod tests {
                         output: None,
                         state: OutputState {
                             mode: Some(Mode::new(2560, 1440, 143_998)),
-                            adaptive_sync: AdaptiveSync::Automatic,
+                            adaptive_sync: Some(AdaptiveSync::Automatic),
                             mirror_of: Some(OutputId::Connector("eDP-1".into())),
                             ..OutputState::default()
                         },
@@ -400,7 +401,10 @@ hl.monitor({ output = "", mode = "highres" })
         .unwrap();
         let state = &file.layout.entries[0].state;
         assert_eq!(file.layout.entries.len(), 1);
-        assert_eq!((state.x, state.adaptive_sync), (1920, AdaptiveSync::On));
+        assert_eq!(
+            (state.x, state.adaptive_sync),
+            (1920, Some(AdaptiveSync::On))
+        );
         assert_eq!(
             file.catch_all.as_deref(),
             Some(r#"hl.monitor({ output = "", mode = "highres" })"#)
@@ -416,7 +420,7 @@ hl.monitor({ output = "", mode = "highres" })
             let file = read_monitors_lua(&text).unwrap();
             assert_eq!(
                 file.layout.entries[0].state.adaptive_sync,
-                AdaptiveSync::Automatic
+                Some(AdaptiveSync::Automatic)
             );
         }
     }
