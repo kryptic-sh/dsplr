@@ -12,11 +12,13 @@ Build order is `docs/plan/11-milestones.md`.
 
 M2 is under way. `Backend::apply` sets a whole layout on Hyprland in one `eval`
 (`Hyprland::apply`, built on `dsplr_persist::hyprland::monitor_calls`), and the
-headless e2e test applies edited snapshots and reads them back. Not written yet:
-the revert point and watchdog, the confirm prompt, the re-read comparison
-(`docs/plan/02-architecture.md`, steps 3 to 6) and a CLI command that applies.
-The Linux session proposed that the Windows session take those (CLI, persist,
-model) and that it keeps the backend and their e2e coverage; not yet agreed.
+headless e2e test applies edited snapshots and reads them back. The model can
+list how a re-read layout differs from the one asked for
+(`Layout::differences`), and `dsplr_persist::revert` keeps the revert point in
+`$XDG_STATE_HOME/dsplr/revert.json`. Not written yet: the watchdog, the confirm
+prompt and a CLI command that applies (`docs/plan/02-architecture.md`, steps 3
+to 6); the Windows session owns those, the Linux session the backend and their
+e2e coverage.
 
 Two sessions work on it, each owning crates: the Linux session owns
 `dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
@@ -145,9 +147,9 @@ and the `monitors.lua` writer:
 - `mirrorOf` in `hyprctl -j monitors` is the source's numeric id.
 - `vrr` in `hyprctl -j monitors` is whether adaptive sync is active now, not the
   rule: a fullscreen-only rule reads as false outside fullscreen, and as true
-  inside it. So the snapshot cannot tell off, on and automatic apart, and the
-  writer cannot write off (see the Windows-crate entry above). Until the model
-  can say "not known", Hyprland's `Capabilities` leave `adaptive_sync` empty.
+  inside it. So the snapshot reports `adaptive_sync` as `None` (not known), and
+  the writer writes `vrr` only when a layout sets it. Hyprland's `Capabilities`
+  still leave `adaptive_sync` empty.
 - `dsplr` applies with rules named by connector, not `desc:`: since `desc:` is a
   prefix match, a description ending in serial `SER1` would also catch a monitor
   with serial `SER12`. Inferred from the prefix rule above, not seen.
