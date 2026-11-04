@@ -73,15 +73,17 @@ fn output_name(id: &OutputId, output: Option<&Output>) -> String {
     }
 }
 
-/// `2560x1440 @ 143.998 Hz`: refresh in hertz with every millihertz shown.
+/// `2560x1440 @ 143.998 Hz`: refresh in hertz, exact to the millihertz, with
+/// trailing zeros dropped (`60 Hz`, `59.94 Hz`).
 fn mode_text(mode: &Mode) -> String {
-    format!(
-        "{}x{} @ {}.{:03} Hz",
-        mode.width,
-        mode.height,
-        mode.refresh_mhz / 1000,
-        mode.refresh_mhz % 1000
-    )
+    let (hz, mhz) = (mode.refresh_mhz / 1000, mode.refresh_mhz % 1000);
+    let refresh = if mhz == 0 {
+        hz.to_string()
+    } else {
+        let fraction = format!("{mhz:03}");
+        format!("{hz}.{}", fraction.trim_end_matches('0'))
+    };
+    format!("{}x{} @ {refresh} Hz", mode.width, mode.height)
 }
 
 const fn transform_name(transform: Transform) -> &'static str {
@@ -111,7 +113,17 @@ mod tests {
         AdaptiveSync, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
     };
 
-    use super::describe;
+    use super::{describe, mode_text};
+
+    #[test]
+    fn refresh_drops_trailing_zeros_but_keeps_every_millihertz() {
+        let text = |mhz| mode_text(&Mode::new(1920, 1080, mhz));
+        assert_eq!(text(60_000), "1920x1080 @ 60 Hz");
+        assert_eq!(text(59_940), "1920x1080 @ 59.94 Hz");
+        assert_eq!(text(50_500), "1920x1080 @ 50.5 Hz");
+        assert_eq!(text(143_998), "1920x1080 @ 143.998 Hz");
+        assert_eq!(text(60_001), "1920x1080 @ 60.001 Hz");
+    }
 
     #[test]
     fn an_empty_layout_says_so() {
@@ -165,9 +177,9 @@ mod tests {
             describe(&layout),
             "eDP-1\n  disabled\n\
              HDMI-A-1: AOC Q27G2G4 1A2B3C\n  \
-             2560x1440 @ 120.000 Hz, position 1920,0, scale 1.25, transform flipped-90, \
+             2560x1440 @ 120 Hz, position 1920,0, scale 1.25, transform flipped-90, \
              adaptive sync automatic, mirrors eDP-1, primary\n  \
-             modes: 2560x1440 @ 143.998 Hz (preferred), 2560x1440 @ 120.000 Hz\n"
+             modes: 2560x1440 @ 143.998 Hz (preferred), 2560x1440 @ 120 Hz\n"
         );
     }
 
