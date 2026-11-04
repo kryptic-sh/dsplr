@@ -5,11 +5,11 @@ verified. Delete an entry when it ships; `git log` keeps the history.
 
 ## Where the project stands (2026-11-04)
 
-M0 (scaffold) is done: the workspace with every crate as an empty, documented
-stub, CI on ubuntu, and repo meta. The binary only answers `--version` and
-`--help`, and otherwise exits saying nothing is implemented (on non-Linux
-targets, that dsplr is Linux-only). Build order is `docs/plan/11-milestones.md`;
-M1 is next.
+M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
+the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
+field with `hyprctl -j monitors all` and matched. Detection knows only Hyprland,
+and every backend is read-only: `Capabilities` is empty. Build order is
+`docs/plan/11-milestones.md`; M2 is next.
 
 Two sessions work on it, each owning crates: the Linux session owns
 `dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
@@ -27,9 +27,14 @@ milestone:
 
 ## Waiting on crcbl
 
-- **`crcbl-wayland`**: a public crate exporting crcbl-shell's libwayland-client
-  binding and a raw connection API, so `crcbl-wl-scanner` output works outside
-  crcbl. Agreed with the crcbl session on 2026-11-04; blocks dsplr's M2.
+- **A crcbl release carrying `crcbl-wayland`**: the public crate exporting
+  crcbl-shell's libwayland-client binding and a raw connection API, so
+  `crcbl-wl-scanner` output works outside crcbl. On crcbl main since 2026-11-04
+  (with `crates/crcbl-wayland-probe/src/outputs.rs` as a worked example);
+  dsplr's wlr apply path waits for the release, or takes a git dependency with a
+  `deny.toml` `allow-git` entry if the release lags.
+  `zwlr_output_configuration_v1` apply and test were not exercised from outside
+  crcbl before dsplr's M2.
 
 ## Verified while planning
 
@@ -80,6 +85,21 @@ accepting `ShowMonitorLabels` from another client; the Xorg dummy driver giving
 several RandR outputs; whether `hyprctl eval` of `hl.monitor` applies
 immediately and survives a protocol apply; KDE's confirm timeout; the RandR 1.5
 details. Each is checked in its backend's milestone.
+
+## Behaviour that surprised us but is not a bug
+
+- **Hyprland lists some modes twice.** Its `j/monitors all` reply on the owner's
+  AOC Q27G4 has `1920x1080@60.00Hz`, `720x576@50.00Hz`,
+  `720x480@60.00Hz`/`59.94Hz` and `640x480@59.94Hz` each twice, likely
+  interlaced and progressive variants, and says nothing to tell them apart.
+  dsplr shows both rather than drop a real mode. It matters for M2's mode
+  matching: applying through `wlr-output-management` gives each its own mode
+  object, so the two must be told apart there (by the protocol's own mode
+  objects), not by size and refresh.
+- **CI runs on `main` cancel each other.** The concurrency group cancels a run
+  when a newer push lands, so with two sessions pushing, most commits get no
+  finished run of their own; the run on the newest commit covers them all. Hold
+  a push until the current run finishes when a green run per slice matters.
 
 ## Considered and declined
 
