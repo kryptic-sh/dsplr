@@ -19,9 +19,11 @@ use crate::{Exit, find_backend};
 const WATCHDOG_GRACE: Duration = Duration::from_secs(5);
 
 /// How long the watchdog for a change confirmed within `confirm_timeout`
-/// waits before it reverts.
+/// waits before it reverts. Counted from before the apply, it covers the
+/// apply's settle, the prompt, and the settle of dsplr's own revert after a
+/// no, so the two never go back at once.
 pub fn watchdog_delay(confirm_timeout: Duration) -> Duration {
-    SETTLE + confirm_timeout + WATCHDOG_GRACE
+    SETTLE + confirm_timeout + SETTLE + WATCHDOG_GRACE
 }
 
 /// Starts the watchdog for the change `token` names: a detached
@@ -117,8 +119,8 @@ mod tests {
     use super::{SETTLE, watchdog_delay};
 
     #[test]
-    fn the_watchdog_waits_past_the_settle_and_the_prompt() {
+    fn the_watchdog_waits_past_both_settles_and_the_prompt() {
         let timeout = Duration::from_secs(20);
-        assert!(watchdog_delay(timeout) > SETTLE + timeout);
+        assert!(watchdog_delay(timeout) > SETTLE + timeout + SETTLE);
     }
 }
