@@ -159,3 +159,78 @@ jobs:
       - run: cargo build --locked -p dsplr
       - run: cargo run --locked -p dsplr -- --version
       - run: cargo run --locked -p dsplr -- --help
+
+  # Each desktop's e2e test against the real compositor, run headless under
+  # its harness in tests/e2e/. A runner has no GPU render node, and Hyprland
+  # cannot allocate buffers without one (vgem's GBM fails too), so the test
+  # runs in a KVM VM with a virtio GPU, as Hyprland's own CI does. The VM is
+  # an Arch cloud image: Ubuntu's Hyprland predates the Lua config.
+  e2e:
+    name: e2e ${{ matrix.desktop }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - desktop: hyprland
+            packages: hyprland kwin mesa
+    env:
+      IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: stable
+          cache: false
+      - run: rustup update --no-self-update stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the test and fill the VM's share
+        run: |
+          test_bin=$(cargo test --locked -p dsplr-backend --test "${{ matrix.desktop }}_e2e" --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "${{ matrix.desktop }}_e2e") | .executable')
+          [ -x "$test_bin" ] || { echo "no test binary for ${{ matrix.desktop }}"; exit 1; }
+          share="$RUNNER_TEMP/e2e"
+          mkdir -p "$share/out"
+          chmod 777 "$share/out"
+          cp "$test_bin" "$share/test"
+          cp "tests/e2e/headless-${{ matrix.desktop }}.sh" "$share/harness.sh"
+          cp tests/e2e/vm/guest.sh "$share/"
+          echo "${{ matrix.packages }}" > "$share/packages"
+      - name: Enable KVM and install QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+      - name: Fetch the Arch cloud image
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$IMAGE"
+          curl -fsSLO "$IMAGE.SHA256"
+          sha256sum -c Arch-Linux-x86_64-cloudimg.qcow2.SHA256
+          qemu-img resize Arch-Linux-x86_64-cloudimg.qcow2 +6G
+          printf '%s\n' '#cloud-config' 'runcmd:' \
+            '  - [bash, -c, "mkdir -p /e2e && mount -t 9p -o trans=virtio,version=9p2000.L e2e /e2e && bash /e2e/guest.sh"]' \
+            > user-data
+          cloud-localds seed.img user-data
+      - name: Run the test in the VM
+        run: |
+          cd "$RUNNER_TEMP"
+          timeout 30m qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 4 -nographic \
+            -drive file=Arch-Linux-x86_64-cloudimg.qcow2,if=virtio \
+            -drive file=seed.img,if=virtio,format=raw \
+            -virtfs local,path="$RUNNER_TEMP/e2e",mount_tag=e2e,security_model=none,id=e2e \
+            -vga none -device virtio-gpu-pci -nic user,model=virtio-net-pci \
+            > vm-console.log 2>&1 || true
+          out="$RUNNER_TEMP/e2e/out"
+          cat "$out/test.log" || true
+          status=$(cat "$out/status" 2>/dev/null || echo "missing: the VM did not finish")
+          echo "status: $status"
+          if [ "$status" != 0 ]; then
+            echo "== /dev/dri"; cat "$out/dri.txt" || true
+            echo "== pacman (tail)"; tail -n 20 "$out/pacman.log" || true
+            echo "== VM console (tail)"; tail -n 60 vm-console.log
+            exit 1
+          fi

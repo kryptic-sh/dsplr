@@ -86,6 +86,33 @@ several RandR outputs; whether `hyprctl eval` of `hl.monitor` applies
 immediately and survives a protocol apply; KDE's confirm timeout; the RandR 1.5
 details. Each is checked in its backend's milestone.
 
+## Hyprland facts found while building M2 (2026-11-04)
+
+From a headless Hyprland 0.57.1 and the v0.56.2 source; they shape the eval path
+and the `monitors.lua` writer:
+
+- `hl.monitor` merges onto the existing rule with the same `output` name
+  (`hlMonitor`), so an omitted field keeps its old value: re-enabling needs
+  `disabled = false`, un-mirroring `mirror = ""`. Send every field.
+- The last matching rule wins (`CMonitorRuleManager::get` walks in reverse); the
+  `output = ""` rule is only a fallback. `desc:X` is a prefix match on "make
+  model serial", so an empty `desc:` matches every monitor.
+- `position = "auto"` outputs are re-placed when another monitor changes: send
+  the whole layout, with explicit positions, in one `eval`.
+- `eval` rules are runtime-only; `hyprctl reload` drops them.
+- State applied through `wlr-output-management` overrides the matching rule's
+  enabled, mode, position, transform, scale and vrr until restart
+  (`applyWlrOutputConfig`), so a later `eval` or reload does not change them.
+  The live path must pick one mechanism per field.
+- `mirrorOf` in `hyprctl -j monitors` is the source's numeric id.
+- Hyprland's wlr `test` is a stub that always succeeds.
+- A nested Hyprland tries libseat's logind backend before falling back; on a
+  desktop that asks to take control of the user's session.
+  `LIBSEAT_BACKEND=seatd` in the harness stops it.
+- On a GitHub runner, neither vgem (with or without Mesa's `kms_swrast`) nor a
+  nested Hyprland in a VM can allocate GBM buffers; Hyprland running on the VM's
+  own seat (seatd) with a virtio GPU can, which is what CI does.
+
 ## Behaviour that surprised us but is not a bug
 
 - **Hyprland lists some modes twice.** Its `j/monitors all` reply on the owner's

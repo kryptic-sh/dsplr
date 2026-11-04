@@ -25,7 +25,7 @@ Wayland suites do:
 | `Randr`  | Xorg with the `dummy` video driver, if its RandR support gives several outputs (checked at M7). Xvfb and Xephyr are not expected to exercise multi-output CRTC mode setting, and `xrandr --setmonitor` makes RandR monitors, not outputs |
 | `Gnome`  | `mutter --headless --virtual-monitor` under a private D-Bus session                                                                                                                                                                      |
 | `Kde`    | `kwin_wayland --virtual` (lyr's notes record running Hyprland nested in it)                                                                                                                                                              |
-| Hyprland | headless Hyprland if it runs in CI; otherwise manual only (decided at M2)                                                                                                                                                                |
+| Hyprland | `tests/e2e/headless-hyprland.sh`: nested in `kwin_wayland --virtual`, private runtime, `LIBSEAT_BACKEND=seatd`; in CI inside a KVM VM with a virtio GPU                                                                                  |
 
 Each test reads, applies a changed layout, reads back, reverts and reads back.
 `wlr-randr`, `kscreen-doctor`, `gnome-randr` and `xrandr` are used as
@@ -43,5 +43,4 @@ mode the monitor rejects, let a confirm time out, kill dsplr mid-confirm and run
 ## Not covered by automated tests (stated as a gap)
 
 - Real monitors' behaviour on a mode they advertise but cannot show.
-- Hyprland in CI, until M2 shows whether it runs headless there.
 - The crcbl rendering of the GUI beyond `DrawList` snapshots.
