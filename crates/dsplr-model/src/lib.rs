@@ -7,6 +7,7 @@
 
 mod arrange;
 mod capabilities;
+mod compare;
 mod id;
 mod json;
 mod layout;
@@ -17,6 +18,7 @@ mod validate;
 
 pub use arrange::PositionOutOfRange;
 pub use capabilities::Capabilities;
+pub use compare::{Difference, Setting};
 pub use id::OutputId;
 pub use json::{JSON_VERSION, JsonError};
 pub use layout::{AdaptiveSync, Layout, Output, OutputEntry, OutputState, RgbRange};

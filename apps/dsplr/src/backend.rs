@@ -64,10 +64,7 @@ fn capability_names(capabilities: &Capabilities) -> Vec<String> {
         .map(|(_, name)| name.to_owned())
         .collect();
     if !adaptive_sync.is_empty() {
-        let values: Vec<_> = adaptive_sync
-            .iter()
-            .map(|value| crate::list::adaptive_sync_name(*value))
-            .collect();
+        let values: Vec<_> = adaptive_sync.iter().map(ToString::to_string).collect();
         names.push(format!("adaptive sync ({})", values.join(", ")));
     }
     if names.is_empty() {

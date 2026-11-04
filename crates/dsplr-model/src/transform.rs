@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// The eight Wayland output transforms. XRandR's rotation and reflection
@@ -58,6 +60,23 @@ impl Transform {
             self,
             Self::Rotate90 | Self::Rotate270 | Self::Flipped90 | Self::Flipped270
         )
+    }
+}
+
+/// `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` or
+/// `flipped-270`: sway's names, read clockwise.
+impl fmt::Display for Transform {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Normal => "normal",
+            Self::Rotate90 => "90",
+            Self::Rotate180 => "180",
+            Self::Rotate270 => "270",
+            Self::Flipped => "flipped",
+            Self::Flipped90 => "flipped-90",
+            Self::Flipped180 => "flipped-180",
+            Self::Flipped270 => "flipped-270",
+        })
     }
 }
 

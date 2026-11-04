@@ -1,6 +1,6 @@
 //! `dsplr list`: the layout as text, one block per output.
 
-use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, Transform, mhz_to_hz_text};
+use dsplr_model::{Layout, Mode, OutputEntry, mhz_to_hz_text};
 
 /// The text `dsplr list` prints.
 pub fn describe(layout: &Layout) -> String {
@@ -31,10 +31,12 @@ fn describe_entry(entry: &OutputEntry) -> String {
                 .map_or_else(|| "no mode".to_owned(), mode_text),
             format!("position {},{}", state.x, state.y),
             format!("scale {}", state.scale),
-            format!("transform {}", transform_name(state.transform)),
+            format!("transform {}", state.transform),
             format!(
                 "adaptive sync {}",
-                state.adaptive_sync.map_or("unknown", adaptive_sync_name)
+                state
+                    .adaptive_sync
+                    .map_or_else(|| "unknown".to_owned(), |sync| sync.to_string())
             ),
         ];
         if let Some(source) = &state.mirror_of {
@@ -73,27 +75,6 @@ fn mode_text(mode: &Mode) -> String {
         mode.height,
         mhz_to_hz_text(mode.refresh_mhz)
     )
-}
-
-const fn transform_name(transform: Transform) -> &'static str {
-    match transform {
-        Transform::Normal => "normal",
-        Transform::Rotate90 => "90",
-        Transform::Rotate180 => "180",
-        Transform::Rotate270 => "270",
-        Transform::Flipped => "flipped",
-        Transform::Flipped90 => "flipped-90",
-        Transform::Flipped180 => "flipped-180",
-        Transform::Flipped270 => "flipped-270",
-    }
-}
-
-pub const fn adaptive_sync_name(value: AdaptiveSync) -> &'static str {
-    match value {
-        AdaptiveSync::Off => "off",
-        AdaptiveSync::On => "on",
-        AdaptiveSync::Automatic => "automatic",
-    }
 }
 
 #[cfg(test)]

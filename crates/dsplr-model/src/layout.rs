@@ -1,6 +1,13 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{Mode, OutputId, Transform};
+
+/// Two scales closer than this are the same scale. Backends report scales as
+/// doubles or `wl_fixed`, so an exact comparison would tell two scales apart
+/// over their last bit.
+pub const SCALE_EPSILON: f64 = 1e-6;
 
 /// Every monitor and its settings: the one struct the GUI edits, the CLI
 /// prints, and every backend and config format converts to and from.
@@ -179,6 +186,17 @@ pub enum AdaptiveSync {
     Automatic,
 }
 
+/// `off`, `on` or `automatic`.
+impl fmt::Display for AdaptiveSync {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::On => "on",
+            Self::Automatic => "automatic",
+        })
+    }
+}
+
 /// KDE's RGB range setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -186,6 +204,17 @@ pub enum RgbRange {
     Automatic,
     Full,
     Limited,
+}
+
+/// `automatic`, `full` or `limited`.
+impl fmt::Display for RgbRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Automatic => "automatic",
+            Self::Full => "full",
+            Self::Limited => "limited",
+        })
+    }
 }
 
 #[cfg(test)]

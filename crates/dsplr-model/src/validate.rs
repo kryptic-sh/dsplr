@@ -5,13 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use crate::layout::SCALE_EPSILON;
 use crate::rect::Rect;
 use crate::{Capabilities, Layout, Mode, OutputEntry, OutputId};
-
-/// Two scales closer than this are the same scale. Backends report scales as
-/// doubles or `wl_fixed`, so an exact comparison would refuse a scale over
-/// its last bit.
-const SCALE_EPSILON: f64 = 1e-6;
 
 /// One thing wrong with a layout, naming the output and the setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
