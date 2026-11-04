@@ -39,24 +39,50 @@ capability is present and the conversions for other desktops ignore it.
 - **`OutputId`** — stable identity for matching across reconnects and between
   backends: `(make, model, serial)` when the serial is non-empty, else the
   connector name (`HDMI-A-1`). Hyprland, wlroots, KDE and GNOME all report make,
-  model and serial; XRandR gets them by parsing the EDID property.
-- **`Output`** — connector name, description, `OutputId`, physical size in mm,
-  available `Mode`s, and the `OutputState`.
-- **`OutputState`** — enabled, current mode (or a custom mode), position in
-  layout coordinates, scale, `Transform`, adaptive sync, mirror source, primary,
-  and the optional desktop-specific settings above (`colour_preset`,
-  `bit_depth`, `overscan`, `rgb_range`, …).
+  model and serial; XRandR gets them by parsing the EDID property. Make is
+  **normalised to the EDID's PNP vendor code** before comparing: the backends do
+  not agree on it (wlroots and Hyprland report a resolved name such as "AOC",
+  Mutter is expected to report the three-letter code, to verify at M6), so a raw
+  `make` would make profiles fail to match across desktops. KDE exposes the EDID
+  and EISA id directly; RandR has the EDID property.
+- **`Layout`** — the one struct. A list of **`OutputEntry`**s, each holding the
+  hardware facts (`Output`) and the settings (`OutputState`) for one monitor,
+  plus layout-wide settings: the **fallback rule** for monitors not listed
+  (Hyprland's `output = ""` catch-all, sway's `output *`), and GNOME's
+  `layout_mode` where it applies. `dsplr list --json`, the GUI, the profile
+  store and every converter use this same struct; `Snapshot` is a `Layout` read
+  from the desktop plus its serial, not a separate shape. Apply, test, persist
+  and profiles all take a whole `Layout`, never a single field, because every
+  desktop applies a configuration atomically.
+- **`Output`** (hardware facts) — connector name, description, `OutputId`,
+  physical size in mm, available `Mode`s. **Optional**, because a `Layout` read
+  back from a config file (`monitors.lua`, a sway outputs file) knows a
+  monitor's name and settings but not its modes or EDID. Readers in
+  `dsplr-persist` therefore return a `Layout` whose entries may lack hardware
+  facts, and the GUI fills them from the live snapshot by `OutputId`.
+- **`OutputState`** (settings) — enabled, current mode (or a custom mode),
+  position in layout coordinates, scale, `Transform`, `AdaptiveSync`, mirror
+  source, primary, and the optional desktop-specific settings above
+  (`colour_preset`, `bit_depth`, `overscan`, `rgb_range`, …).
+- **`AdaptiveSync`** — one enum for every desktop: `Off`, `On`, `Automatic`
+  (KDE's VRR policy, Hyprland's fullscreen-only value). Backends map their own
+  form (wlroots' bool, KDE's policy, Hyprland's integer `vrr`) onto it, and
+  `Capabilities` says which values the active backend accepts.
 - **`Mode`** — width and height in pixels, refresh in **millihertz** (the unit
-  `wlr-output-management` and KDE use; Hyprland's floats and GNOME's doubles are
-  converted at the edge, once), and whether it is preferred.
+  `wlr-output-management` and KDE use; Hyprland's `"1920x1080@60.00Hz"` strings
+  and GNOME's doubles are converted at the edge, once), whether it is preferred,
+  the **valid scales for this mode** (GNOME lists them per mode), and an opaque
+  **backend handle** (GNOME's mode id string, the wlr mode object, the RandR
+  mode XID) so the exact mode is passed back rather than matched again by
+  number. Matching a mode from a config file uses a refresh tolerance
+  (`REFRESH_TOLERANCE_MHZ`), because the formats round differently.
 - **`Transform`** — the eight Wayland transforms (normal, 90, 180, 270 and the
   flipped four). XRandR's rotation + reflection pairs map onto the same eight.
-- **`Layout`** — the full set of `OutputState`s, keyed by `OutputId`. Apply,
-  test, persist and profiles all take a whole `Layout`, never a single field,
-  because every desktop applies a configuration atomically.
 - **`Capabilities`** — what the active backend can do: custom modes, mirroring,
-  adaptive sync, fractional scale, per-output scale (no on X11), test-before-
-  apply, native persistence. The GUI greys out what is absent and says why.
+  the `AdaptiveSync` values it accepts, fractional scale, per-output scale (no
+  on X11, and not when GNOME reports `global-scale-required`), real
+  test-before-apply, whether gaps are allowed, native persistence, whether it
+  saves on every apply. The GUI greys out what is absent and says why.
 
 ## Coordinates and scale
 
@@ -64,12 +90,16 @@ Positions are in **layout (logical) coordinates**, the space Wayland compositors
 and GNOME's "logical monitors" use: an output's extent on the canvas is its mode
 size, rotated by its transform, divided by its scale.
 
-- Scale is stored as given by the backend. Valid scales are backend-specific:
-  `wp_fractional_scale` steps of 1/120 on wlroots, Hyprland's own list of
-  "clean" scales, GNOME's per-mode `supported_scales`, integer-only on KDE X11.
-  The backend supplies the valid set; the model only rounds to it.
+- Scale is stored as given by the backend. Valid scales are backend-specific: on
+  wlroots `set_scale` takes a `wl_fixed` and the protocol lets the compositor
+  round it, so dsplr reads the applied scale back rather than assuming it;
+  Hyprland has its own list of "clean" scales; GNOME lists supported scales per
+  mode (on `Mode`); KDE on X11 is integer-only. The backend supplies the valid
+  set; the model only rounds to it.
 - **X11 has no per-output scale.** The RandR backend reports scale `1.0`, marks
-  it read-only, and positions are in pixels. Xft DPI is out of scope.
+  it read-only, and positions are in pixels. RandR's CRTC transforms
+  (`xrandr --scale`) can fake one by rescaling the framebuffer; declined for the
+  MVP because it blurs and costs performance. Xft DPI is out of scope.
 - Rounding: positions are integers. A logical size that is not a whole number
   (2560 wide at scale 1.75) is rounded the way the target backend rounds it,
   recorded per backend with a test against a recorded reply.
@@ -82,10 +112,13 @@ names the output and the field. Checked:
 - at least one output enabled;
 - every enabled output has a mode it lists, or a custom mode on a backend that
   accepts them;
-- scale in the backend's valid set;
+- scale in the mode's valid set, and the same scale on every output when GNOME
+  reports `global-scale-required`;
 - no overlap between enabled, non-mirrored outputs;
-- no gap: every enabled output touches another (a warning, not an error —
-  Hyprland and sway allow gaps, but the pointer cannot cross one);
+- no gap: every enabled output touches another. An **error on KDE**, whose
+  management protocol says "There may be no gaps or overlaps between outputs"; a
+  warning elsewhere (Hyprland and sway allow gaps, but the pointer cannot cross
+  one);
 - mirror sources exist, are enabled and are not mirrors themselves.
 
 ## Snapping
@@ -99,6 +132,7 @@ accepts.
 
 ## JSON form
 
-`dsplr list --json` and the profile store use one serde form of `Layout` and
-`Output` (field names in snake_case, refresh in mHz). It is versioned
-(`"version": 0`) and may change before 1.0.
+`dsplr list --json` and the profile store use one serde form of `Layout` (field
+names in snake_case, refresh in mHz; backend mode handles are not serialised, so
+a profile's modes are matched again on load). It is versioned (`"version": 0`)
+and may change before 1.0.

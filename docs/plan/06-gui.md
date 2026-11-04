@@ -51,10 +51,19 @@ display settings?" with `Keep` and `Revert` and a countdown. `Enter` keeps,
 `Esc` reverts, the timeout reverts. Implemented as crcbl panels (layer-shell on
 Wayland, override-redirect on X11) placed per monitor.
 
+**GNOME has no layer-shell**, so there the confirm is a normal toplevel dialog
+that GNOME places, and the revert watchdog covers the case where it lands on a
+screen that went dark ([02](02-architecture.md#apply-confirm-revert)). On Save,
+GNOME Shell shows its own confirm dialog instead of dsplr's.
+
 ## Identify overlay
 
 `Identify` shows each output's connector and description in large text on that
-output for a few seconds, as a crcbl panel per monitor.
+output for a few seconds, as a crcbl panel per monitor. On GNOME, where panels
+are not available, it asks GNOME Shell to show its own monitor labels
+(`org.gnome.Shell` `ShowMonitorLabels`, which gnome-control-center uses; whether
+Shell accepts the call from another client is to verify at M6), else identify is
+`Unsupported` there.
 
 ## What crcbl must provide
 
@@ -65,7 +74,7 @@ repo rather than worked around in dsplr:
 | #   | Need                                                         | Seen in crcbl                                                                                             |
 | --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
 | C1  | Toplevel window on Wayland and X11                           | `WindowRole::Toplevel`; Wayland and X11 shells                                                            |
-| C2  | A panel on a chosen monitor, on Wayland and X11              | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  |
+| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  |
 | C3  | Monitor enumeration matching the backend's outputs by name   | `crcbl-shell` `MonitorInfo`; whether it carries the connector name is to check                            |
 | C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                  |
 | C5  | Widgets: button, select/list, number entry, toggle, tooltip  | `crcbl-ui` `widgets/` (`button`, `select`, `list`, `number_entry`), `tooltip`                             |

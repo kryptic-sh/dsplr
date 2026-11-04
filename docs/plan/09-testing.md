@@ -19,13 +19,13 @@
 Each runs in CI on ubuntu, in a private `XDG_RUNTIME_DIR`, as crcbl's and lyr's
 Wayland suites do:
 
-| Backend  | Server                                                                                               |
-| -------- | ---------------------------------------------------------------------------------------------------- |
-| `Wlr`    | headless sway with several virtual outputs (`WLR_BACKENDS=headless`, `create_output`)                |
-| `Randr`  | `Xvfb` or Xephyr with RandR, outputs added with `xrandr --setmonitor` / dummy driver (decided at M7) |
-| `Gnome`  | `mutter --headless --virtual-monitor` under a private D-Bus session                                  |
-| `Kde`    | `kwin_wayland --virtual` (lyr's notes record running Hyprland nested in it)                          |
-| Hyprland | headless Hyprland if it runs in CI; otherwise manual only (decided at M2)                            |
+| Backend  | Server                                                                                                                                                                                                                                   |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Wlr`    | headless sway with several virtual outputs (`WLR_BACKENDS=headless`, `create_output`)                                                                                                                                                    |
+| `Randr`  | Xorg with the `dummy` video driver, if its RandR support gives several outputs (checked at M7). Xvfb and Xephyr are not expected to exercise multi-output CRTC mode setting, and `xrandr --setmonitor` makes RandR monitors, not outputs |
+| `Gnome`  | `mutter --headless --virtual-monitor` under a private D-Bus session                                                                                                                                                                      |
+| `Kde`    | `kwin_wayland --virtual` (lyr's notes record running Hyprland nested in it)                                                                                                                                                              |
+| Hyprland | headless Hyprland if it runs in CI; otherwise manual only (decided at M2)                                                                                                                                                                |
 
 Each test reads, applies a changed layout, reads back, reverts and reads back.
 `wlr-randr`, `kscreen-doctor`, `gnome-randr` and `xrandr` are used as

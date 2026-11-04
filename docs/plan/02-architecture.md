@@ -42,25 +42,53 @@ The safety net, shared by every backend and both front ends:
    ([03](03-display-model.md#validation)). Refused here: no enabled output,
    overlapping outputs where the backend forbids it, a mode the output does not
    list (unless it is a custom mode on a backend that accepts them).
-2. **Test** it where the backend can (`wlr-output-management`'s `test`, GNOME's
-   `verify` method, KDE's management protocol). A refusal is shown with the
+2. **Test** it where the backend really can: `wlr-output-management`'s `test` on
+   wlroots compositors, GNOME's `verify` method. **Hyprland's `test` is a stub
+   that always reports success** (it logs "TODO: STUB: applyTestConfiguration
+   for test not implemented, returning true." in
+   `src/protocols/OutputManagement.cpp`), and **KDE's management protocol has no
+   test request** at all, so on both the step is skipped and the CLI's
+   `--dry-run` says it validated locally only. A refusal is shown with the
    backend's reason and nothing changes.
-3. **Remember** the current state as the revert point, then **apply**.
+3. **Remember** the current state as the revert point, write it to
+   `$XDG_STATE_HOME/dsplr/revert.json`, start the **revert watchdog**, then
+   **apply**.
 4. **Confirm.** If the change can hide or move a screen (any mode, position,
    scale, transform or enable change), open a confirm prompt — in the GUI a
-   dialog on every enabled output ([06](06-gui.md#confirm-dialog)), in the CLI a
-   prompt on the terminal unless `--yes`. The timeout is a named constant
-   (`CONFIRM_TIMEOUT`) with a config override.
-5. **Revert** on timeout, on Escape, or if the process is killed: the revert
-   point is also written to `$XDG_STATE_HOME/dsplr/revert.json` before apply,
-   and `dsplr restore --revert` (bound in the docs to a fallback key) applies
-   it.
-6. **Persist** only after confirmation, and only when the user asked to save.
-   Apply without save is a valid, deliberate choice.
+   dialog ([06](06-gui.md#confirm-dialog)), in the CLI a prompt on the terminal
+   unless `--yes`. The timeout is a named constant (`CONFIRM_TIMEOUT`) with a
+   config override.
+5. **Revert** on timeout or on Escape. If dsplr itself dies or hangs, the
+   watchdog reverts: a detached child process
+   (`dsplr restore --revert --after <timeout>`) started in step 3, which applies
+   `revert.json` unless the parent tells it the change was kept. A file alone
+   would revert nothing, since a user with a blank screen cannot type a command
+   to read it. `dsplr restore --revert` by hand is the last resort, and lands
+   with the confirm flow in M2.
+6. **Re-read** the state after the apply and compare it with what was asked for.
+   KDE and Hyprland's `eval` path have no serial, so a change made by something
+   else between the snapshot and the apply is only caught here; a difference is
+   shown, never silently overwritten.
+7. **Persist** only after confirmation, and only when the user asked to save.
+   Apply without save is a valid, deliberate choice everywhere except where the
+   desktop saves on every apply (KDE, to verify at M5; if so the GUI says so
+   before the apply, and the watchdog's revert is what undoes it).
 
-Revert on X11 and wlroots is dsplr re-applying the old state. GNOME reverts on
-its own for a `temporary` apply that is never made `persistent`; dsplr still
-runs its own timer so the behaviour is the same everywhere.
+Revert on X11, wlroots and Hyprland is dsplr re-applying the old state.
+
+**GNOME is different** (read in Mutter's `src/backends/meta-monitor-manager.c`):
+
+- A `temporary` apply never reverts on its own and is not saved.
+- A `persistent` apply from any D-Bus client starts Mutter's own confirmation:
+  it emits `confirm-display-change`, GNOME Shell shows its own "Keep changes?"
+  dialog, and Mutter saves `monitors.xml` only if the user keeps it, restoring
+  the previous config on timeout (`DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT`).
+- So on GNOME dsplr applies `temporary` and runs its own confirm, and **Save**
+  is a `persistent` apply whose confirm is GNOME Shell's dialog, not a second
+  one of dsplr's.
+- A stale serial is refused ("based on stale information"), and the whole D-Bus
+  path can be disabled by policy ("Monitor configuration via D-Bus is
+  disabled"); both are shown as backend refusals.
 
 ## Workspace layout
 

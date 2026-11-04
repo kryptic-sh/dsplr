@@ -22,9 +22,20 @@ pikr and lyr), and X11 in the MVP.
    (`desc:…`) when the serial is non-empty, so settings follow the monitor
    across ports. nwg-displays writes connector names; switching costs nothing on
    the owner's single external monitor but changes the file.
-5. **Confirm timeout.** Default: 15 seconds, as GNOME and KDE, in the
-   `CONFIRM_TIMEOUT` constant with a config override.
+5. **Confirm timeout.** Default: 20 seconds, the same as Mutter's
+   `DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT`, in the `CONFIRM_TIMEOUT` constant
+   with a config override. KDE's own value was not checked.
 6. **Linux only.** Default: yes; Windows and macOS declined. Revisit only if
    crcbl's Win32 and AppKit shells make a port nearly free and someone asks.
 7. **HDR and colour management.** Default: read-only display of what Hyprland
    and KDE report; setting them is post-MVP.
+8. **KDE protocol bindings.** KWin 6.8 has custom modes and mirroring
+   (`set_custom_modes`, `set_replication_source`) that
+   `wayland-protocols-plasma` 0.3.12 does not carry. Default: ship KDE without
+   both in the MVP and mark them `Unsupported`; the alternative is generating
+   bindings from KWin's own protocol XML, which tracks KWin but takes on its
+   unversioned changes.
+9. **MVP scope.** The owner put X11 in the MVP (2026-11-04), so M0–M7 is the
+   MVP: five backends, an EDID parser and the xrandr CRTC algorithm. The owner's
+   own need is met at M3. Raised in review as a scope risk; the owner's decision
+   stands unless they change it.

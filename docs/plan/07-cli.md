@@ -17,11 +17,14 @@ completions and a man page generated at release.
 | `dsplr identify`                                                                                                               | Show the identify overlay (needs a GUI session)                               |
 
 Common flags: `--backend <name>`, `--yes` (skip the confirm prompt; the revert
-point is still written), `--dry-run` (validate and test only), `--json`.
+point is still written), `--dry-run` (validate, and test where the backend has a
+real test; on Hyprland, KDE and X11 it says it validated locally only),
+`--json`.
 
 The confirm prompt on a terminal reads one line within the timeout; no TTY and
 no `--yes` is an error, never a silent keep.
 
-Exit codes: `0` success, `1` usage, `2` validation refused, `3` backend refused,
-`4` reverted (timeout or declined), `5` no backend. Named in one enum in
-`apps/dsplr`.
+Exit codes: `0` success, `1` other failure, `2` usage (clap's own code for a
+usage error, `USAGE_CODE` in `clap_builder`), `3` validation refused, `4`
+backend refused, `5` reverted (timeout or declined), `6` no backend. Named in
+one enum in `apps/dsplr`.
