@@ -6,7 +6,9 @@
 //! Each revert point carries a token. The watchdog started for a change is
 //! given its token and reverts only while the file still holds it, so a
 //! watchdog left over from an earlier change never reverts a later one.
-//! Keeping a change removes the file.
+//! Keeping a change gives the file a new token, so the watchdog stands down
+//! while `dsplr restore --revert` can still go back by hand; reverting
+//! removes it.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,8 +126,27 @@ pub fn load(path: &Path) -> Result<Option<RevertPoint>, RevertError> {
     Ok(Some(RevertPoint { token, layout }))
 }
 
+/// Marks the change `token` guards as kept: if the revert point at `path`
+/// still holds `token`, it is saved again under a new one, so the watchdog
+/// holding `token` does not revert, and the layout stays for a revert by
+/// hand. Returns whether it held `token`.
+///
+/// # Errors
+///
+/// When the file cannot be read, is not a revert point, or cannot be
+/// written.
+pub fn keep(path: &Path, token: &str) -> Result<bool, RevertError> {
+    match load(path)? {
+        Some(point) if point.token == token => {
+            save(path, &RevertPoint::new(point.layout))?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Removes the revert point at `path` if it holds `token`: the change it
-/// guarded was kept, or has been reverted. Returns whether it was removed;
+/// guarded has been reverted. Returns whether it was removed;
 /// a missing file, or one for another change, is left alone.
 ///
 /// # Errors
@@ -151,7 +172,7 @@ mod tests {
 
     use dsplr_model::{Layout, Mode, OutputEntry, OutputId, OutputState};
 
-    use super::{RevertError, RevertPoint, load, remove_if, save};
+    use super::{RevertError, RevertPoint, keep, load, remove_if, save};
 
     fn layout() -> Layout {
         Layout {
@@ -201,6 +222,25 @@ mod tests {
         assert!(remove_if(&path, &point.token).unwrap());
         assert!(!path.exists());
         assert!(!remove_if(&path, &point.token).unwrap(), "already gone");
+    }
+
+    #[test]
+    fn keeping_a_change_keeps_its_layout_under_a_new_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("revert.json");
+        let point = RevertPoint::new(layout());
+        save(&path, &point).unwrap();
+        assert!(!keep(&path, "someone-else").unwrap());
+        assert_eq!(load(&path).unwrap().as_ref(), Some(&point));
+        assert!(keep(&path, &point.token).unwrap());
+        let kept = load(&path).unwrap().expect("still there");
+        assert_eq!(kept.layout, point.layout);
+        assert_ne!(kept.token, point.token);
+        assert!(
+            !remove_if(&path, &point.token).unwrap(),
+            "the watchdog's token is spent"
+        );
+        assert!(!keep(&dir.path().join("none.json"), &point.token).unwrap());
     }
 
     #[test]
