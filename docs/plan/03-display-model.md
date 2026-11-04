@@ -142,6 +142,14 @@ layout is **normalised**: translated so the minimum x and y across enabled
 outputs is zero, which is what XRandR requires and what every other backend
 accepts.
 
+`Layout::snap` takes its threshold in layout pixels, so `SNAP_DISTANCE` belongs
+to the canvas (`dsplr-core`), which divides it by the canvas zoom before
+calling. Each axis snaps on its own. Edge contact is only offered against an
+output that overlaps, or nearly, along the other axis, since touching is
+impossible otherwise. `Layout::normalise` moves disabled outputs and mirrors by
+the same amount as the rest, and refuses (changing nothing) when a position
+would leave `i32`.
+
 ## JSON form
 
 `dsplr list --json` and the profile store use one serde form of `Layout` (field

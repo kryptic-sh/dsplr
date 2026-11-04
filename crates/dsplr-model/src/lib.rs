@@ -2,9 +2,10 @@
 //! GUI renders and every backend and config format converts to and from
 //! (`docs/plan/03-display-model.md`). No I/O.
 //!
-//! What is here: the types, their JSON form and validation. Snapping and
-//! normalisation are not implemented yet.
+//! What is here: the types, their JSON form, validation, snapping and
+//! normalisation.
 
+mod arrange;
 mod capabilities;
 mod id;
 mod json;
@@ -14,6 +15,7 @@ mod rect;
 mod transform;
 mod validate;
 
+pub use arrange::PositionOutOfRange;
 pub use capabilities::Capabilities;
 pub use id::OutputId;
 pub use json::{JSON_VERSION, JsonError};
