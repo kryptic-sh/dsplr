@@ -1,6 +1,6 @@
 //! `dsplr list`: the layout as text, one block per output.
 
-use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, Transform};
+use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, Transform, mhz_to_hz_text};
 
 /// The text `dsplr list` prints.
 pub fn describe(layout: &Layout) -> String {
@@ -64,14 +64,12 @@ fn describe_entry(entry: &OutputEntry) -> String {
 /// `2560x1440 @ 143.998 Hz`: refresh in hertz, exact to the millihertz, with
 /// trailing zeros dropped (`60 Hz`, `59.94 Hz`).
 fn mode_text(mode: &Mode) -> String {
-    let (hz, mhz) = (mode.refresh_mhz / 1000, mode.refresh_mhz % 1000);
-    let refresh = if mhz == 0 {
-        hz.to_string()
-    } else {
-        let fraction = format!("{mhz:03}");
-        format!("{hz}.{}", fraction.trim_end_matches('0'))
-    };
-    format!("{}x{} @ {refresh} Hz", mode.width, mode.height)
+    format!(
+        "{}x{} @ {} Hz",
+        mode.width,
+        mode.height,
+        mhz_to_hz_text(mode.refresh_mhz)
+    )
 }
 
 const fn transform_name(transform: Transform) -> &'static str {
@@ -104,13 +102,11 @@ mod tests {
     use super::{describe, mode_text};
 
     #[test]
-    fn refresh_drops_trailing_zeros_but_keeps_every_millihertz() {
-        let text = |mhz| mode_text(&Mode::new(1920, 1080, mhz));
-        assert_eq!(text(60_000), "1920x1080 @ 60 Hz");
-        assert_eq!(text(59_940), "1920x1080 @ 59.94 Hz");
-        assert_eq!(text(50_500), "1920x1080 @ 50.5 Hz");
-        assert_eq!(text(143_998), "1920x1080 @ 143.998 Hz");
-        assert_eq!(text(60_001), "1920x1080 @ 60.001 Hz");
+    fn a_mode_reads_as_its_size_and_refresh_in_hertz() {
+        assert_eq!(
+            mode_text(&Mode::new(1920, 1080, 59_940)),
+            "1920x1080 @ 59.94 Hz"
+        );
     }
 
     #[test]

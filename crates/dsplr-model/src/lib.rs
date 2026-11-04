@@ -20,6 +20,6 @@ pub use capabilities::Capabilities;
 pub use id::OutputId;
 pub use json::{JSON_VERSION, JsonError};
 pub use layout::{AdaptiveSync, Layout, Output, OutputEntry, OutputState, RgbRange};
-pub use mode::{Mode, ModeHandle, REFRESH_TOLERANCE_MHZ, hz_to_mhz};
+pub use mode::{Mode, ModeHandle, REFRESH_TOLERANCE_MHZ, hz_to_mhz, mhz_to_hz_text};
 pub use transform::Transform;
 pub use validate::{Field, Problem, ProblemKind, Severity};

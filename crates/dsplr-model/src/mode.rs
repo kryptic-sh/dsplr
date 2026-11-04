@@ -59,6 +59,18 @@ pub const REFRESH_TOLERANCE_MHZ: u32 = 5;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModeHandle(pub u64);
 
+/// A refresh rate in millihertz written in hertz, exact to the millihertz
+/// with trailing zeros dropped: `60`, `59.94`, `143.998`. The form people
+/// read and Hyprland's mode strings take.
+pub fn mhz_to_hz_text(mhz: u32) -> String {
+    let (hz, fraction) = (mhz / 1000, mhz % 1000);
+    if fraction == 0 {
+        hz.to_string()
+    } else {
+        format!("{hz}.{}", format!("{fraction:03}").trim_end_matches('0'))
+    }
+}
+
 /// Converts a refresh rate in hertz, as Hyprland and GNOME report it, to
 /// millihertz, rounding to the nearest. `None` for a value that is not finite,
 /// is negative, or does not fit.
@@ -75,7 +87,17 @@ pub fn hz_to_mhz(hz: f64) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, REFRESH_TOLERANCE_MHZ, hz_to_mhz};
+    use super::{Mode, REFRESH_TOLERANCE_MHZ, hz_to_mhz, mhz_to_hz_text};
+
+    #[test]
+    fn hertz_text_drops_trailing_zeros_but_keeps_every_millihertz() {
+        assert_eq!(mhz_to_hz_text(60_000), "60");
+        assert_eq!(mhz_to_hz_text(59_940), "59.94");
+        assert_eq!(mhz_to_hz_text(50_500), "50.5");
+        assert_eq!(mhz_to_hz_text(143_998), "143.998");
+        assert_eq!(mhz_to_hz_text(60_001), "60.001");
+        assert_eq!(mhz_to_hz_text(0), "0");
+    }
 
     #[test]
     fn modes_match_by_size_and_refresh_within_the_tolerance() {

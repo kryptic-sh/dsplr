@@ -20,6 +20,10 @@ pub enum OutputId {
     /// The connector name (`HDMI-A-1`), used when there is no serial, so the
     /// identity follows the port rather than the monitor.
     Connector(String),
+    /// A monitor as a config file names it by its description (Hyprland's
+    /// `desc:` form), which cannot be split back into make, model and
+    /// serial. Matching it to a live output is not written yet.
+    Description(String),
 }
 
 impl OutputId {
@@ -38,11 +42,11 @@ impl OutputId {
     }
 }
 
-/// The connector name, or `make model serial`.
+/// The connector name, `make model serial`, or the description.
 impl fmt::Display for OutputId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Connector(connector) => f.write_str(connector),
+            Self::Connector(name) | Self::Description(name) => f.write_str(name),
             Self::Edid {
                 make,
                 model,
