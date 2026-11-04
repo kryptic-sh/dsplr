@@ -1,6 +1,6 @@
 [package]
 name = "dsplr-config"
-description = "Settings of dsplr."
+description = "Settings of dsplr: the config file and its defaults."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,11 @@ authors.workspace = true
 readme.workspace = true
 
 [dependencies]
+hjkl-config = "0.45.0"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
