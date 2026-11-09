@@ -35,7 +35,13 @@ config, `docs/`) are agreed between them first.
 Listed with defaults in `docs/plan/12-open-questions.md`. The ones that block a
 milestone:
 
-- **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7).
+- **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7). The crcbl
+  session's view (2026-11-09): use `x11rb`. crcbl-shell's RandR is read-only
+  enumeration for games (fullscreen monitor and scale); a set path
+  (`SetCrtcConfig`, `SetScreenSize`, transforms, primary, rollback) would be
+  tested only by dsplr and put a screen-breaking path in every game's
+  dependencies. If the owner wants one stack anyway, crcbl suggests a separate
+  X11 crate beside `crcbl-wayland`, not RandR inside crcbl-shell.
 
 ## Open work in the Linux-owned crates
 
@@ -58,6 +64,19 @@ milestone:
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
 - **The GUI (M3)**: `dsplr-gui` is still a stub; nothing is built against crcbl.
+- **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: crcbl agreed
+  (2026-11-09) to add `connector: Option<String>` to crcbl-shell's
+  `MonitorInfo`, `Some` only when the platform reported a name
+  (`wl_output.name`, the RandR output name) and `None` for its fallbacks
+  (`output-N`, `wl-output-N`, `screen`) and on Win32, AppKit, web and headless.
+  Send crcbl the request when M3 starts; it builds it as one slice with e2e
+  tests. On Wayland the name can arrive after the output first appears, so match
+  on hotplug and change events too. On wlroots and Hyprland it equals
+  wlr-output-management's `head.name`.
+- **First outside use of `crcbl-wayland`'s configuration apply**: crcbl has
+  never run `zwlr_output_configuration_v1` `apply`/`test` or their replies;
+  dsplr's M2 is the first user. Report anything that breaks to the crcbl session
+  (crcbl's backlog keeps a matching entry).
 - **e2e for the other desktops**: each backend (M4 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry. niri has no headless
   mode of its own; nest it (winit) in a headless sway, which was verified for
