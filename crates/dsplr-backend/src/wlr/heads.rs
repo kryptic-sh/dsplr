@@ -203,6 +203,9 @@ fn entry(head: &Head) -> Result<OutputEntry, SnapshotError> {
         output: Some(Output {
             connector: connector(),
             description: head.description.clone(),
+            make: head.make.clone(),
+            model: head.model.clone(),
+            serial: head.serial_number.clone(),
             physical_size_mm,
             modes,
         }),

@@ -118,7 +118,10 @@ compositor that offers the protocol. **COSMIC** is expected to offer it plus its
 own extension (`cosmic-output-management-unstable-v1`, used by `cosmic-randr`)
 and probably saves outputs itself, which would make it a desktop that persists
 on its own rather than one on dsplr's store; to verify in M4. Persistence
-differs per compositor ([05](05-persistence-and-profiles.md)).
+differs per compositor ([05](05-persistence-and-profiles.md)): `Wlr` takes the
+compositor for sway when the socket `SWAYSOCK` names answers sway's IPC, and
+then writes sway's `outputs` ([05](05-persistence-and-profiles.md#sway)); on any
+other it is `Unsupported` for now.
 
 Mirroring is not in the protocol; on `Wlr` it is `Unsupported` unless a
 compositor-specific path is added later.

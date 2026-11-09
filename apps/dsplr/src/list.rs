@@ -119,6 +119,9 @@ mod tests {
                         connector: "eDP-1".into(),
                         description: String::new(),
                         physical_size_mm: None,
+                        make: String::new(),
+                        model: String::new(),
+                        serial: String::new(),
                         modes: vec![],
                     }),
                     state: OutputState {
@@ -132,6 +135,9 @@ mod tests {
                         connector: "HDMI-A-1".into(),
                         description: "AOC Q27G2G4 1A2B3C".into(),
                         physical_size_mm: Some((600, 340)),
+                        make: String::new(),
+                        model: String::new(),
+                        serial: String::new(),
                         modes: vec![preferred, current.clone()],
                     }),
                     state: OutputState {

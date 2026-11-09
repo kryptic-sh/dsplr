@@ -36,7 +36,8 @@ pub struct Changes {
     /// normal, 90, 180, 270, flipped, flipped-90, flipped-180 or
     /// flipped-270, as `dsplr list` prints them. These are wl_output's names
     /// (its 90 is a quarter turn counter-clockwise); sway names the quarter
-    /// turns the other way round, so dsplr's 90 is sway's `transform 270`.
+    /// turns the other way round, flipped or not, so dsplr's 90 is sway's
+    /// `transform 270` and dsplr's flipped-90 is sway's flipped-270.
     #[arg(long, value_name = "T")]
     pub transform: Option<Transform>,
     /// Adaptive sync: off, on or automatic, as far as the desktop takes it
@@ -413,6 +414,9 @@ mod tests {
                 connector: connector.into(),
                 description: description.into(),
                 physical_size_mm: None,
+                make: String::new(),
+                model: String::new(),
+                serial: String::new(),
                 modes,
             }),
             state: OutputState::default(),

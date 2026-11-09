@@ -328,6 +328,9 @@ mod tests {
                 connector: name.into(),
                 description: String::new(),
                 physical_size_mm: None,
+                make: String::new(),
+                model: String::new(),
+                serial: String::new(),
                 modes: vec![mode.clone(), Mode::new(2560, 1440, 144_000)],
             }),
             state: OutputState {

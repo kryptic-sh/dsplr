@@ -3,23 +3,26 @@
 //! headless sway, whose backend has a real test.
 //!
 //! Run through the harness, which starts that sway where it cannot reach the
-//! desktop session and gives dsplr a private state directory:
+//! desktop session and gives dsplr a private state and config directory:
 //!
 //! ```text
 //! tests/e2e/headless-sway.sh cargo test -p dsplr --test sway_e2e -- --ignored
 //! ```
 //!
 //! The confirm prompt is the same on every backend and is covered by
-//! `hyprland_e2e`; here every change is kept with `--yes`. `DSPLR_BIN` names
-//! the dsplr to run when it is not where Cargo built it (in CI's VM).
+//! `hyprland_e2e`; here every change is kept with `--yes`. `dsplr save`'s own
+//! question is asked on a terminal `script` (util-linux) gives it.
+//! `DSPLR_BIN` names the dsplr to run when it is not where Cargo built it (in
+//! CI's VM).
 
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 
 use dsplr_backend::Backend;
-use dsplr_model::{AdaptiveSync, Layout, Mode, Transform};
+use dsplr_model::{AdaptiveSync, Layout, Mode, OutputState, Transform};
+use dsplr_persist::managed::{Comment, Ownership, ownership};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/support.rs"]
@@ -27,8 +30,10 @@ mod support;
 #[path = "../../../tests/e2e/sway_support.rs"]
 mod sway_support;
 
-use support::{edited, entry, entry_mut};
-use sway_support::{harness_runtime, swaymsg};
+use support::{answered_on_a_terminal, edited, entry, entry_mut, plain};
+use sway_support::{
+    FreshSway, harness_runtime, no_outputs_file, outputs_up_to, reload_until, sway_config, swaymsg,
+};
 
 /// The exit code of a usage error (`Exit::Usage`, clap's own).
 const USAGE: i32 = 2;
@@ -46,11 +51,17 @@ fn dsplr_bin() -> PathBuf {
 /// Runs dsplr with `args` and no terminal, and returns its exit code and
 /// everything it printed.
 fn dsplr(args: &[&str]) -> (Option<i32>, String) {
-    let output = Command::new(dsplr_bin())
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .expect("dsplr runs");
+    exit_and_output(
+        &Command::new(dsplr_bin())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("dsplr runs"),
+    )
+}
+
+/// The exit code of a process that ran, and everything it printed.
+fn exit_and_output(output: &Output) -> (Option<i32>, String) {
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -70,15 +81,41 @@ fn layout_file(runtime: &Path, name: &str, layout: &Layout) -> String {
 #[ignore = "needs the headless sway harness: tests/e2e/headless-sway.sh"]
 async fn dsplr_applies_sets_and_reverts_on_sway() {
     let runtime = harness_runtime();
-    swaymsg(&["create_output"]);
+    // The harness starts HEADLESS-1; this test also needs HEADLESS-2.
+    outputs_up_to(2).await;
     let detection = dsplr_backend::detect().await;
     let backend = detection
         .backend
         .unwrap_or_else(|| panic!("no backend: {:?}", detection.checks));
-    // One sway serves both, so they run in turn rather than as two tests
-    // racing over its outputs. Each leaves the layout as it found it.
+    // Another test binary in the same harness may have left the outputs
+    // otherwise: start from the harness's own layout, any output past these
+    // two off.
+    let known = edited(&backend.snapshot().await.expect("snapshot"), |layout| {
+        for entry in &mut layout.entries {
+            entry.state = match entry.connector() {
+                Some("HEADLESS-1") => OutputState {
+                    mode: Some(Mode::new(1280, 720, 0)),
+                    ..OutputState::default()
+                },
+                Some("HEADLESS-2") => OutputState {
+                    mode: Some(Mode::new(1920, 1080, 0)),
+                    x: 1280,
+                    ..OutputState::default()
+                },
+                _ => OutputState {
+                    enabled: false,
+                    ..OutputState::default()
+                },
+            };
+        }
+    });
+    backend.apply(&known).await.expect("sway applies it");
+    // One sway serves them all, so they run in turn rather than as tests
+    // racing over its outputs. Each leaves the layout as it found it; saving
+    // goes last, as a reload puts back whatever the saved file says.
     apply_tests_on_a_dry_run_and_applies_and_reverts(&backend, &runtime).await;
     set_edits_one_output(&backend).await;
+    save_writes_outputs_and_asks_before_replacing_one(&backend).await;
 }
 
 async fn apply_tests_on_a_dry_run_and_applies_and_reverts(backend: &Backend, runtime: &Path) {
@@ -86,15 +123,8 @@ async fn apply_tests_on_a_dry_run_and_applies_and_reverts(backend: &Backend, run
     assert_eq!(code, Some(0), "{text}");
     assert!(text.contains("backend: wlr\n"), "{text}");
     assert!(text.contains("test before apply"), "{text}");
+    assert!(text.contains("native persistence"), "{text}");
     assert!(!text.contains("mirroring"), "{text}");
-
-    // dsplr cannot save on wlroots yet, and declines before writing.
-    let (code, text) = dsplr(&["save"]);
-    assert_eq!(code, Some(REFUSED), "{text}");
-    assert!(
-        text.contains("cannot save on wlr") && text.contains("not supported here"),
-        "{text}"
-    );
 
     let start = backend.snapshot().await.expect("snapshot");
     let snapshot = || async { backend.snapshot().await.expect("snapshot") };
@@ -350,4 +380,131 @@ async fn set_edits_one_output(backend: &Backend) {
     ]);
     assert_eq!(code, Some(0), "{text}");
     assert_eq!(snapshot().await, start);
+}
+
+async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
+    let outputs = no_outputs_file();
+    let read = || std::fs::read_to_string(&outputs).expect("outputs");
+
+    // On a wlroots compositor that is not sway, dsplr declines before
+    // writing anything: with no SWAYSOCK, and with one left over from a sway
+    // that is gone.
+    let stale = harness_runtime().join("sway-ipc.gone.sock");
+    for swaysock in [None, Some(stale.as_os_str())] {
+        let run = |subcommand: &str| {
+            let mut command = Command::new(dsplr_bin());
+            command.arg(subcommand).stdin(Stdio::null());
+            match swaysock {
+                None => command.env_remove("SWAYSOCK"),
+                Some(path) => command.env("SWAYSOCK", path),
+            };
+            exit_and_output(&command.output().expect("dsplr runs"))
+        };
+        let (code, text) = run("save");
+        assert_eq!(code, Some(REFUSED), "{swaysock:?}: {text}");
+        assert!(
+            text.contains("cannot save on wlr") && text.contains("does not answer as sway's"),
+            "{swaysock:?}: {text}"
+        );
+        assert!(!outputs.exists());
+        // dsplr backend does not claim it either.
+        let (code, text) = run("backend");
+        assert_eq!(code, Some(0), "{swaysock:?}: {text}");
+        assert!(text.contains("backend: wlr\n"), "{text}");
+        assert!(!text.contains("native persistence"), "{swaysock:?}: {text}");
+    }
+
+    // Created; the harness's config includes it already.
+    let start = backend.snapshot().await.expect("snapshot");
+    let (code, text) = dsplr(&["save"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains(&format!("saved to {}", outputs.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "{} already has include outputs",
+            sway_config().display()
+        )),
+        "{text}"
+    );
+    assert_eq!(ownership(&read(), Comment::Hash), Ownership::Managed);
+
+    // Moved at runtime only; a reload puts the saved layout back.
+    swaymsg(&["output", "HEADLESS-2", "position", "0", "3000"]);
+    assert_ne!(backend.snapshot().await.expect("snapshot"), start);
+    reload_until(backend, &start).await;
+
+    // Edited by hand: refused, with the diff, until --force.
+    let edited = format!("{}# mine\n", read());
+    std::fs::write(&outputs, &edited).expect("edited");
+    let (code, text) = dsplr(&["save"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("edited by hand"), "{text}");
+    assert!(
+        text.contains("\n-# mine\n"),
+        "the diff shows it going: {text}"
+    );
+    assert!(text.contains("--force"), "{text}");
+    assert_eq!(read(), edited, "nothing was written");
+    let (code, text) = dsplr(&["save", "--force"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(ownership(&read(), Comment::Hash), Ownership::Managed);
+
+    // Another tool's file, naming an output not connected: replaced only
+    // after a yes, and that output's command is kept.
+    let foreign = "output HEADLESS-9 {\n    disable\n}\n";
+    std::fs::write(&outputs, foreign).expect("written");
+    let (code, text) = dsplr(&["save"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("no terminal"), "{text}");
+    assert_eq!(read(), foreign);
+    let on_a_terminal = |answer: &str| {
+        exit_and_output(&answered_on_a_terminal(
+            &format!("exec {} save", plain(&dsplr_bin())),
+            answer,
+        ))
+    };
+    let (code, text) = on_a_terminal("n\n");
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("Replace "), "it was asked: {text}");
+    assert_eq!(read(), foreign);
+    let (code, text) = on_a_terminal("y\n");
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("kept the settings for HEADLESS-9"), "{text}");
+    let saved = read();
+    assert_eq!(ownership(&saved, Comment::Hash), Ownership::Managed);
+    assert!(saved.contains(foreign), "{saved}");
+    // sway reads the kept command for an output it does not have without
+    // changing anything else.
+    reload_until(backend, &start).await;
+
+    // A file with a setting dsplr does not write takes --force: --yes would
+    // lose it.
+    let wallpaper = "output HEADLESS-1 bg /nowhere.png fill\n";
+    std::fs::write(&outputs, wallpaper).expect("written");
+    let (code, text) = dsplr(&["save", "--yes"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("`bg`") && text.contains("--force"), "{text}");
+    assert_eq!(read(), wallpaper);
+    let (code, text) = dsplr(&["save", "--force"]);
+    assert_eq!(code, Some(0), "{text}");
+    reload_until(backend, &start).await;
+
+    // A readable file naming the connected outputs by sway's identifier
+    // (`Unknown Unknown Unknown`: headless outputs report no make, model or
+    // serial). dsplr names them by connector, and at startup an identifier's
+    // setting would win over that wherever it is, so the old command goes.
+    let by_identifier = "output \"Unknown Unknown Unknown\" scale 2\n";
+    std::fs::write(&outputs, by_identifier).expect("written");
+    let (code, text) = dsplr(&["save", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(!text.contains("kept the settings"), "{text}");
+    assert!(!read().contains("Unknown"), "{}", read());
+    reload_until(backend, &start).await;
+    FreshSway::start("fresh-cli", start.entries.len())
+        .await
+        .shows(&start)
+        .await;
 }

@@ -111,7 +111,42 @@ and this project adheres to
   `disabled = true` instead of reading them as `vrr = 2` and dropping the
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under
   a hyprlang `hyprland.conf` saving is refused, saying dsplr writes only a Lua
-  config's `monitors.lua`; on wlroots compositors it is not supported yet; both
-  exit `3`; `dsplr backend` now lists native persistence for Hyprland.
+  config's `monitors.lua`; on wlroots compositors other than sway it is not
+  supported yet; both exit `3`; `dsplr backend` now lists native persistence for
+  Hyprland and sway.
+- `dsplr save` makes the current layout last on sway: it writes a dsplr-managed
+  `outputs` file beside the config sway reads (`~/.sway/config`,
+  `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config` or
+  `$XDG_CONFIG_HOME/i3/config`, as sway looks), one `output` block per output
+  with `enable` or `disable`, `mode`, `position`, `scale`, `transform` and, when
+  known, `adaptive_sync`, and prints the `include outputs` line the config needs
+  when it does not seem to have it. Transforms are written in sway's own names,
+  which turn the quarter turns, flipped or not, the other way from
+  `dsplr list`'s. A monitor with a serial is named by sway's identifier
+  (`"Make Model Serial"`), so its settings follow it to another port; one
+  without, one sharing its identifier with another connected monitor, or one
+  whose identifier sway could not read back from a config (a quote, a backslash
+  or a `$` in it), by connector. sway gives an identifier's setting precedence
+  over a name's at startup wherever each is, and the last setting precedence on
+  a reload, so the saved file is laid out to win both ways: a command for a
+  connected output, by its connector or its identifier, is dropped from the old
+  file, and dsplr says when the config's own `output` commands would still win,
+  with the fix for each: commands after the include win on a reload (move the
+  include below them); a command naming an output by identifier while the file
+  names it by connector wins at startup wherever it is (remove it, or name the
+  output by connector there), which is reported even before the config includes
+  the file. As on Hyprland, a file edited by hand needs `--force`, another
+  tool's needs a yes or `--yes`, a link is refused, and every refusal shows the
+  diff; a file in dsplr's form keeps its commands for outputs not connected now,
+  while one with settings dsplr does not write (`bg`, `power`, `scale_filter`)
+  needs `--force`. A layout with a mirror, which sway has not, and saving on a
+  wlroots compositor other than sway are refused with exit `3` before anything
+  is written; it counts as sway only when the socket `SWAYSOCK` names answers
+  sway's IPC, so a stale `SWAYSOCK` under another compositor does not. That
+  socket is asked only by `dsplr save` and `dsplr backend`, so one that hangs
+  delays no other command.
+- `dsplr list --json` (and the revert point) now carry each output's `make`,
+  `model` and `serial` as the desktop reported them, empty when it reported
+  none; a layout file without them still reads.
 - Exit codes `3` (validation refused), `4` (the desktop refused) and `5`
   (reverted).

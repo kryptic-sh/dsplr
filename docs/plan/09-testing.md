@@ -19,13 +19,13 @@
 Each runs in CI on ubuntu, in a private `XDG_RUNTIME_DIR`, as crcbl's and lyr's
 Wayland suites do:
 
-| Backend  | Server                                                                                                                                                                                                                                   |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Wlr`    | `tests/e2e/headless-sway.sh`: headless sway (`WLR_BACKENDS=headless`, pixman renderer), private runtime, more outputs with `swaymsg create_output`; in CI in the same VM as Hyprland                                                     |
-| `Randr`  | Xorg with the `dummy` video driver, if its RandR support gives several outputs (checked at M7). Xvfb and Xephyr are not expected to exercise multi-output CRTC mode setting, and `xrandr --setmonitor` makes RandR monitors, not outputs |
-| `Gnome`  | `mutter --headless --virtual-monitor` under a private D-Bus session                                                                                                                                                                      |
-| `Kde`    | `kwin_wayland --virtual` (lyr's notes record running Hyprland nested in it)                                                                                                                                                              |
-| Hyprland | `tests/e2e/headless-hyprland.sh`: nested in `kwin_wayland --virtual`, private runtime, `LIBSEAT_BACKEND=seatd`; in CI inside a KVM VM with a virtio GPU                                                                                  |
+| Backend  | Server                                                                                                                                                                                                                                                      |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Wlr`    | `tests/e2e/headless-sway.sh`: headless sway (`WLR_BACKENDS=headless`, pixman renderer), private runtime, `HOME` and `XDG_CONFIG_HOME` (whose `sway/config` includes `outputs`), more outputs with `swaymsg create_output`; in CI in the same VM as Hyprland |
+| `Randr`  | Xorg with the `dummy` video driver, if its RandR support gives several outputs (checked at M7). Xvfb and Xephyr are not expected to exercise multi-output CRTC mode setting, and `xrandr --setmonitor` makes RandR monitors, not outputs                    |
+| `Gnome`  | `mutter --headless --virtual-monitor` under a private D-Bus session                                                                                                                                                                                         |
+| `Kde`    | `kwin_wayland --virtual` (lyr's notes record running Hyprland nested in it)                                                                                                                                                                                 |
+| Hyprland | `tests/e2e/headless-hyprland.sh`: nested in `kwin_wayland --virtual`, private runtime, `LIBSEAT_BACKEND=seatd`; in CI inside a KVM VM with a virtio GPU                                                                                                     |
 
 Each test reads, applies a changed layout, reads back, reverts and reads back.
 `wlr-randr`, `kscreen-doctor`, `gnome-randr` and `xrandr` are used as

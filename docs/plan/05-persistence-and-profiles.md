@@ -49,11 +49,73 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
 
 ## wlroots compositors
 
-| Compositor                    | Native persistence                                                                                   |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------- |
-| sway                          | `~/.config/sway/outputs` with `output … mode … pos … scale …` lines, `include`d from the sway config |
-| niri                          | a managed `outputs.kdl`, if the niri version supports `include`; else dsplr's store (checked at M4)  |
-| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore` from the compositor's autostart                                   |
+| Compositor                    | Native persistence                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| sway                          | `outputs` beside the sway config, with `output … { … }` blocks, `include outputs` from that config  |
+| niri                          | a managed `outputs.kdl`, if the niri version supports `include`; else dsplr's store (checked at M4) |
+| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore` from the compositor's autostart                                  |
+
+### sway
+
+Written (`dsplr_persist::sway`), and checked on headless sway 1.12 by saving,
+changing the outputs at runtime and reloading, and by starting a second sway on
+the saved file.
+
+- **How sway 1.12 picks an output's settings** (headless, 2026-11-10): on a
+  reload the last setting given for an output wins, whether the command names it
+  by connector, by identifier or as `*`. At startup and on hotplug a `*` setting
+  still counts in file order, but an identifier's setting wins over a name's
+  wherever each is (`output "Make Model Serial" scale 1.5` before
+  `output DP-1 scale 2` starts at 1.5 and reloads to 2). Everything below is
+  arranged so the saved block wins both ways.
+- The `wlr` backend saves only when the socket `SWAYSOCK` names answers sway's
+  IPC (`GET_VERSION`), so a stale `SWAYSOCK` left in a session manager's
+  environment does not count; on any other wlroots compositor `persist` is
+  `Unsupported` until dsplr's store exists. The socket is asked only by
+  `persist` and `dsplr backend`, not at detection, so a socket that hangs delays
+  only those. `Capabilities::native_persistence` says only that `SWAYSOCK` is
+  set; `Backend::native_persistence` is the checked answer.
+- The config is found as sway(1) says sway finds it: `~/.sway/config`,
+  `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config`, `$XDG_CONFIG_HOME/i3/config`
+  (`XDG_CONFIG_HOME` defaulting to `~/.config`); not `sway --config` nor
+  `/etc/sway/config`. `outputs` goes **beside the config found**, so in the
+  suggested location it is `~/.config/sway/outputs`, and the line to add is
+  always `include outputs`: sway reads a relative include from the including
+  config's directory (the link's own directory when the config is a link), and a
+  quoted absolute path with a space in it was not loaded at all.
+- One block per output: `disable` alone for one that is off, else `enable`,
+  `mode` (`--custom` for a mode its output is known not to list, the refresh
+  only when known), `position`, `scale`, `transform` and `adaptive_sync` when
+  known. sway keeps a setting the config leaves out as it was at runtime, so
+  every setting is stated.
+- `transform` is written in sway's names, which turn the quarter turns the other
+  way from `wl_output`'s, flipped ones too: sway's `90` is wl_output's `270`,
+  its `flipped-90` wl_output's `flipped-270`.
+- A monitor with a serial is named by sway's identifier, `"Make Model Serial"`
+  with `Unknown` for a part it does not report, compared whole; one without, one
+  sharing its identifier with another connected monitor, or one whose identifier
+  holds a quote, a backslash or a `$` (which sway reads its own way), by
+  connector. A monitor without a serial still has an identifier to sway
+  (`Make Model Unknown`), so the snapshot keeps every monitor's make, model and
+  serial (`Output`), not only those `OutputId` keeps.
+- A mirror, a primary output, colour settings and automatic adaptive sync are
+  refused before anything is written (exit `3`): sway has no command for them.
+- A file in dsplr's own form (only `output` commands setting what dsplr writes,
+  as blocks or on one line, with comments) keeps its commands for outputs not
+  connected now, `*` included, written first so the saved blocks win on a
+  reload. A command naming a connected output by its connector **or** its
+  identifier is dropped, whichever name the new block uses, since at startup an
+  identifier's command would beat a saved block by connector. A file with
+  anything else (`bg`, `power`, `scale_filter`, `set $var`) cannot be carried
+  over and takes `--force`, as on Hyprland.
+- After saving, dsplr says when the main config's own `output` commands win over
+  the saved file, each case with its own fix: one after the `include` setting a
+  connected output (by connector, identifier or `*`) wins on a reload, and
+  moving the `include` below it fixes that; one anywhere naming a connected
+  output by its identifier, when the file names it by connector, wins at startup
+  wherever the `include` is, so the fix is to remove it or name the output by
+  connector there. The second is looked for even when the config does not
+  include the file yet.
 
 ## KDE and GNOME
 

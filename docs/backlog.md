@@ -27,8 +27,13 @@ Hyprland Lua config (`Backend::persist`, built on
 `dsplr_persist::hyprland::save`); its e2e has not run yet (below). `dsplr set`
 edits one output of a fresh snapshot and hands the layout to the same flow
 (`apply::run`); its steps run in `apps/dsplr/tests/sway_e2e.rs`, and a mirror
-step and a `--no-mirror` step in `hyprland_e2e.rs` (not run yet, as below). Not
-written yet: saving on wlroots. Saving under a hyprlang config is declined
+step and a `--no-mirror` step in `hyprland_e2e.rs` (not run yet, as below).
+`dsplr save` on sway writes `outputs` beside sway's config
+(`dsplr_persist::sway::save`); both sway e2e tests save, change the outputs at
+runtime, reload and read the saved layout back, and start a second sway on the
+saved file, green on headless sway 1.12 locally (2026-11-10), each alone and
+both in one harness in either order. Not written yet: saving on other wlroots
+compositors (dsplr's profile store). Saving under a hyprlang config is declined
 (below).
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
@@ -65,12 +70,50 @@ milestone:
   - `--force` also replaces another tool's file without asking, as it overwrites
     anything; `--yes` replaces only a readable file another tool wrote.
   - Exit codes: `3` when the backend cannot save at all (`Unsupported`: a
-    hyprlang config, wlroots), as dsplr declining before writing (changed from
-    `4` on 2026-11-09, when `4` became the desktop's refusal only); `1` when
-    nothing was saved because a file needs `--force`, the user said no, there
-    was no terminal to ask on, or a file could not be read or written.
+    hyprlang config, a wlroots compositor other than sway, a layout with a
+    mirror on sway), as dsplr declining before writing (changed from `4` on
+    2026-11-09, when `4` became the desktop's refusal only); `1` when nothing
+    was saved because a file needs `--force`, the user said no, there was no
+    terminal to ask on, or a file could not be read or written.
   - Saving prints its messages, the diff and the `require` line on stderr, as
     `dsplr apply` does.
+
+- **`dsplr save` on sway, decided while building it (2026-11-10); confirm or
+  change**:
+  - `outputs` goes beside the config sway reads, not always in
+    `$XDG_CONFIG_HOME/sway/` (the plan's `~/.config/sway/outputs`, which is the
+    same file when the config is in sway's suggested place). So the line to add
+    is always `include outputs`, which sway resolves from the config's own
+    directory; an absolute path would not do for a config directory with a space
+    in it (sway 1.12 loaded neither a single- nor a double-quoted one). The
+    cost: with `~/.sway/config` or `~/.i3/config` the file lands in `~/.sway/`
+    or `~/.i3/`.
+  - It is sway when the socket `SWAYSOCK` names answers sway's IPC `GET_VERSION`
+    (`Wlr::is_sway`, asked by `persist` and `dsplr backend` only, not at
+    detection; `wlr::sway::answers`), so a stale `SWAYSOCK` that a session
+    manager imported does not count. `Capabilities::native_persistence` on `wlr`
+    is only "`SWAYSOCK` is set", since every command reads capabilities;
+    `Backend::native_persistence` is the checked answer, and the GUI will want
+    that one. Still taken for sway: another compositor whose environment holds
+    the `SWAYSOCK` of a sway that is still running (one nested inside sway, or a
+    sway on another seat). Comparing sway's `get_outputs` with the
+    wlr-output-management heads would tell them apart; not done.
+  - Two connected monitors with the same identifier, and a monitor whose
+    identifier holds a quote, a backslash or a `$`, are written by connector.
+  - A monitor without a serial is named by connector, as `OutputId` keeps it,
+    not by its sway identifier (`Make Model Unknown`), though at startup an
+    identifier's command would win over the config's own command for that port.
+    The other choice would also let the saved block beat a name command in the
+    main config at startup, but not on a reload, and would move a serial-less
+    monitor's settings with its model rather than its port.
+  - `NoConfig` (no sway or Hyprland config of the user's own) exits `1` on both
+    desktops; plan 07 could read it as a save the backend cannot do there (`3`).
+    Left as it is; the owner's call.
+  - Old commands are carried over only from a file in dsplr's own form, and then
+    verbatim, for outputs not connected now; any other setting makes the file
+    need `--force`. nwg-displays writes a sway `outputs` too, and if it writes
+    settings dsplr does not (`scale_filter`, `power`; not checked against
+    nwg-displays itself), replacing its file takes `--force`.
 
 ## Open work in the Linux-owned crates
 
@@ -107,16 +150,18 @@ milestone:
   `a_saved_layout_is_what_hyprland_reads_back_after_a_reload`
   (`crates/dsplr-backend/tests/hyprland_e2e.rs`) and
   `dsplr_save_writes_monitors_lua_and_asks_before_replacing_one`
-  (`apps/dsplr/tests/hyprland_e2e.rs`) compile but have run nowhere: the harness
-  needs `kwin_wayland`, which the owner's machine lacks, so their first run is
-  CI's; run them with `--test-threads=1`, since the save test's reload drops the
-  other test's rules. The harness now starts Hyprland without `--config`,
-  finding `hypr/hyprland.lua` in a private `XDG_CONFIG_HOME` the tests share,
-  and gives KWin, Hyprland and the tests a private `HOME` (`CARGO_HOME` and
-  `RUSTUP_HOME` pinned first; cargo under such a `HOME` was checked locally,
-  KWin under one was not); that lookup, and `require("monitors")` resolving
-  beside it, were checked with `Hyprland --verify-config` 0.57.1 (it reports a
-  broken or missing `monitors.lua`), not in a running Hyprland.
+  (`apps/dsplr/tests/hyprland_e2e.rs`) compile but have run nowhere (its
+  terminal helpers now live in `tests/e2e/support.rs`, shared with the sway
+  test, whose save prompt runs locally): the harness needs `kwin_wayland`, which
+  the owner's machine lacks, so their first run is CI's; run them with
+  `--test-threads=1`, since the save test's reload drops the other test's rules.
+  The harness now starts Hyprland without `--config`, finding
+  `hypr/hyprland.lua` in a private `XDG_CONFIG_HOME` the tests share, and gives
+  KWin, Hyprland and the tests a private `HOME` (`CARGO_HOME` and `RUSTUP_HOME`
+  pinned first; cargo under such a `HOME` was checked locally, KWin under one
+  was not); that lookup, and `require("monitors")` resolving beside it, were
+  checked with `Hyprland --verify-config` 0.57.1 (it reports a broken or missing
+  `monitors.lua`), not in a running Hyprland.
 - **What `dsplr save` cannot see**: a Hyprland started with `--config` (nothing
   outside Hyprland can read that path), and the system configs in
   `$XDG_CONFIG_DIRS` and `/etc/xdg` (not the user's to write beside), so with
@@ -130,13 +175,51 @@ milestone:
   `pcall(require, "monitors")`, a require inside another required file, a call
   written `hl.monitor (`, or text inside a multi-line `--[[ ]]` comment is
   misjudged, and only the message printed after the save is wrong.
-- **A symbolic link at `monitors.lua` is refused** (`SaveError::Symlink`), even
-  with `--force`: the atomic rename would replace the link with a file, so the
-  change would never reach its target (a dotfiles checkout) and the next deploy
-  would undo it. The message names the link and its target; the user changes the
-  file at its source. Writing through the link to its target was considered and
-  not done: the target is a deployed copy or a checkout, and dsplr editing
-  either is a change the user did not ask for.
+- **What `dsplr save` cannot see on sway**: `sway --config`, and
+  `/etc/sway/config` (with no config of the user's own, saving fails and says to
+  copy it). It reads its own environment, not sway's. Whether the config loads
+  `outputs` is a search for an `include` whose path, with a leading `~`,
+  `$VAR`/`${VAR}` and a relative path read from the config's directory, is the
+  file: a glob (`include ~/.config/sway/config.d/*`), a `set $var` variable, an
+  include inside another included file, or a variable sway's environment has and
+  dsplr's has not, is misjudged, and only the message after the save is wrong.
+  Whether commands override it follows the precedence in
+  `docs/plan/05-persistence-and-profiles.md` ("sway"): an `output` command
+  setting one of dsplr's settings for a connected output after that include
+  (`Saved::overridden`), or one anywhere naming a connected output by identifier
+  when the file names it by connector (`Saved::beaten_at_startup`), with blocks
+  expanded (a `{` on a line of its own opens one only right after an `output`
+  command).
+- **The sway harness runs the test command in its own process group** (`setsid`)
+  and kills that group on exit, so a second sway a killed test started
+  (`sway_support::FreshSway`) does not outlive the run; checked by hand with a
+  command that starts a child and SIGKILLs itself. The Hyprland harness was not
+  changed: its tests start no compositor of their own.
+- **A kept identifier command can beat a saved connector block, later**: a
+  command kept for a monitor not connected now, named by its identifier, wins
+  over the saved block for a port at startup the day that monitor is plugged
+  into that port, while on a reload the saved block, written after it, wins.
+  Same family as Hyprland's kept-versus-live ordering below; needs a monitor
+  with a serial saved earlier and a serial-less one saved on its port now.
+- **sway behaviour not seen on real hardware**: headless outputs report no
+  serial, so the e2e names them by connector, and naming by identifier was
+  checked only by hand on headless sway 1.12: a config for
+  `"Unknown Unknown Unknown"` applied to them, and a partial one did not;
+  `mode --custom` for an unlisted mode on a DRM output, `adaptive_sync` taking
+  effect, and a quoted identifier holding punctuation such as a comma
+  (`"Dell, Inc. …"`) are unchecked.
+- **Hyprland has no fallback for two monitors with one description**: the sway
+  writer names them by connector, but `monitors.lua` would get two `desc:` rules
+  with the same text, and Hyprland would apply the last to both. Not fixed; the
+  same check as `sway::output_name` would do.
+- **A symbolic link at the saved file is refused** (`FileError::Symlink`, for
+  `monitors.lua` and sway's `outputs`), even with `--force`: the atomic rename
+  would replace the link with a file, so the change would never reach its target
+  (a dotfiles checkout) and the next deploy would undo it. The message names the
+  link and its target; the user changes the file at its source. Writing through
+  the link to its target was considered and not done: the target is a deployed
+  copy or a checkout, and dsplr editing either is a change the user did not ask
+  for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
 - **The GUI (M3)**: `dsplr-gui` is still a stub; nothing is built against crcbl.
@@ -208,14 +291,15 @@ milestone:
   shows every line, and past `MAX_CELLS` it shows the changed middle as removed
   then added. The `similar` crate would replace it, but adding a dependency is
   the owner's call.
-- **A change to `monitors.lua` made while `dsplr save` runs is lost**: it reads
-  and classifies the file, then renames the new one over whatever is there then,
-  without looking again. A file created, edited by hand or replaced by another
-  tool in that window is overwritten without the check or the question it would
-  otherwise get. When it asks, the second call re-reads and compares the text
-  the user approved, so a change while the question waits is caught; one made
-  during a call's own read-to-rename (a read, a write and an `fsync`) is not. No
-  lock: nothing else that writes the file would honour one.
+- **A change to the saved file (`monitors.lua`, `outputs`) made while
+  `dsplr save` runs is lost**: it reads and classifies the file, then renames
+  the new one over whatever is there then, without looking again. A file
+  created, edited by hand or replaced by another tool in that window is
+  overwritten without the check or the question it would otherwise get. When it
+  asks, the second call re-reads and compares the text the user approved, so a
+  change while the question waits is caught; one made during a call's own
+  read-to-rename (a read, a write and an `fsync`) is not. No lock: nothing else
+  that writes the file would honour one.
 - **A saved rule can still win over a longer description's, across the kept and
   live groups**: `save`'s `merged` writes the kept rules (monitors not
   connected) before the live ones, and orders each group with
@@ -238,13 +322,6 @@ milestone:
   between monitors; dsplr and nwg-displays write full descriptions.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files, which wait for the profile store's format.
-- **`Transform`'s text uses wl_output's quarter turns, not sway's**: `Rotate90`
-  (wl_output 1) writes and parses as `90`, while sway calls that turn `270`:
-  `swaymsg output X transform 90` sets wl_output transform 3, and sway's IPC
-  reports wl_output 1 as `"270"` (sway 1.12, 2026-11-09; `sway_e2e` checks the
-  latter through `dsplr set --transform 90`). `Display`'s doc and
-  `dsplr set --help` now say so. The flipped quarter turns presumably swap the
-  same way; not checked. It decides what M4's sway `outputs` writer writes.
 - **`dsplr list` prints `@ 0 Hz` for a mode with no refresh**: headless sway's
   outputs report refresh 0, which the protocol means as "not said".
 - **Some error paths of `dsplr apply` have no test**: a test or apply the
@@ -301,8 +378,11 @@ crcbl's tree was read at source level only for the needs in
 Reported correct by the plan review but not rechecked by hand: the
 `ApplyMonitorsConfig` method values and `layout-mode` semantics (Mutter's
 DisplayConfig XML), niri `include` support and its `zwlr_output_manager_v1`
-offer (niri 26.04 binary strings), sway's `include` and `adaptive_sync`, and the
-`hl.monitor` field names (Hyprland wiki).
+offer (niri 26.04 binary strings), sway's `adaptive_sync` taking effect (a
+headless output accepts it and stays off), and the `hl.monitor` field names
+(Hyprland wiki). sway's `include` was checked on headless sway 1.12
+(2026-11-10): a relative path, `~`, `$HOME`, `$XDG_CONFIG_HOME` and an absolute
+path load; a quoted absolute path with a space in it does not.
 
 Not verified by anyone: that KWin saves on every protocol apply; that Mutter
 reports `vendor` as a PNP code (why `OutputId` normalises make from the EDID);
@@ -380,6 +460,32 @@ and the `monitors.lua` writer:
   own seat (seatd) with a virtio GPU can, which is what CI does.
 
 ## Behaviour that surprised us but is not a bug
+
+- **sway 1.12 picks an output's settings differently at startup and on a
+  reload** (headless, 2026-11-10): on a reload the last setting given wins, by
+  connector, identifier or `*` alike; at startup and on hotplug a `*` still
+  counts in file order, but an identifier's setting beats a name's wherever each
+  is. A reload also clears a setting from an earlier command for the same
+  connected output, so after `output "Unknown Unknown Unknown" scale 1.5` then
+  `output HEADLESS-1 scale 2` and a reload, a newly created output (same
+  identifier) came up at scale 1, not 1.5. The sway e2e checks a saved file both
+  by reloading and by starting a second sway on it (`sway_support::FreshSway`).
+
+- **`Transform`'s text uses wl_output's quarter turns, not sway's**: `Rotate90`
+  (wl_output 1) writes and parses as `90`, while sway calls that turn `270`. All
+  eight checked on headless sway 1.12 (2026-11-10), each set by
+  `transform <name>` in an included file and read back through
+  wlr-output-management: sway's `90`, `270`, `flipped-90` and `flipped-270` are
+  wl_output's `270`, `90`, `flipped-270` and `flipped-90`; `normal`, `180`,
+  `flipped` and `flipped-180` agree. sway's IPC reports its own names.
+  `Display`'s doc and `dsplr set --help` say so; the `outputs` writer writes
+  sway's names (`sway::TRANSFORMS`), and the backend `sway_e2e` saves each of
+  the eight and reads it back after a reload.
+- **sway applies a config reload after `swaymsg reload` answers**: a read right
+  after it still shows the old outputs, so the e2e polls
+  (`sway_support::reload_until`). A setting the config leaves out keeps its
+  runtime value across the reload, and a runtime change the config does name is
+  undone by it.
 
 - **Headless sway's `test` passes nearly anything**: a 100000x100000 custom
   mode, overlapping outputs and every output disabled all pass; what it refuses

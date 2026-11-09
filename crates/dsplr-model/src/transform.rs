@@ -69,7 +69,8 @@ impl Transform {
 /// `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` or
 /// `flipped-270`: `wl_output.transform`'s names, so `90` is its value 1,
 /// which the protocol calls 90 degrees counter-clockwise. sway names the
-/// quarter turns the other way round: its `90` is this `270` (sway 1.12).
+/// quarter turns the other way round, flipped or not: its `90` is this
+/// `270`, its `flipped-90` this `flipped-270` (sway 1.12).
 impl fmt::Display for Transform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

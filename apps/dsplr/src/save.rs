@@ -124,25 +124,42 @@ fn saved(persisted: &Persisted) -> Exit {
     Exit::Success
 }
 
-/// What to tell the user about the line their main config needs. The line
-/// goes after the config's own monitor rules: Hyprland merges a rule into
-/// the one of the same name and keeps it last, so a rule after it wins over
-/// the saved file's.
+/// What to tell the user about the line their main config needs, and about
+/// the config's own rules that win over the saved file. The line goes after
+/// those rules: Hyprland uses the last rule for a monitor, and sway the last
+/// setting on a reload, so a rule after it wins ([`Saved::overridden`]).
+/// sway also lets a rule naming an output by its identifier win at startup
+/// over one naming it by connector, wherever each is, so moving the line
+/// does not help with those ([`Saved::beaten_at_startup`]).
 fn include_note(saved: &Saved) -> String {
-    let (main, line) = (saved.main_config.display(), saved.include_line);
-    if !saved.included {
+    let (main, line, rules) = (saved.main_config.display(), saved.include_line, saved.rules);
+    let include = if !saved.included {
         format!(
-            "dsplr: {main} does not seem to load it: add this line to it, after any hl.monitor calls there (dsplr never edits it):\n  {line}\n"
+            "dsplr: {main} does not seem to load it: add this line to it, after any {rules} there (dsplr never edits it):\n  {line}\n"
         )
     } else if saved.overridden {
         format!(
-            "dsplr: {main} has hl.monitor calls after {line}, and they override the saved file; move {line} below them\n"
+            "dsplr: {main} has {rules} after {line}, and they override the saved file; move {line} below them\n"
         )
     } else if saved.created {
         format!("dsplr: {main} already has {line}\n")
     } else {
         String::new()
-    }
+    };
+    let beaten = if saved.beaten_at_startup.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = saved
+            .beaten_at_startup
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect();
+        format!(
+            "dsplr: {main} sets {} by sway's identifier, and when sway starts that wins over the saved file, which names the output by its connector, wherever {line} goes; remove those output commands, or name the output by its connector there\n",
+            names.join(", ")
+        )
+    };
+    include + &beaten
 }
 
 #[cfg(test)]
@@ -156,10 +173,12 @@ mod tests {
     fn saved(created: bool, included: bool) -> Saved {
         Saved {
             overridden: false,
+            beaten_at_startup: Vec::new(),
             path: PathBuf::from("/h/.config/hypr/monitors.lua"),
             created,
             main_config: PathBuf::from("/h/.config/hypr/hyprland.lua"),
             include_line: r#"require("monitors")"#,
+            rules: "hl.monitor calls",
             included,
             kept: Vec::new(),
         }
@@ -188,5 +207,59 @@ mod tests {
             "dsplr: /h/.config/hypr/hyprland.lua already has require(\"monitors\")\n"
         );
         assert_eq!(include_note(&saved(false, true)), "");
+    }
+
+    #[test]
+    fn the_note_names_the_desktop_s_own_rules() {
+        let sway = Saved {
+            main_config: PathBuf::from("/h/.config/sway/config"),
+            include_line: "include outputs",
+            rules: "output commands",
+            ..saved(true, false)
+        };
+        assert!(
+            include_note(&sway).contains(
+                "add this line to it, after any output commands there (dsplr never edits it):\n  include outputs\n"
+            ),
+            "{}",
+            include_note(&sway)
+        );
+        let note = include_note(&Saved {
+            included: true,
+            overridden: true,
+            ..sway
+        });
+        assert!(
+            note.contains("has output commands after include outputs"),
+            "{note}"
+        );
+        assert!(!note.contains("identifier"), "{note}");
+    }
+
+    /// An identifier rule before the include is not fixed by moving the
+    /// include, so the note says what does, whether or not the config loads
+    /// the file yet.
+    #[test]
+    fn identifier_rules_that_win_at_startup_get_their_own_fix() {
+        let beaten = vec!["BOE 0x0AFC Unknown".to_owned()];
+        for included in [true, false] {
+            let note = include_note(&Saved {
+                main_config: PathBuf::from("/h/.config/sway/config"),
+                include_line: "include outputs",
+                rules: "output commands",
+                beaten_at_startup: beaten.clone(),
+                ..saved(false, included)
+            });
+            assert!(
+                note.contains(
+                    "/h/.config/sway/config sets \"BOE 0x0AFC Unknown\" by sway's identifier"
+                ) && note.contains(
+                    "remove those output commands, or name the output by its connector there"
+                ),
+                "{note}"
+            );
+            assert!(!note.contains("move include outputs below"), "{note}");
+            assert_eq!(note.contains("add this line"), !included, "{note}");
+        }
     }
 }

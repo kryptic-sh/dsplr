@@ -3,7 +3,8 @@
 //! hand since dsplr wrote it is recognised and not overwritten unasked; an
 //! atomic write, so a crash mid-save never leaves half a config; and what a
 //! save reports: the file it wrote ([`Saved`]), or the one it would not
-//! overwrite unasked ([`Conflict`]).
+//! overwrite unasked ([`Conflict`]). [`read_existing`] and [`replace`] are
+//! the steps every save shares around its own format.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -80,6 +81,108 @@ impl Conflict {
     }
 }
 
+/// Why a managed file could not be read or replaced.
+#[derive(Debug, thiserror::Error)]
+pub enum FileError {
+    /// The file is a symbolic link. Saving would replace the link with a
+    /// file, so the change would never reach where the link points (a
+    /// dotfiles checkout, say), and the next deploy would undo it.
+    #[error(
+        "{} is a link to {}; dsplr does not replace a link with a file, so change the file at its source instead",
+        link.display(),
+        target.display()
+    )]
+    Symlink { link: PathBuf, target: PathBuf },
+    #[error("{}: {source}", path.display())]
+    Io { path: PathBuf, source: io::Error },
+    #[error(transparent)]
+    Conflict(Box<Conflict>),
+}
+
+impl FileError {
+    /// The [`FileError::Io`] for `path`, to `map_err` an I/O result with.
+    pub fn io(path: &Path) -> impl FnOnce(io::Error) -> Self + use<> {
+        let path = path.to_owned();
+        move |source| Self::Io { path, source }
+    }
+}
+
+/// What the file a save would replace holds now: `None` when there is no
+/// file. A symbolic link is refused ([`FileError::Symlink`]) before it is
+/// read.
+///
+/// # Errors
+///
+/// When the file is a link, or cannot be read.
+pub fn read_existing(path: &Path) -> Result<Option<String>, FileError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let target = fs::read_link(path).map_err(FileError::io(path))?;
+            return Err(FileError::Symlink {
+                link: path.to_owned(),
+                target,
+            });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(FileError::io(path)(error)),
+    }
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(FileError::io(path)(error)),
+    }
+}
+
+/// Writes `new` over the file at `path`, which held `existing` when it was
+/// read (`None`: there was none), if dsplr may:
+/// - no file: it is created;
+/// - a file dsplr wrote and nobody changed, which dsplr could read
+///   (`unreadable` is `None`): it is overwritten;
+/// - anything else: [`FileError::Conflict`], and nothing is written, unless
+///   `approved` is exactly `existing`, which is how the user's answer to
+///   that conflict comes back.
+///
+/// # Errors
+///
+/// A conflict, or the write failing.
+pub fn replace(
+    path: &Path,
+    existing: Option<&str>,
+    unreadable: Option<String>,
+    new: String,
+    approved: Option<&str>,
+    comment: Comment,
+) -> Result<(), FileError> {
+    if let Some(existing) = existing {
+        let ownership = ownership(existing, comment);
+        let simple = ownership == Ownership::Managed && unreadable.is_none();
+        if !simple && approved != Some(existing) {
+            return Err(FileError::Conflict(Box::new(Conflict {
+                path: path.to_owned(),
+                ownership,
+                unreadable,
+                existing: existing.to_owned(),
+                new,
+            })));
+        }
+    }
+    write_atomic(path, &new).map_err(FileError::io(path))
+}
+
+/// Why a save found no config to look in: what both desktops' lookups need
+/// is unusable.
+pub(crate) const NO_CONFIG_DIR: &str = "neither XDG_CONFIG_HOME nor HOME is set to an absolute path, so there is no config directory to look in";
+
+/// `paths`, comma-separated, for an error listing where a lookup looked.
+pub(crate) fn paths(paths: &[PathBuf]) -> String {
+    let names: Vec<_> = paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect();
+    names.join(", ")
+}
+
 /// A managed file written by a save.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Saved {
@@ -91,11 +194,23 @@ pub struct Saved {
     pub main_config: PathBuf,
     /// The line that includes it there.
     pub include_line: &'static str,
+    /// What the main config's own output settings are called
+    /// (`hl.monitor calls`): the include line goes after them, since they
+    /// override the file's when they come after it.
+    pub rules: &'static str,
     /// Whether the main config was seen to include it already.
     pub included: bool,
     /// Whether the main config sets monitor rules after including it,
-    /// which override the file's.
+    /// which override the file's (on sway, on a reload). Moving the include
+    /// below them fixes it.
     pub overridden: bool,
+    /// The names under which the main config sets an output that the file
+    /// names by its connector, each once, by sway's identifier: sway applies
+    /// an identifier's setting over a name's at startup wherever each is, so
+    /// these win then however the file is included. Removing those commands,
+    /// or naming the outputs by connector there, fixes it. Always empty on
+    /// Hyprland.
+    pub beaten_at_startup: Vec<String>,
     /// Outputs the file named before that are not connected now, whose
     /// settings were carried over as they were.
     pub kept: Vec<OutputId>,

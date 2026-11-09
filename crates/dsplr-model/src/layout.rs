@@ -91,6 +91,16 @@ pub struct Output {
     pub connector: String,
     /// The human-readable name the backend reports.
     pub description: String,
+    /// The monitor's make, model and serial as the backend reported them,
+    /// each empty when it reported none. Unlike [`OutputId`], which keeps
+    /// them only with a serial, these are kept for every monitor: sway names
+    /// a monitor without a serial `Make Model Unknown` too.
+    #[serde(default)]
+    pub make: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub serial: String,
     /// Width and height in millimetres, when the monitor reports them.
     pub physical_size_mm: Option<(u32, u32)>,
     /// The modes the monitor offers.

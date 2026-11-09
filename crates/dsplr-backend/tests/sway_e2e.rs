@@ -1,4 +1,5 @@
-//! The wlroots backend against a real, headless sway.
+//! The wlroots backend against a real, headless sway: reading, testing and
+//! applying layouts, and saving one to the `outputs` file sway reads back.
 //!
 //! Run through the harness, which starts that sway where it cannot reach
 //! the desktop session:
@@ -13,8 +14,9 @@
 #![cfg(target_os = "linux")]
 
 use dsplr_backend::wlr::{self, PlanError, Wlr};
-use dsplr_backend::{Backend, Error};
+use dsplr_backend::{Backend, Error, Persisted};
 use dsplr_model::{AdaptiveSync, Layout, Mode, OutputId, ProblemKind, Transform};
+use dsplr_persist::managed::{Comment, Ownership, ownership};
 
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
@@ -22,7 +24,9 @@ mod support;
 mod sway_support;
 
 use support::{edited, entry, entry_mut};
-use sway_support::{harness_runtime, swaymsg};
+use sway_support::{
+    FreshSway, harness_runtime, no_outputs_file, outputs_up_to, reload_until, sway_config, swaymsg,
+};
 
 /// A mode sway's `test` refuses: it cannot allocate the buffer (its log says
 /// `mmap failed`), while the protocol takes any positive size.
@@ -47,9 +51,9 @@ fn sway_output(name: &str) -> serde_json::Value {
 #[ignore = "needs the headless sway harness: tests/e2e/headless-sway.sh"]
 async fn a_headless_sway_tests_applies_and_shows_each_layout() {
     harness_runtime();
-    // The harness starts HEADLESS-1; these are HEADLESS-2 and HEADLESS-3.
-    swaymsg(&["create_output"]);
-    swaymsg(&["create_output"]);
+    // The harness starts HEADLESS-1; this test also needs HEADLESS-2 and
+    // HEADLESS-3.
+    outputs_up_to(3).await;
 
     let detection = dsplr_backend::detect().await;
     let backend = detection
@@ -228,4 +232,103 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
 
     backend.apply(&start).await.expect("sway applies it");
     assert_eq!(snapshot(&backend).await, start);
+
+    // Last, as a reload puts back whatever the saved file says.
+    a_saved_layout_is_what_sway_reads_back_after_a_reload(&backend, &start).await;
+}
+
+/// Saves a layout, changes the outputs at runtime only, and reloads: sway
+/// shows the saved layout again, so it came from the file. Once for every
+/// transform, since sway's names for the quarter turns are not wl_output's.
+async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend, start: &Layout) {
+    assert!(backend.capabilities().native_persistence, "SWAYSOCK is set");
+    assert!(backend.native_persistence(), "and it answers as sway's");
+    let outputs = no_outputs_file();
+    let transforms = [
+        Transform::Normal,
+        Transform::Rotate90,
+        Transform::Rotate180,
+        Transform::Rotate270,
+        Transform::Flipped,
+        Transform::Flipped90,
+        Transform::Flipped180,
+        Transform::Flipped270,
+    ];
+    let mut saved = start.clone();
+    for (round, transform) in transforms.into_iter().enumerate() {
+        backend
+            .apply(&edited(start, |layout| {
+                let state = &mut entry_mut(layout, "HEADLESS-2").state;
+                state.mode = Some(Mode::new(1600, 900, 0));
+                state.scale = 1.5;
+                state.transform = transform;
+                (state.x, state.y) = (1280, 100);
+                entry_mut(layout, "HEADLESS-3").state.enabled = false;
+            }))
+            .await
+            .expect("sway applies it");
+        saved = snapshot(backend).await;
+        assert_eq!(entry(&saved, "HEADLESS-2").state.transform, transform);
+        let Persisted::File(file) = backend.persist(&saved, None).expect("saved");
+        assert_eq!(file.path, outputs);
+        assert_eq!(file.main_config, sway_config());
+        assert_eq!(file.created, round == 0, "{transform}");
+        assert!(file.included, "the harness's config includes it");
+        assert!(!file.overridden);
+        assert_eq!(
+            ownership(
+                &std::fs::read_to_string(&outputs).expect("written"),
+                Comment::Hash
+            ),
+            Ownership::Managed
+        );
+
+        backend.apply(start).await.expect("sway applies it");
+        assert_eq!(snapshot(backend).await, *start, "changed at runtime");
+        reload_until(backend, &saved).await;
+    }
+
+    // A sway started on the saved file shows it too: its first output at
+    // startup, the others hotplugged, where an identifier's setting would
+    // beat a name's.
+    FreshSway::start("fresh-backend", saved.entries.len())
+        .await
+        .shows(&saved)
+        .await;
+
+    // A mirror is refused before anything is written.
+    let text = std::fs::read_to_string(&outputs).expect("written");
+    let one = entry(&saved, "HEADLESS-1").id.clone();
+    let mirrored = edited(&saved, |layout| {
+        entry_mut(layout, "HEADLESS-2").state.mirror_of = Some(one);
+    });
+    let result = backend.persist(&mirrored, None);
+    assert!(
+        matches!(
+            result,
+            Err(Error::Unsupported {
+                what: "a mirror",
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&outputs).expect("kept"), text);
+
+    // Edited by hand, it is replaced only once its text is approved.
+    let edited_text = format!("{text}# mine\n");
+    std::fs::write(&outputs, &edited_text).expect("edited");
+    let conflict = match backend.persist(&saved, None) {
+        Err(Error::Conflict(conflict)) => conflict,
+        other => panic!("not a conflict: {other:?}"),
+    };
+    assert_eq!(conflict.ownership, Ownership::EditedByHand);
+    assert_eq!(
+        std::fs::read_to_string(&outputs).expect("kept"),
+        edited_text
+    );
+    backend
+        .persist(&saved, Some(&conflict.existing))
+        .expect("saved once approved");
+    assert_eq!(std::fs::read_to_string(&outputs).expect("written"), text);
 }

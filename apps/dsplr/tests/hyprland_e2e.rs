@@ -34,7 +34,7 @@ mod hyprland_support;
 mod support;
 
 use hyprland_support::{config_home, harness_runtime, hyprctl, snapshot_until};
-use support::{edited, entry, entry_mut};
+use support::{answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain};
 
 /// The confirm timeout the declined and timed-out runs use.
 const CONFIRM_SECS: u32 = 2;
@@ -60,20 +60,6 @@ fn dsplr_bin() -> PathBuf {
     std::env::var_os("DSPLR_BIN").map_or_else(|| env!("CARGO_BIN_EXE_dsplr").into(), PathBuf::from)
 }
 
-/// `path` for a shell command line, refusing anything that would need
-/// quoting: every path here is the harness's or Cargo's own.
-fn plain(path: &Path) -> &str {
-    let text = path.to_str().expect("a UTF-8 path");
-    assert!(
-        !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)),
-        "{text:?} would need quoting"
-    );
-    text
-}
-
 /// `dsplr apply <file> --confirm-timeout <CONFIRM_SECS>` on a terminal, as
 /// `script` gives one, with the pid of dsplr itself written to `pid_file`.
 /// Its stdin is the terminal's input, left open until the child is waited on.
@@ -84,18 +70,6 @@ fn apply_on_a_terminal(file: &Path, pid_file: &Path) -> Child {
         dsplr = plain(&dsplr_bin()),
         file = plain(file),
     ))
-}
-
-/// The shell command line `command` on a terminal `script` gives it. Its
-/// stdin is the terminal's input.
-fn on_a_terminal(command: &str) -> Child {
-    Command::new("script")
-        .args(["--quiet", "--return", "--command", command, "/dev/null"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("script (util-linux) runs")
 }
 
 fn exit_and_output(output: &Output) -> (Option<i32>, String) {
@@ -322,12 +296,10 @@ fn save(args: &[&str]) -> (Option<i32>, String) {
 
 /// `dsplr save` on a terminal, answering `answer`.
 fn save_on_a_terminal(answer: &str) -> (Option<i32>, String) {
-    let mut child = on_a_terminal(&format!("exec {} save", plain(&dsplr_bin())));
-    let mut input = child.stdin.take().expect("piped");
-    input.write_all(answer.as_bytes()).expect("answered");
-    let output = child.wait_with_output().expect("dsplr ran");
-    drop(input);
-    exit_and_output(&output)
+    exit_and_output(&answered_on_a_terminal(
+        &format!("exec {} save", plain(&dsplr_bin())),
+        answer,
+    ))
 }
 
 #[test]

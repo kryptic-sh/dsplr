@@ -85,6 +85,9 @@ mod tests {
                         connector: "DP-1".into(),
                         description: "AOC Q27G2G4 1A2B3C".into(),
                         physical_size_mm: Some((600, 340)),
+                        make: String::new(),
+                        model: String::new(),
+                        serial: String::new(),
                         modes: vec![listed.clone(), Mode::new(1920, 1080, 60_000)],
                     }),
                     state: OutputState {
@@ -195,6 +198,20 @@ mod tests {
                 x: 1920,
                 ..OutputState::default()
             }
+        );
+    }
+
+    /// Written before outputs carried their make, model and serial.
+    #[test]
+    fn an_output_without_make_model_and_serial_reads_with_them_empty() {
+        let read = Layout::from_json(
+            r#"{"version": 0, "entries": [{"id": {"connector": "DP-2"}, "output": {"connector": "DP-2", "description": "", "physical_size_mm": null, "modes": []}, "state": {}}]}"#,
+        )
+        .unwrap();
+        let output = read.entries[0].output.as_ref().unwrap();
+        assert_eq!(
+            (&*output.make, &*output.model, &*output.serial),
+            ("", "", "")
         );
     }
 

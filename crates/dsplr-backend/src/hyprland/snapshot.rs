@@ -118,6 +118,9 @@ fn entry(monitor: &Monitor, all: &[Monitor]) -> Result<OutputEntry, SnapshotErro
         output: Some(Output {
             connector: connector(),
             description: monitor.description.clone(),
+            make: monitor.make.clone(),
+            model: monitor.model.clone(),
+            serial: monitor.serial.clone(),
             physical_size_mm,
             modes,
         }),

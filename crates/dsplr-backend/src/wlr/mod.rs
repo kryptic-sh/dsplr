@@ -13,6 +13,7 @@
 mod connection;
 mod heads;
 mod plan;
+mod sway;
 
 #[allow(
     dead_code,
@@ -70,6 +71,8 @@ pub enum Error {
         "the outputs changed after dsplr read them, so the compositor cancelled the configuration; read them again"
     )]
     Cancelled,
+    #[error("cannot save the layout: {0}")]
+    Save(#[source] dsplr_persist::sway::SaveError),
 }
 
 /// The longest one read, test or apply takes, connecting included: each
@@ -86,12 +89,13 @@ async fn bounded<T>(
         .map_err(|_| Error::Timeout { what })?
 }
 
-/// A wlroots compositor with an output manager: where its socket is, and the
-/// manager version it offers.
+/// A wlroots compositor with an output manager: where its socket is, the
+/// manager version it offers, and the sway IPC socket its environment names.
 #[derive(Clone, Debug)]
 pub struct Wlr {
     socket: PathBuf,
     version: u32,
+    swaysock: Option<PathBuf>,
 }
 
 impl Wlr {
@@ -102,13 +106,21 @@ impl Wlr {
 
     /// [`Wlr::from_env`], reading the variables through `var`: connects to
     /// the socket `WAYLAND_DISPLAY` names and reads its heads, which is how
-    /// detection checks that the output manager is there and answers.
+    /// detection checks that the output manager is there and answers. The
+    /// socket `SWAYSOCK` names is kept, not asked: [`Wlr::is_sway`] asks it.
     pub async fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, Error> {
+        let swaysock = var("SWAYSOCK")
+            .filter(|socket| !socket.is_empty())
+            .map(PathBuf::from);
         let socket = socket_path(var)?;
         let version = bounded("describe its outputs", Connection::open(&socket))
             .await?
             .version();
-        Ok(Self { socket, version })
+        Ok(Self {
+            socket,
+            version,
+            swaysock,
+        })
     }
 
     /// The compositor's Wayland socket.
@@ -120,6 +132,23 @@ impl Wlr {
     /// up to the newest dsplr speaks.
     pub const fn version(&self) -> u32 {
         self.version
+    }
+
+    /// Whether `SWAYSOCK` named a socket, which sway sets for what it starts
+    /// (sway(1)): a claim that this is sway, not yet checked.
+    pub const fn names_sway(&self) -> bool {
+        self.swaysock.is_some()
+    }
+
+    /// Whether the compositor is sway, the one wlroots compositor whose
+    /// config dsplr writes: the socket `SWAYSOCK` names answers sway's IPC
+    /// within [`REQUEST_TIMEOUT`]. It asks that socket each time, blocking
+    /// the calling thread meanwhile, so it is asked only where it decides
+    /// something: saving, and `dsplr backend`.
+    pub fn is_sway(&self) -> bool {
+        self.swaysock
+            .as_deref()
+            .is_some_and(|socket| sway::answers(socket, REQUEST_TIMEOUT))
     }
 
     /// A new connection, with its heads read.
@@ -213,6 +242,31 @@ mod tests {
             socket_path(vars(&env[..1])),
             Err(Error::NoRuntimeDir { .. })
         ));
+    }
+
+    /// Detection does not ask sway's socket: one that never answers costs
+    /// it nothing (it used to wait out the request timeout on every
+    /// command).
+    #[tokio::test]
+    async fn detection_does_not_wait_on_sway_s_socket() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let stalled = dir.path().join("sway-ipc.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&stalled).expect("bind");
+        let runtime = dir.path().to_str().expect("UTF-8");
+        let swaysock = stalled.to_str().expect("UTF-8");
+        let env = [
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("XDG_RUNTIME_DIR", runtime),
+            ("SWAYSOCK", swaysock),
+        ];
+        let started = std::time::Instant::now();
+        let result = Wlr::from_vars(vars(&env)).await;
+        assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
+        assert!(
+            started.elapsed() < super::REQUEST_TIMEOUT / 2,
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

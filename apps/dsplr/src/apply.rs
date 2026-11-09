@@ -379,6 +379,9 @@ mod tests {
                 connector: connector.into(),
                 description: format!("AOC Q27G4 {serial}"),
                 physical_size_mm: None,
+                make: String::new(),
+                model: String::new(),
+                serial: String::new(),
                 modes: vec![Mode::new(2560, 1440, 120_000)],
             }),
             state: OutputState {

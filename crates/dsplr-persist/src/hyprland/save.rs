@@ -3,15 +3,17 @@
 //! writes" and "Hyprland").
 
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 
 use dsplr_model::{Layout, OutputEntry};
 
 use super::{
     MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name, read_monitors_lua,
 };
-use crate::managed::{Comment, Conflict, Ownership, Saved, ownership, with_header, write_atomic};
+use crate::managed::{
+    Comment, FileError, NO_CONFIG_DIR, Saved, paths, read_existing, replace, with_header,
+};
 
 /// The file dsplr writes, beside the main config.
 const MONITORS_FILE: &str = "monitors.lua";
@@ -37,19 +39,8 @@ pub enum SaveError {
     RelativeConfig(PathBuf),
     #[error("no Hyprland config found; looked for {}", paths(.looked))]
     NoConfig { looked: Vec<PathBuf> },
-    #[error(
-        "no Hyprland config found: neither XDG_CONFIG_HOME nor HOME is set to an absolute path, so there is no config directory to look in"
-    )]
+    #[error("no Hyprland config found: {NO_CONFIG_DIR}")]
     NoConfigDir,
-    /// `monitors.lua` is a symbolic link. Saving would replace the link
-    /// with a file, so the change would never reach where the link points
-    /// (a dotfiles checkout, say), and the next deploy would undo it.
-    #[error(
-        "{} is a link to {}; dsplr does not replace a link with a file, so change the file at its source instead",
-        link.display(),
-        target.display()
-    )]
-    Symlink { link: PathBuf, target: PathBuf },
     /// Hyprland reads a hyprlang config here; dsplr writes only the Lua
     /// config's `monitors.lua` (Hyprland 0.57 reads no hyprlang config).
     #[error(
@@ -57,20 +48,12 @@ pub enum SaveError {
         .0.display()
     )]
     Hyprlang(PathBuf),
-    #[error("{}: {source}", path.display())]
-    Io { path: PathBuf, source: io::Error },
+    /// `monitors.lua` or the main config could not be read, is a link, or
+    /// could not be written, or `monitors.lua` is a conflict.
+    #[error(transparent)]
+    File(#[from] FileError),
     #[error("the layout cannot be put into monitor rules: {0}")]
     Write(#[from] WriteError),
-    #[error(transparent)]
-    Conflict(Box<Conflict>),
-}
-
-fn paths(paths: &[PathBuf]) -> String {
-    let names: Vec<_> = paths
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect();
-    names.join(", ")
 }
 
 /// Saves `layout` as the `monitors.lua` beside the config Hyprland reads,
@@ -80,7 +63,7 @@ fn paths(paths: &[PathBuf]) -> String {
 /// - nothing: the file is created;
 /// - a file dsplr wrote and nobody changed: it is overwritten;
 /// - anything else (edited by hand, someone else's, or holding settings
-///   dsplr cannot read): [`SaveError::Conflict`], and nothing is written,
+///   dsplr cannot read): [`FileError::Conflict`], and nothing is written,
 ///   unless `approved` is exactly the text the file holds now, which is how
 ///   the user's answer to that conflict comes back.
 ///
@@ -107,26 +90,9 @@ pub fn save(
         MainConfig::Lua(path) => path,
         MainConfig::Hyprlang(path) => return Err(SaveError::Hyprlang(path)),
     };
-    let io_error = |path: &Path| {
-        let path = path.to_owned();
-        move |source| SaveError::Io { path, source }
-    };
-    let main = fs::read_to_string(&main_config).map_err(io_error(&main_config))?;
+    let main = fs::read_to_string(&main_config).map_err(FileError::io(&main_config))?;
     let path = main_config.with_file_name(MONITORS_FILE);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            let target = fs::read_link(&path).map_err(io_error(&path))?;
-            return Err(SaveError::Symlink { link: path, target });
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(io_error(&path)(error)),
-    }
-    let existing = match fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(io_error(&path)(error)),
-    };
+    let existing = read_existing(&path)?;
     let (file, kept, unreadable) = match existing.as_deref().map(read_monitors_lua) {
         None => (with_nothing_kept(layout), Vec::new(), None),
         Some(Ok(old)) => {
@@ -140,28 +106,24 @@ pub fn save(
         ),
     };
     let new = with_header(&monitor_calls(&file, NAMING)?, Comment::Lua);
-    if let Some(existing) = &existing {
-        let ownership = ownership(existing, Comment::Lua);
-        let simple = ownership == Ownership::Managed && unreadable.is_none();
-        if !simple && approved != Some(existing.as_str()) {
-            return Err(SaveError::Conflict(Box::new(Conflict {
-                path,
-                ownership,
-                unreadable,
-                existing: existing.clone(),
-                new,
-            })));
-        }
-    }
-    write_atomic(&path, &new).map_err(io_error(&path))?;
+    replace(
+        &path,
+        existing.as_deref(),
+        unreadable,
+        new,
+        approved,
+        Comment::Lua,
+    )?;
     let require = require_line(&main);
     Ok(Saved {
         path,
         created: existing.is_none(),
         included: require.is_some(),
         overridden: require.is_some_and(|line| monitor_calls_after(&main, line)),
+        beaten_at_startup: Vec::new(),
         main_config,
         include_line: REQUIRE_LINE,
+        rules: "hl.monitor calls",
         kept: kept.into_iter().map(|entry| entry.id).collect(),
     })
 }
@@ -379,7 +341,7 @@ mod tests {
         MainConfig, REQUIRE_LINE, SaveError, find_config, monitor_calls_after, require_line, save,
     };
     use crate::hyprland::{MonitorNaming, MonitorsLua, monitor_calls, read_monitors_lua};
-    use crate::managed::{Comment, Ownership, ownership, with_header};
+    use crate::managed::{Comment, FileError, Ownership, ownership, with_header};
 
     /// The owner's machine as a snapshot reads it: the panel off, the AOC
     /// at 2560x1440@120, adaptive sync not known.
@@ -388,6 +350,9 @@ mod tests {
             connector: connector.into(),
             description: description.into(),
             physical_size_mm: None,
+            make: String::new(),
+            model: String::new(),
+            serial: String::new(),
             modes: vec![Mode::new(2560, 1440, 120_000)],
         };
         Layout {
@@ -471,7 +436,7 @@ hl.monitor({
 
     fn conflict_of(result: Result<super::Saved, SaveError>) -> crate::managed::Conflict {
         match result {
-            Err(SaveError::Conflict(conflict)) => *conflict,
+            Err(SaveError::File(FileError::Conflict(conflict))) => *conflict,
             other => panic!("not a conflict: {other:?}"),
         }
     }
@@ -846,6 +811,9 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
                     connector: connector.into(),
                     description: format!("AOC Q27G4 {serial}"),
                     physical_size_mm: None,
+                    make: String::new(),
+                    model: String::new(),
+                    serial: String::new(),
                     modes: vec![Mode::new(2560, 1440, 120_000)],
                 }),
                 state: OutputState {
@@ -945,7 +913,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         std::os::unix::fs::symlink(&source, config.monitors()).unwrap();
         // Even approved, a link is not replaced.
         let result = config.save(&live(), Some(NWG_DISPLAYS));
-        let Err(SaveError::Symlink { link, target }) = &result else {
+        let Err(SaveError::File(FileError::Symlink { link, target })) = &result else {
             panic!("not refused as a link: {result:?}");
         };
         assert_eq!((link, target), (&config.monitors(), &source));

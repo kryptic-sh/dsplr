@@ -10,7 +10,13 @@ pub fn describe(detection: &Detection) -> String {
         Some(backend) => format!(
             "backend: {}\ncapabilities: {}\n",
             backend.name(),
-            capability_names(&backend.capabilities()).join(", ")
+            capability_names(&Capabilities {
+                // Checked, where `capabilities` only says what the
+                // environment claims (a `SWAYSOCK` that may be stale).
+                native_persistence: backend.native_persistence(),
+                ..backend.capabilities()
+            })
+            .join(", ")
         ),
         None => "backend: none found\n".to_owned(),
     };

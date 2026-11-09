@@ -3,8 +3,9 @@
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
 //! looked at. So far Hyprland and wlroots compositors exist; both read and
-//! apply, wlroots tests, and Hyprland persists to its Lua config, while
-//! persisting on wlroots and the other desktops are not written yet. Every
+//! apply, wlroots tests, Hyprland persists to its Lua config and sway to its
+//! `outputs` file, while persisting on other wlroots compositors and the
+//! other desktops is not written yet. Every
 //! backend is Linux-only; on other targets [`Backend`] has no variants and
 //! detection says why.
 
@@ -149,7 +150,10 @@ impl Backend {
     ///
     /// wlroots compositors take custom modes, since the protocol has them and
     /// `test` lets the compositor refuse one first; adaptive sync needs the
-    /// manager's version 4; mirroring is not in the protocol.
+    /// manager's version 4; mirroring is not in the protocol. Only sway has
+    /// native persistence, its `outputs` file; here that is whether
+    /// `SWAYSOCK` names a socket, asking nothing, since every command reads
+    /// capabilities. [`Backend::native_persistence`] asks the socket.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         match *self {
@@ -177,8 +181,24 @@ impl Backend {
                 per_output_scale: true,
                 test_before_apply: true,
                 gaps_allowed: true,
+                native_persistence: wlr.names_sway(),
                 ..Capabilities::default()
             },
+        }
+    }
+
+    /// Whether [`persist`](Self::persist) can save natively here, checked:
+    /// [`Capabilities::native_persistence`] as [`capabilities`](Self::capabilities)
+    /// says, except that on a wlroots compositor sway's IPC socket is asked
+    /// whether it is sway ([`wlr::Wlr::is_sway`]), which can take up to its
+    /// request timeout.
+    #[must_use]
+    pub fn native_persistence(&self) -> bool {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(_) => self.capabilities().native_persistence,
+            #[cfg(target_os = "linux")]
+            Self::Wlr(ref wlr) => wlr.is_sway(),
         }
     }
 
@@ -236,13 +256,15 @@ impl Backend {
 
     /// Makes `layout` last past a restart of the desktop, where the desktop
     /// itself reads it: on Hyprland, the `monitors.lua` beside its Lua
-    /// config ([`dsplr_persist::hyprland::save`]).
+    /// config ([`dsplr_persist::hyprland::save`]); on sway, the `outputs`
+    /// file beside its config ([`dsplr_persist::sway::save`]).
     ///
     /// A file there that dsplr may not overwrite unasked is
     /// [`Error::Conflict`], and nothing is written; once the user has seen it
     /// and agreed, persist again with `approved` set to the conflict's
-    /// `existing` text. [`Error::Unsupported`] under a hyprlang config, and
-    /// on wlroots compositors.
+    /// `existing` text. [`Error::Unsupported`], with nothing written, under a
+    /// hyprlang config, on a wlroots compositor other than sway, and on sway
+    /// for a layout its output config cannot hold (a mirror, say).
     #[cfg_attr(
         not(target_os = "linux"),
         expect(unused_variables, reason = "no backend exists off Linux")
@@ -252,9 +274,12 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => {
                 use dsplr_persist::hyprland::{SaveError, save};
+                use dsplr_persist::managed::FileError;
                 match save(|name| std::env::var_os(name), layout, approved) {
                     Ok(saved) => Ok(Persisted::File(saved)),
-                    Err(SaveError::Conflict(conflict)) => Err(Error::Conflict(conflict)),
+                    Err(SaveError::File(FileError::Conflict(conflict))) => {
+                        Err(Error::Conflict(conflict))
+                    }
                     Err(SaveError::Hyprlang(_)) => Err(Error::Unsupported {
                         what: "saving the layout",
                         reason: "Hyprland reads a hyprlang hyprland.conf here, and dsplr writes only a Lua config's monitors.lua",
@@ -263,10 +288,29 @@ impl Backend {
                 }
             }
             #[cfg(target_os = "linux")]
-            Self::Wlr(_) => Err(Error::Unsupported {
-                what: "saving the layout",
-                reason: "dsplr cannot write a wlroots compositor's config yet",
-            }),
+            Self::Wlr(ref wlr) => {
+                use dsplr_persist::managed::FileError;
+                use dsplr_persist::sway::{SaveError, WriteError, save};
+                if !wlr.is_sway() {
+                    return Err(Error::Unsupported {
+                        what: "saving the layout",
+                        reason: "SWAYSOCK is not set, or its socket does not answer as sway's, so this is not sway, the one wlroots compositor whose config dsplr writes; dsplr's own profile store for the others is not written yet",
+                    });
+                }
+                match save(|name| std::env::var_os(name), layout, approved) {
+                    Ok(saved) => Ok(Persisted::File(saved)),
+                    Err(SaveError::File(FileError::Conflict(conflict))) => {
+                        Err(Error::Conflict(conflict))
+                    }
+                    Err(SaveError::Write(WriteError::Unsupported { what, .. })) => {
+                        Err(Error::Unsupported {
+                            what,
+                            reason: "sway's output config cannot hold it, so the layout cannot be saved there",
+                        })
+                    }
+                    Err(error) => Err(Error::Wlr(wlr::Error::Save(error))),
+                }
+            }
         }
     }
 }
