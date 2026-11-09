@@ -10,6 +10,12 @@
 # - LIBSEAT_BACKEND=seatd: Hyprland always tries its DRM backend first, and
 #   libseat's logind backend would ask to take control of the user's active
 #   session. seatd is not running, so the attempt fails without asking.
+# - Hyprland finds its config in a private XDG_CONFIG_HOME, the way it finds
+#   a user's, and the tests get the same XDG_CONFIG_HOME, so `dsplr save`
+#   writes its monitors.lua there and never into the user's config.
+# - KWin, Hyprland and the tests get a private HOME too, so nothing that falls
+#   back to ~/.config reaches the user's. cargo and rustup keep their real
+#   homes through CARGO_HOME and RUSTUP_HOME, pinned before HOME changes.
 #
 # Hyprland still needs a GPU render node to allocate buffers, so on a runner
 # without one this fails at "Hyprland did not start" or with 0x0 outputs.
@@ -17,13 +23,16 @@ set -uo pipefail
 
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+home="$runtime/home"
+mkdir "$home"
 cleanup() {
   kill "${hypr_pid:-}" "${parent_pid:-}" 2>/dev/null
   wait 2>/dev/null
 }
 trap cleanup EXIT
 
-env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
+env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
   kwin_wayland --virtual --no-lockscreen --no-global-shortcuts \
   --socket wayland-0 --width 1920 --height 1080 > "$runtime/parent.log" 2>&1 &
 parent_pid=$!
@@ -34,11 +43,13 @@ if ! [ -S "$runtime/wayland-0" ]; then
   exit 1
 fi
 
+mkdir -p "$runtime/config/hypr"
 printf 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })\n' \
-  > "$runtime/hyprland.lua"
-env -i HOME="$HOME" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 \
+  > "$runtime/config/hypr/hyprland.lua"
+env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 \
+  XDG_CONFIG_HOME="$runtime/config" \
   HYPRLAND_NO_SD_NOTIFY=1 HYPRLAND_NO_CRASHREPORTER=1 LIBSEAT_BACKEND=seatd \
-  Hyprland --config "$runtime/hyprland.lua" > "$runtime/hypr.log" 2>&1 &
+  Hyprland > "$runtime/hypr.log" 2>&1 &
 hypr_pid=$!
 for _ in $(seq 150); do
   ls "$runtime"/hypr/*/.socket.sock > /dev/null 2>&1 && break
@@ -52,14 +63,16 @@ if [ -z "$sig" ] || ! [ -S "$runtime/hypr/$sig/.socket.sock" ]; then
   exit 1
 fi
 
-export XDG_RUNTIME_DIR="$runtime" HYPRLAND_INSTANCE_SIGNATURE="$sig"
+export XDG_RUNTIME_DIR="$runtime" HYPRLAND_INSTANCE_SIGNATURE="$sig" HOME="$home"
 # dsplr keeps its revert point under XDG_STATE_HOME: a private one, so a test
 # never writes the user's.
 export XDG_STATE_HOME="$runtime/state"
+# Hyprland's config, which `dsplr save` writes beside.
+export XDG_CONFIG_HOME="$runtime/config"
 # The e2e tests refuse to run without this, so they never reach a real
 # Hyprland when started some other way.
 export DSPLR_E2E_HYPRLAND="$runtime"
-unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NIRI_SOCKET
+unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NIRI_SOCKET HYPRLAND_CONFIG
 "$@"
 status=$?
 if [ "$status" -ne 0 ]; then

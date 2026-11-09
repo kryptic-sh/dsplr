@@ -1,12 +1,14 @@
 //! `dsplr apply` and `dsplr restore --revert` against a real, headless
 //! Hyprland: keeping a change, declining it, letting the prompt time out, and
-//! the watchdog reverting for a dsplr that died.
+//! the watchdog reverting for a dsplr that died. And `dsplr save`: creating
+//! monitors.lua, and asking before it replaces one it may not simply
+//! overwrite.
 //!
 //! Run through the harness, which starts that Hyprland where it cannot reach
 //! the desktop session and gives dsplr a private state directory:
 //!
 //! ```text
-//! tests/e2e/headless-hyprland.sh cargo test -p dsplr --test hyprland_e2e -- --ignored
+//! tests/e2e/headless-hyprland.sh cargo test -p dsplr --test hyprland_e2e -- --ignored --test-threads=1
 //! ```
 //!
 //! The confirm prompt needs a terminal, which `script` (util-linux) provides.
@@ -22,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use dsplr_backend::Backend;
 use dsplr_model::{Layout, Transform};
+use dsplr_persist::managed::{Comment, Ownership, ownership};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
@@ -29,7 +32,7 @@ mod hyprland_support;
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use hyprland_support::{harness_runtime, hyprctl, snapshot_until};
+use hyprland_support::{config_home, harness_runtime, hyprctl, snapshot_until};
 use support::{edited, entry, entry_mut};
 
 /// The confirm timeout the declined and timed-out runs use.
@@ -74,14 +77,19 @@ fn plain(path: &Path) -> &str {
 /// `script` gives one, with the pid of dsplr itself written to `pid_file`.
 /// Its stdin is the terminal's input, left open until the child is waited on.
 fn apply_on_a_terminal(file: &Path, pid_file: &Path) -> Child {
-    let command = format!(
+    on_a_terminal(&format!(
         "echo $$ > {pid}; exec {dsplr} apply {file} --confirm-timeout {CONFIRM_SECS}",
         pid = plain(pid_file),
         dsplr = plain(&dsplr_bin()),
         file = plain(file),
-    );
+    ))
+}
+
+/// The shell command line `command` on a terminal `script` gives it. Its
+/// stdin is the terminal's input.
+fn on_a_terminal(command: &str) -> Child {
     Command::new("script")
-        .args(["--quiet", "--return", "--command", &command, "/dev/null"])
+        .args(["--quiet", "--return", "--command", command, "/dev/null"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -264,4 +272,82 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// `dsplr save` with `args`, on no terminal.
+fn save(args: &[&str]) -> (Option<i32>, String) {
+    let output = Command::new(dsplr_bin())
+        .arg("save")
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("dsplr runs");
+    exit_and_output(&output)
+}
+
+/// `dsplr save` on a terminal, answering `answer`.
+fn save_on_a_terminal(answer: &str) -> (Option<i32>, String) {
+    let mut child = on_a_terminal(&format!("exec {} save", plain(&dsplr_bin())));
+    let mut input = child.stdin.take().expect("piped");
+    input.write_all(answer.as_bytes()).expect("answered");
+    let output = child.wait_with_output().expect("dsplr ran");
+    drop(input);
+    exit_and_output(&output)
+}
+
+#[test]
+#[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
+fn dsplr_save_writes_monitors_lua_and_asks_before_replacing_one() {
+    harness_runtime();
+    let monitors = config_home().join("hypr/monitors.lua");
+    assert!(!monitors.exists(), "the harness starts without one");
+    let read = || std::fs::read_to_string(&monitors).expect("monitors.lua");
+
+    // Created, with the line hyprland.lua needs named.
+    let (code, text) = save(&[]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains(&monitors.display().to_string()), "{text}");
+    assert!(text.contains("  require(\"monitors\")"), "{text}");
+    assert_eq!(ownership(&read(), Comment::Lua), Ownership::Managed);
+
+    // Edited by hand: refused, with the diff, until --force.
+    let edited = format!("{}-- mine\n", read());
+    std::fs::write(&monitors, &edited).expect("edited");
+    let (code, text) = save(&[]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("edited by hand"), "{text}");
+    assert!(
+        text.contains("\n--- mine\n"),
+        "the diff shows the line going: {text}"
+    );
+    assert!(text.contains("--force"), "{text}");
+    assert_eq!(read(), edited, "nothing was written");
+    let (code, text) = save(&["--force"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(ownership(&read(), Comment::Lua), Ownership::Managed);
+
+    // Another tool's file, naming a monitor not connected: replaced only
+    // after a yes, and its rule is kept.
+    let foreign = "hl.monitor({ output = \"DSPLR-9\", disabled = true })\n";
+    std::fs::write(&monitors, foreign).expect("written");
+    let (code, text) = save(&[]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("no terminal"), "{text}");
+    assert_eq!(read(), foreign);
+    let (code, text) = save_on_a_terminal("n\n");
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("Replace "), "it was asked: {text}");
+    assert_eq!(read(), foreign);
+    let (code, text) = save_on_a_terminal("y\n");
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("kept the settings for DSPLR-9"), "{text}");
+    let saved = read();
+    assert_eq!(ownership(&saved, Comment::Lua), Ownership::Managed);
+    assert!(saved.contains("output = \"DSPLR-9\""), "{saved}");
+
+    // --yes replaces another tool's file without asking.
+    std::fs::write(&monitors, foreign).expect("written");
+    let (code, text) = save(&["--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(read(), saved);
 }

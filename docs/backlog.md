@@ -22,7 +22,10 @@ re-read until the layout settles, ask, then keep or revert;
 `dsplr restore --revert` goes back by hand. `apps/dsplr/tests/hyprland_e2e.rs`
 drives `dsplr apply` in the headless harness, locally and in CI's VM: kept with
 `--yes` then reverted by hand, declined, timed out, and dsplr killed at the
-prompt so its watchdog reverts. Not written yet: `dsplr set` and saving.
+prompt so its watchdog reverts. `dsplr save` writes the `monitors.lua` beside a
+Hyprland Lua config (`Backend::persist`, built on
+`dsplr_persist::hyprland::save`); its e2e has not run yet (below). Not written
+yet: `dsplr set`, and saving under a hyprlang config or on wlroots.
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -42,6 +45,27 @@ milestone:
   tested only by dsplr and put a screen-breaking path in every game's
   dependencies. If the owner wants one stack anyway, crcbl suggests a separate
   X11 crate beside `crcbl-wayland`, not RandR inside crcbl-shell.
+
+- **`dsplr save`, decided while building it (2026-11-09); confirm or change**:
+  - The seam is `Backend::persist(&self, layout, approved: Option<&str>)`, not
+    the plan's `persist(layout)`: a file needing a yes comes back as
+    `Error::Conflict` with its text and the new text, nothing written, and the
+    caller persists again with that text approved, which writes only if the file
+    still holds it. The backend cannot ask; the CLI and the GUI can.
+  - What the old `monitors.lua` says is carried over where the snapshot has
+    nothing: its catch-all, its rules for monitors not connected now (so a save
+    at home keeps the office monitor's rule), and its `vrr`, `bitdepth` and `cm`
+    for a connected monitor, which Hyprland does not report as rules. The cost:
+    a rule for a monitor gone for good stays until the file is edited (then
+    `--force`).
+  - `--force` also replaces another tool's file without asking, as it overwrites
+    anything; `--yes` replaces only a readable file another tool wrote.
+  - Exit codes: `4` when the backend cannot save at all (`Unsupported`: a
+    hyprlang config, wlroots), as the backend refusing the request; `1` when
+    nothing was saved because a file needs `--force`, the user said no, there
+    was no terminal to ask on, or a file could not be read or written.
+  - Saving prints its messages, the diff and the `require` line on stderr, as
+    `dsplr apply` does.
 
 ## Open work in the Linux-owned crates
 
@@ -74,8 +98,40 @@ milestone:
   river, labwc and Wayfire are expected to work through the same protocol and
   are not checked; COSMIC's own extension and whether it saves outputs itself
   are still M4's to check (`docs/plan/04-backends.md`).
-- **`Backend::persist`**: not written. Agree with the Windows session where the
-  `monitors.lua` save is composed (their entry "Saving `monitors.lua`").
+- **The save e2e has not run.**
+  `a_saved_layout_is_what_hyprland_reads_back_after_a_reload`
+  (`crates/dsplr-backend/tests/hyprland_e2e.rs`) and
+  `dsplr_save_writes_monitors_lua_and_asks_before_replacing_one`
+  (`apps/dsplr/tests/hyprland_e2e.rs`) compile but have run nowhere: the harness
+  needs `kwin_wayland`, which the owner's machine lacks, so their first run is
+  CI's; run them with `--test-threads=1`, since the save test's reload drops the
+  other test's rules. The harness now starts Hyprland without `--config`,
+  finding `hypr/hyprland.lua` in a private `XDG_CONFIG_HOME` the tests share,
+  and gives KWin, Hyprland and the tests a private `HOME` (`CARGO_HOME` and
+  `RUSTUP_HOME` pinned first; cargo under such a `HOME` was checked locally,
+  KWin under one was not); that lookup, and `require("monitors")` resolving
+  beside it, were checked with `Hyprland --verify-config` 0.57.1 (it reports a
+  broken or missing `monitors.lua`), not in a running Hyprland.
+- **What `dsplr save` cannot see**: a Hyprland started with `--config` (nothing
+  outside Hyprland can read that path), and the system configs in
+  `$XDG_CONFIG_DIRS` and `/etc/xdg` (not the user's to write beside), so with
+  either it writes beside the user's own config or finds none. It also reads its
+  own environment, not Hyprland's: run over ssh, or with another
+  `XDG_CONFIG_HOME` or `HYPRLAND_CONFIG` than the compositor was started with,
+  it finds a different config than Hyprland reads. Whether `hyprland.lua` loads
+  the file is a line-by-line text search for `require("monitors")` outside `--`
+  comments (`require_line`), and whether rules override it a search for
+  `hl.monitor(` on a later line (`monitor_calls_after`): a
+  `pcall(require, "monitors")`, a require inside another required file, a call
+  written `hl.monitor (`, or text inside a multi-line `--[[ ]]` comment is
+  misjudged, and only the message printed after the save is wrong.
+- **A symbolic link at `monitors.lua` is refused** (`SaveError::Symlink`), even
+  with `--force`: the atomic rename would replace the link with a file, so the
+  change would never reach its target (a dotfiles checkout) and the next deploy
+  would undo it. The message names the link and its target; the user changes the
+  file at its source. Writing through the link to its target was considered and
+  not done: the target is a deployed copy or a checkout, and dsplr editing
+  either is a change the user did not ask for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
 - **The GUI (M3)**: `dsplr-gui` is still a stub; nothing is built against crcbl.
@@ -114,23 +170,34 @@ milestone:
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.
-- **Saving `monitors.lua`**: the pieces exist (`dsplr_persist::hyprland`'s
-  writer and reader, `dsplr_persist::managed`'s header, hand-edit check and
-  atomic write) but nothing composes them into a save yet: read the existing
-  file, refuse an `EditedByHand` one without `--force` or a confirm showing the
-  diff, offer to replace a `Foreign` one (nwg-displays') after a confirm, write.
-  It belongs with `Backend::persist` (the Linux session's) or a helper in
-  `dsplr-persist` it calls; agree which before writing it.
-- **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written.
-  The Linux session offered to run a generated file through headless Hyprland
-  0.57.1 to check it.
+- **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written,
+  so `dsplr save` under a `hyprland.conf` is `Unsupported` (exit 4). Hyprland
+  0.57.1 no longer reads hyprlang configs at all (its `getMainConfigPath` looks
+  for `hyprland.lua` only), so the writer would serve 0.56 and older; whether it
+  is still wanted is the owner's call. The Linux session offered to run a
+  generated file through headless Hyprland 0.57.1 to check it.
 - **The reader refuses Hyprland forms a layout cannot hold**: `preferred` and
-  `highres` modes, a mode without a refresh, `auto` positions and scales, and
-  the SDR, luminance, `icc` and `reserved` keys. A hand-written file using them
-  cannot be imported; a lossless pass-through of unknown keys would fix the
-  latter.
-- **`vrr = 3` reads back as automatic**, the same as 2, since a layout does not
-  tell fullscreen-only from fullscreen-video-and-games.
+  `highres` modes, a mode without a refresh, `auto` positions and scales,
+  `vrr = 3` (fullscreen video and games, which a layout cannot tell from 2), any
+  setting beside `disabled = true` (including one merged from an earlier call
+  for the same output), and the SDR, luminance, `icc` and `reserved` keys. A
+  hand-written file using them cannot be imported, and `dsplr save` replaces it
+  only with `--force`, losing them and everything else in it (its catch-all and
+  its rules for monitors not connected now); a lossless pass-through of unknown
+  keys would fix the latter.
+- **`dsplr save`'s diff is hand-written**: `dsplr_persist::diff::line_diff`, a
+  textbook longest-common-subsequence table, tested against CLRS's example; it
+  shows every line, and past `MAX_CELLS` it shows the changed middle as removed
+  then added. The `similar` crate would replace it, but adding a dependency is
+  the owner's call.
+- **A change to `monitors.lua` made while `dsplr save` runs is lost**: it reads
+  and classifies the file, then renames the new one over whatever is there then,
+  without looking again. A file created, edited by hand or replaced by another
+  tool in that window is overwritten without the check or the question it would
+  otherwise get. When it asks, the second call re-reads and compares the text
+  the user approved, so a change while the question waits is caught; one made
+  during a call's own read-to-rename (a read, a write and an `fsync`) is not. No
+  lock: nothing else that writes the file would honour one.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files, which wait for the profile store's format.
 - **`Transform`'s text uses wl_output's quarter turns, not sway's**: its
@@ -250,6 +317,25 @@ and the `monitors.lua` writer:
 - A nested Hyprland tries libseat's logind backend before falling back; on a
   desktop that asks to take control of the user's session.
   `LIBSEAT_BACKEND=seatd` in the harness stops it.
+- Hyprland finds its config (v0.56.2 and v0.57.1, `Jeremy::getMainConfigPath`
+  with hyprutils 0.14.3's `Path::findConfig`): `--config`, then
+  `HYPRLAND_CONFIG`, then `hypr/hyprland.lua` in `$XDG_CONFIG_HOME`,
+  `$HOME/.config`, `$XDG_CONFIG_DIRS` and `/etc/xdg` (each directory only when
+  absolute); v0.56.2 then tries `hyprland.conf` in the same places, v0.57.1 does
+  not. Which language a path is read as: v0.56.2 uses the Lua manager for a path
+  ending in `.lua` and hyprlang for any other (`Config::initConfigManager`);
+  v0.57.1 has only the Lua manager and reads every path as Lua. dsplr takes a
+  path not ending in `.lua` as hyprlang either way and refuses to save. The
+  config's directory is put first on Lua's `package.path`, so
+  `require("monitors")` loads the `monitors.lua` beside it, and a reload re-runs
+  required modules. A missing `monitors.lua` that is required makes the config
+  fail to load ("module 'monitors' not found"; `--verify-config`, 0.57.1,
+  2026-11-09).
+- From the v0.57.1 source, not observed: Hyprland watches its config and every
+  file it `require`d (`ConfigWatcher`) and reloads when one changes, unless
+  `disable_autoreload` is set. So a `dsplr save` into a required `monitors.lua`
+  likely reloads the whole config, which drops every `eval` rule; the saved file
+  holds the current state, so the screens should not change.
 - On a GitHub runner, neither vgem (with or without Mesa's `kms_swrast`) nor a
   nested Hyprland in a VM can allocate GBM buffers; Hyprland running on the VM's
   own seat (seatd) with a virtio GPU can, which is what CI does.

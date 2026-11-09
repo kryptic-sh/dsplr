@@ -3,13 +3,15 @@
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
 //! looked at. So far Hyprland and wlroots compositors exist; both read and
-//! apply, and wlroots tests, while persisting and the other desktops are not
-//! written yet. Every backend is Linux-only; on other targets [`Backend`]
-//! has no variants and detection says why.
+//! apply, wlroots tests, and Hyprland persists to its Lua config, while
+//! persisting on wlroots and the other desktops are not written yet. Every
+//! backend is Linux-only; on other targets [`Backend`] has no variants and
+//! detection says why.
 
 use std::time::Duration;
 
 use dsplr_model::{Capabilities, Layout};
+use dsplr_persist::managed::{Conflict, Saved};
 
 mod detect;
 #[cfg(target_os = "linux")]
@@ -45,6 +47,17 @@ pub enum Error {
         what: &'static str,
         reason: &'static str,
     },
+    /// A save found a file there that dsplr may not overwrite unasked, and
+    /// wrote nothing: ask, and persist again with its text approved.
+    #[error(transparent)]
+    Conflict(Box<Conflict>),
+}
+
+/// How a layout was made to last (`docs/plan/05-persistence-and-profiles.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Persisted {
+    /// Written to a file the desktop reads when it starts.
+    File(Saved),
 }
 
 impl Error {
@@ -106,6 +119,8 @@ impl Backend {
     /// Hyprland's are the ones its e2e test applies and reads back. Adaptive
     /// sync is left out because turning it off cannot be applied yet, and
     /// colour presets and bit depth because the snapshot does not read them.
+    /// Its native persistence is the Lua config's `monitors.lua`; under a
+    /// hyprlang config [`persist`](Self::persist) is unsupported.
     ///
     /// wlroots compositors take custom modes, since the protocol has them and
     /// `test` lets the compositor refuse one first; adaptive sync needs the
@@ -119,6 +134,7 @@ impl Backend {
                 fractional_scale: true,
                 per_output_scale: true,
                 gaps_allowed: true,
+                native_persistence: true,
                 ..Capabilities::default()
             },
             #[cfg(target_os = "linux")]
@@ -184,6 +200,42 @@ impl Backend {
             Self::Hyprland(ref hyprland) => Ok(hyprland.apply(layout).await?),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.apply(layout).await?),
+        }
+    }
+
+    /// Makes `layout` last past a restart of the desktop, where the desktop
+    /// itself reads it: on Hyprland, the `monitors.lua` beside its Lua
+    /// config ([`dsplr_persist::hyprland::save`]).
+    ///
+    /// A file there that dsplr may not overwrite unasked is
+    /// [`Error::Conflict`], and nothing is written; once the user has seen it
+    /// and agreed, persist again with `approved` set to the conflict's
+    /// `existing` text. [`Error::Unsupported`] under a hyprlang config, and
+    /// on wlroots compositors.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(unused_variables, reason = "no backend exists off Linux")
+    )]
+    pub fn persist(&self, layout: &Layout, approved: Option<&str>) -> Result<Persisted, Error> {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(_) => {
+                use dsplr_persist::hyprland::{SaveError, save};
+                match save(|name| std::env::var_os(name), layout, approved) {
+                    Ok(saved) => Ok(Persisted::File(saved)),
+                    Err(SaveError::Conflict(conflict)) => Err(Error::Conflict(conflict)),
+                    Err(SaveError::Hyprlang(_)) => Err(Error::Unsupported {
+                        what: "saving the layout",
+                        reason: "Hyprland reads a hyprlang hyprland.conf here, and dsplr cannot write its monitors.conf yet",
+                    }),
+                    Err(error) => Err(Error::Hyprland(hyprland::Error::Save(error))),
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Self::Wlr(_) => Err(Error::Unsupported {
+                what: "saving the layout",
+                reason: "dsplr cannot write a wlroots compositor's config yet",
+            }),
         }
     }
 }

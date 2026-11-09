@@ -5,11 +5,13 @@
 
 mod lua;
 mod read;
+mod save;
 mod write;
 
 use dsplr_model::{Layout, OutputEntry, OutputId};
 
 pub use read::{ReadError, ReadErrorKind, read_monitors_lua};
+pub use save::{REQUIRE_LINE, SaveError, save};
 pub use write::{WriteError, monitor_call, monitor_calls};
 
 /// How the file names each monitor (`docs/plan/12-open-questions.md`,

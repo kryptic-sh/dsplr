@@ -49,5 +49,28 @@ and this project adheres to
   `--dry-run` checks without applying. Whatever the desktop did not take as
   asked is listed after the apply.
 - `dsplr restore --revert` goes back to the layout from before the last change.
+- `dsplr save` makes the current layout last on Hyprland with a Lua config: it
+  writes a dsplr-managed `monitors.lua` beside the `hyprland.lua` Hyprland reads
+  (found through `HYPRLAND_CONFIG`, `$XDG_CONFIG_HOME/hypr` or `~/.config/hypr`,
+  as Hyprland looks), and prints the `require("monitors")` line `hyprland.lua`
+  needs, to go after its own `hl.monitor` calls, when it does not seem to have
+  it, or warns when `hl.monitor` calls after it override the saved file; dsplr
+  never edits `hyprland.lua`. A `monitors.lua` edited by hand since dsplr wrote
+  it, or holding settings dsplr cannot keep (including `vrr = 3` and any setting
+  beside `disabled = true`), is not overwritten without `--force`; one another
+  tool wrote (nwg-displays') is replaced after a yes on the terminal or `--yes`,
+  and with no terminal and no `--yes` nothing is saved. Each refusal shows the
+  diff of what saving would change. The old file's catch-all `output = ""` rule,
+  its rules for monitors not connected now, and its adaptive sync, bit depth and
+  colour preset (which Hyprland does not report) are carried into the new file;
+  the kept rules go before the saved ones, so they never win over them. A
+  `monitors.lua` that is a symbolic link is refused, naming its target, rather
+  than replaced with a file.
+- Reading a `monitors.lua` refuses `vrr = 3` and any setting beside
+  `disabled = true` instead of reading them as `vrr = 2` and dropping the
+  setting, and a `mirror = "desc:…"` rule is written back as it was read. Under
+  a hyprlang `hyprland.conf`, and on wlroots compositors, saving is not
+  supported yet and exits `4`; `dsplr backend` now lists native persistence for
+  Hyprland.
 - Exit codes `3` (validation refused), `4` (the desktop refused) and `5`
   (reverted).

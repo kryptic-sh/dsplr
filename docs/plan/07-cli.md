@@ -10,7 +10,7 @@ completions and a man page generated at release.
 | `dsplr backend`                                                                                                                | Which backend was detected, what was checked, its capabilities                |
 | `dsplr set <output> [--mode WxH@R] [--pos X,Y] [--scale S] [--transform T] [--vrr on/off] [--enable/--disable] [--mirror OUT]` | Edit one output and apply, through the confirm flow                           |
 | `dsplr apply <FILE>`                                                                                                           | Apply a whole layout from a JSON or TOML file                                 |
-| `dsplr save [--profile NAME]`                                                                                                  | Persist the current state natively, or as a named profile                     |
+| `dsplr save [--force] [--yes] [--profile NAME]`                                                                                | Persist the current state natively, or as a named profile                     |
 | `dsplr restore [NAME] [--revert]`                                                                                              | Apply the matching or named profile; `--revert` applies the last revert point |
 | `dsplr profile list`, `show NAME`, `rm NAME`                                                                                   | Manage the profile store                                                      |
 | `dsplr watch`                                                                                                                  | Hotplug profile daemon (M8)                                                   |

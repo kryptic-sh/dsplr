@@ -1,8 +1,9 @@
 //! The `dsplr` binary: a display settings editor for Linux.
 //!
 //! `dsplr list` and `dsplr backend` read the desktop; `dsplr apply` changes
-//! it from a layout file and `dsplr restore --revert` goes back. The GUI,
-//! `dsplr set`, saving and profiles are not written yet.
+//! it from a layout file, `dsplr restore --revert` goes back, and
+//! `dsplr save` makes the current state last. The GUI, `dsplr set` and
+//! profiles are not written yet.
 
 use std::fs;
 use std::io::{self, Write};
@@ -20,6 +21,7 @@ mod apply;
 mod backend;
 mod list;
 mod restore;
+mod save;
 
 /// Arrange, size and configure monitors on Hyprland, wlroots compositors,
 /// KDE Plasma, GNOME and X11.
@@ -57,6 +59,17 @@ enum Command {
         /// configured `confirm.timeout_secs`.
         #[arg(long, hide = true, value_name = "SECS")]
         confirm_timeout: Option<NonZeroU32>,
+    },
+    /// Save the displays as they are now where the desktop reads them when
+    /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua.
+    Save {
+        /// Overwrite the file even when it was edited by hand, or holds
+        /// settings dsplr cannot keep (they are lost).
+        #[arg(long)]
+        force: bool,
+        /// Replace a file another tool wrote (nwg-displays') without asking.
+        #[arg(long)]
+        yes: bool,
     },
     /// Go back to the layout from before the last change.
     Restore {
@@ -134,6 +147,10 @@ async fn run(cli: Cli) -> Exit {
             dry_run,
             confirm_timeout,
         }) => apply(&file, yes, dry_run, confirm_timeout).await,
+        Some(Command::Save { force, yes }) => match find_backend().await {
+            Ok(backend) => save::run(&backend, &save::Options { force, yes }).await,
+            Err(exit) => exit,
+        },
         Some(Command::Restore {
             revert: _,
             after,
@@ -286,6 +303,26 @@ mod tests {
             Cli::try_parse_from(["dsplr", "apply", "l.json", "--confirm-timeout", "0"]).is_err(),
             "a zero timeout could never be confirmed"
         );
+    }
+
+    #[test]
+    fn save_takes_force_and_yes() {
+        let cli = Cli::try_parse_from(["dsplr", "save"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Save {
+                force: false,
+                yes: false
+            })
+        ));
+        let cli = Cli::try_parse_from(["dsplr", "save", "--force", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Save {
+                force: true,
+                yes: true
+            })
+        ));
     }
 
     #[test]

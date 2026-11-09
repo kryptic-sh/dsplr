@@ -12,9 +12,42 @@ use dsplr_backend::Backend;
 use dsplr_model::Layout;
 
 /// The harness's runtime directory, after checking that this process really
-/// runs under the Hyprland harness (see [`crate::support::harness_runtime`]).
+/// runs under the Hyprland harness (see [`crate::support::harness_runtime`]),
+/// and that the Hyprland config `dsplr save` writes beside is the harness's.
 pub fn harness_runtime() -> PathBuf {
-    crate::support::harness_runtime("DSPLR_E2E_HYPRLAND", "tests/e2e/headless-hyprland.sh")
+    let runtime =
+        crate::support::harness_runtime("DSPLR_E2E_HYPRLAND", "tests/e2e/headless-hyprland.sh");
+    assert_eq!(
+        std::env::var_os("HYPRLAND_CONFIG"),
+        None,
+        "HYPRLAND_CONFIG would point dsplr save at another config"
+    );
+    assert_eq!(
+        config_home(),
+        runtime.join("config"),
+        "XDG_CONFIG_HOME is not the harness's"
+    );
+    // Without it, Hyprland's lookup (and dsplr's) would go on to
+    // $HOME/.config: so HOME is the harness's too.
+    let config = config_home().join("hypr/hyprland.lua");
+    assert!(
+        config.is_file(),
+        "the harness's {} is missing",
+        config.display()
+    );
+    assert_eq!(
+        std::env::var_os("HOME").map(PathBuf::from),
+        Some(runtime.join("home")),
+        "HOME is not the harness's"
+    );
+    runtime
+}
+
+/// `XDG_CONFIG_HOME`, where the harness's Hyprland reads `hypr/hyprland.lua`.
+pub fn config_home() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .expect("XDG_CONFIG_HOME is set by the harness")
+        .into()
 }
 
 /// Sends one request to the harness's Hyprland, as `hyprctl` does, and

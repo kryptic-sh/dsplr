@@ -3,8 +3,9 @@
 //! Hyprland merges a rule onto the existing one of that name.
 //!
 //! A setting dsplr has no place for (Hyprland's SDR and luminance keys,
-//! `reserved`, an `auto` position or a `preferred` mode) is an error naming
-//! it, never dropped: a file read without it would be saved back without it.
+//! `reserved`, an `auto` position or a `preferred` mode, `vrr = 3`, or any
+//! setting beside `disabled = true`) is an error naming it, never dropped: a
+//! file read without it would be saved back without it.
 
 use dsplr_model::{AdaptiveSync, Mode, OutputEntry, OutputId, OutputState, Transform, hz_to_mhz};
 
@@ -29,6 +30,10 @@ pub enum ReadErrorKind {
     UnsupportedField(String),
     #[error("`{field} = {value}` has no place in a dsplr layout yet")]
     UnsupportedValue { field: String, value: String },
+    #[error(
+        "`{0}` is set on a disabled output, and a dsplr layout keeps nothing but `disabled` for one"
+    )]
+    SettingOnDisabled(String),
     #[error("`{field} = {value}` is not a value Hyprland takes there")]
     InvalidValue { field: String, value: String },
 }
@@ -53,8 +58,9 @@ struct Rule {
 /// Reads a `monitors.lua`.
 ///
 /// Adaptive sync reads back as not set when the file leaves `vrr` out or
-/// sets it to -1 (no override), and as automatic for both 2 (fullscreen only) and 3
-/// (fullscreen video and games), which a layout does not tell apart.
+/// sets it to -1 (no override), and as automatic for 2 (fullscreen only). 3
+/// (fullscreen video and games) is an error: a layout has only one
+/// automatic, which is written back as 2.
 ///
 /// # Errors
 ///
@@ -139,6 +145,37 @@ fn entry(name: &str, line: usize, rule: Rule) -> Result<OutputEntry, ReadError> 
         ..OutputState::default()
     };
     if disabled {
+        let Rule {
+            disabled: _,
+            mode,
+            position,
+            scale,
+            transform,
+            vrr,
+            mirror,
+            bitdepth,
+            cm,
+        } = rule;
+        let others = [
+            ("mode", mode),
+            ("position", position),
+            ("scale", scale),
+            ("transform", transform),
+            ("vrr", vrr),
+            ("mirror", mirror),
+            ("bitdepth", bitdepth),
+            ("cm", cm),
+        ];
+        if let Some((field, (_, line))) = others
+            .into_iter()
+            .filter_map(|(field, value)| value.map(|value| (field, value)))
+            .min_by_key(|(_, (_, line))| *line)
+        {
+            return Err(ReadError {
+                line,
+                kind: ReadErrorKind::SettingOnDisabled(field.to_owned()),
+            });
+        }
         return Ok(OutputEntry {
             id,
             output: None,
@@ -159,7 +196,8 @@ fn entry(name: &str, line: usize, rule: Rule) -> Result<OutputEntry, ReadError> 
             Some(-1) => None,
             Some(0) => Some(AdaptiveSync::Off),
             Some(1) => Some(AdaptiveSync::On),
-            Some(2 | 3) => Some(AdaptiveSync::Automatic),
+            Some(2) => Some(AdaptiveSync::Automatic),
+            Some(3) => return Err(unsupported("vrr", "3", line)),
             _ => return Err(invalid("vrr", &value, line)),
         };
     }
@@ -412,17 +450,41 @@ hl.monitor({ output = "", mode = "highres" })
     }
 
     #[test]
-    fn fullscreen_only_vrr_values_read_as_automatic() {
-        for vrr in [2, 3] {
-            let text = format!(
+    fn fullscreen_only_vrr_reads_as_automatic_and_video_and_games_is_refused() {
+        let text = |vrr: u8| {
+            format!(
                 "hl.monitor({{ output = \"DP-1\", mode = \"1920x1080@60\", position = \"0x0\", scale = 1, vrr = {vrr} }})"
-            );
-            let file = read_monitors_lua(&text).unwrap();
-            assert_eq!(
-                file.layout.entries[0].state.adaptive_sync,
-                Some(AdaptiveSync::Automatic)
-            );
-        }
+            )
+        };
+        let file = read_monitors_lua(&text(2)).unwrap();
+        assert_eq!(
+            file.layout.entries[0].state.adaptive_sync,
+            Some(AdaptiveSync::Automatic)
+        );
+        // Read as automatic, it would be written back as 2.
+        assert!(matches!(
+            error(&text(3)).kind,
+            ReadErrorKind::UnsupportedValue { ref field, ref value } if field == "vrr" && value == "3"
+        ));
+    }
+
+    #[test]
+    fn a_setting_beside_disabled_is_an_error_not_a_loss() {
+        assert_eq!(
+            error("hl.monitor({ output = \"DP-1\", disabled = true,\n  scale = 2 })"),
+            ReadError {
+                line: 2,
+                kind: ReadErrorKind::SettingOnDisabled("scale".into()),
+            }
+        );
+        // Merged from two calls, as Hyprland merges them.
+        let merged = "hl.monitor({ output = \"DP-1\", mode = \"1920x1080@60\", position = \"0x0\", scale = 1 })\nhl.monitor({ output = \"DP-1\", disabled = true })";
+        assert!(matches!(
+            error(merged).kind,
+            ReadErrorKind::SettingOnDisabled(ref field) if field == "mode"
+        ));
+        // `disabled = false` beside settings is an enabled output.
+        assert!(read_monitors_lua("hl.monitor({ output = \"DP-1\", disabled = false, mode = \"1920x1080@60\", position = \"0x0\", scale = 1 })").is_ok());
     }
 
     fn error(source: &str) -> ReadError {

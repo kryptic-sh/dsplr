@@ -37,7 +37,7 @@ impl Backend {
     pub fn snapshot(&mut self) -> Result<Snapshot, BackendError>;
     pub fn test(&mut self, layout: &Layout) -> Result<(), BackendError>;
     pub fn apply(&mut self, layout: &Layout) -> Result<(), BackendError>;
-    pub fn persist(&mut self, layout: &Layout) -> Result<Persisted, BackendError>;
+    pub fn persist(&self, layout: &Layout, approved: Option<&str>) -> Result<Persisted, BackendError>;
     // plus a change stream feeding the backend thread's loop
 }
 ```
@@ -45,6 +45,11 @@ impl Backend {
 `test` on a backend with no test primitive returns `Unsupported`, and the apply
 flow skips step 2 rather than pretending it ran
 ([02](02-architecture.md#apply-confirm-revert)).
+
+`persist` writes nothing a file there would lose without asking: a file dsplr
+may not simply overwrite is a `Conflict` holding its text and the new one, and
+the caller asks the user, then calls `persist` again with that text as
+`approved` ([05](05-persistence-and-profiles.md#rules-for-files-dsplr-writes)).
 
 ## Hyprland
 
@@ -87,10 +92,13 @@ So:
   exit check**: the protocol requires every head in a configuration and Hyprland
   reports no mirrored state through it, so a protocol apply may undo an `eval`
   mirror. Until that is checked those fields are read-only.
-- **Persist** by writing `~/.config/hypr/monitors.lua`
-  ([05](05-persistence-and-profiles.md#hyprland)), which the owner's
-  `hyprland.lua` already `require`s. Legacy hyprlang configs (`hyprland.conf` +
-  `monitor=` lines) are detected and written in that syntax.
+- **Persist** by writing the `monitors.lua` beside the `hyprland.lua` Hyprland
+  reads, found as Hyprland finds it (`HYPRLAND_CONFIG`, then
+  `$XDG_CONFIG_HOME/hypr`, then `~/.config/hypr`;
+  [05](05-persistence-and-profiles.md#hyprland)); the owner's `hyprland.lua`
+  already `require`s it. Legacy hyprlang configs (`hyprland.conf` + `monitor=`
+  lines) are detected; until their writer exists, `persist` there is
+  `Unsupported`.
 
 ## wlroots compositors (`Wlr`)
 

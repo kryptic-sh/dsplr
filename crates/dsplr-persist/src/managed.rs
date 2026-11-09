@@ -1,12 +1,15 @@
 //! Files dsplr owns (`docs/plan/05-persistence-and-profiles.md#rules-for-files-dsplr-writes`):
 //! a first line naming dsplr and a SHA-256 of the rest, so a file edited by
-//! hand since dsplr wrote it is recognised and not overwritten unasked; and
-//! an atomic write, so a crash mid-save never leaves half a config.
+//! hand since dsplr wrote it is recognised and not overwritten unasked; an
+//! atomic write, so a crash mid-save never leaves half a config; and what a
+//! save reports: the file it wrote ([`Saved`]), or the one it would not
+//! overwrite unasked ([`Conflict`]).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use dsplr_model::OutputId;
 use sha2::{Digest, Sha256};
 
 /// What starts a comment line in the file's language.
@@ -36,6 +39,66 @@ pub enum Ownership {
     EditedByHand,
     /// Not dsplr's (no header): someone else's file, such as nwg-displays'.
     Foreign,
+}
+
+/// A save that was not written, because the file already there is not one
+/// dsplr may simply overwrite. Saving again with `existing` approved
+/// replaces it, as long as the file still holds exactly that text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}: {}", path.display(), self.why())]
+pub struct Conflict {
+    pub path: PathBuf,
+    pub ownership: Ownership,
+    /// Why dsplr could not read the file, when it could not: what it holds
+    /// beyond that point would be lost, not carried into the new file.
+    pub unreadable: Option<String>,
+    /// The file as it is now.
+    pub existing: String,
+    /// What saving would write instead.
+    pub new: String,
+}
+
+impl Conflict {
+    /// Whether replacing the file takes `--force` rather than a yes: it was
+    /// edited by hand, or holds something dsplr cannot carry over. A
+    /// readable file someone else wrote takes only a yes
+    /// (`docs/plan/05-persistence-and-profiles.md`, "Importing").
+    pub const fn needs_force(&self) -> bool {
+        self.unreadable.is_some() || matches!(self.ownership, Ownership::EditedByHand)
+    }
+
+    fn why(&self) -> String {
+        let whose = match self.ownership {
+            Ownership::Managed => "dsplr wrote it",
+            Ownership::EditedByHand => "it was edited by hand since dsplr wrote it",
+            Ownership::Foreign => "dsplr did not write it",
+        };
+        match &self.unreadable {
+            Some(reason) => format!("{whose}, and dsplr cannot read all of it: {reason}"),
+            None => whose.to_owned(),
+        }
+    }
+}
+
+/// A managed file written by a save.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Saved {
+    pub path: PathBuf,
+    /// Whether the file did not exist before.
+    pub created: bool,
+    /// The main config that has to include the file for the desktop to
+    /// read it.
+    pub main_config: PathBuf,
+    /// The line that includes it there.
+    pub include_line: &'static str,
+    /// Whether the main config was seen to include it already.
+    pub included: bool,
+    /// Whether the main config sets monitor rules after including it,
+    /// which override the file's.
+    pub overridden: bool,
+    /// Outputs the file named before that are not connected now, whose
+    /// settings were carried over as they were.
+    pub kept: Vec<OutputId>,
 }
 
 const MARKER: &str = "Managed by dsplr";

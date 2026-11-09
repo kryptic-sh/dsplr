@@ -335,7 +335,8 @@ fn confirm(timeout: Duration) -> bool {
     }
 }
 
-fn is_yes(answer: &str) -> bool {
+/// Whether `answer` is a yes: `y` or `yes`, in any case.
+pub fn is_yes(answer: &str) -> bool {
     matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 

@@ -4,7 +4,7 @@
 //! the desktop session:
 //!
 //! ```text
-//! tests/e2e/headless-hyprland.sh cargo test -p dsplr-backend --test hyprland_e2e -- --ignored
+//! tests/e2e/headless-hyprland.sh cargo test -p dsplr-backend --test hyprland_e2e -- --ignored --test-threads=1
 //! ```
 //!
 //! The test refuses to run when the harness did not start it, so `--ignored`
@@ -12,15 +12,17 @@
 
 #![cfg(target_os = "linux")]
 
+use dsplr_backend::Persisted;
 use dsplr_backend::hyprland::Hyprland;
 use dsplr_model::{Layout, Mode, OutputId, Transform};
+use dsplr_persist::managed::{Comment, Ownership, ownership};
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
 mod hyprland_support;
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use hyprland_support::{harness_runtime, hyprctl, snapshot_until};
+use hyprland_support::{config_home, harness_runtime, hyprctl, snapshot_until};
 use support::{edited, entry, entry_mut};
 
 #[tokio::test(flavor = "current_thread")]
@@ -143,4 +145,82 @@ async fn a_headless_hyprland_shows_each_applied_layout() {
     // And the revert point ends the mirror.
     apply(start.clone()).await;
     snapshot_until(&backend, "DSPLR-1 not mirroring", |layout| *layout == start).await;
+}
+
+/// A saved layout is what Hyprland shows after a reload, which drops every
+/// rule `eval` set: so it came from the file.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
+async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
+    harness_runtime();
+    let reply = hyprctl("/output create headless DSPLR-SAVE");
+    assert_eq!(reply.trim(), "ok", "creating DSPLR-SAVE: {reply}");
+    let detection = dsplr_backend::detect().await;
+    let backend = detection
+        .backend
+        .unwrap_or_else(|| panic!("no backend: {:?}", detection.checks));
+
+    // A state the config's catch-all would not give DSPLR-SAVE: placed,
+    // scaled and turned by eval rules.
+    let first = snapshot_until(&backend, "DSPLR-SAVE", |layout| {
+        layout.entries.iter().any(|e| {
+            e.output
+                .as_ref()
+                .is_some_and(|o| o.connector == "DSPLR-SAVE")
+        })
+    })
+    .await;
+    let placed = edited(&first, |layout| {
+        let state = &mut entry_mut(layout, "DSPLR-SAVE").state;
+        state.mode = Some(Mode::new(1920, 1080, 60_000));
+        (state.x, state.y) = (9000, 0);
+        state.scale = 1.5;
+        state.transform = Transform::Rotate90;
+    });
+    backend.apply(&placed).await.expect("applied");
+    let saved = snapshot_until(&backend, "DSPLR-SAVE placed", |layout| {
+        entry(layout, "DSPLR-SAVE").state.x == 9000
+    })
+    .await;
+
+    let hypr = config_home().join("hypr");
+    let monitors = hypr.join("monitors.lua");
+    assert!(!monitors.exists(), "the harness starts without one");
+    let Persisted::File(file) = backend.persist(&saved, None).expect("saved");
+    assert_eq!(file.path, monitors);
+    assert_eq!(file.main_config, hypr.join("hyprland.lua"));
+    assert!(file.created);
+    assert!(
+        !file.included,
+        "the harness's config does not require it yet"
+    );
+    let text = std::fs::read_to_string(&monitors).expect("written");
+    assert_eq!(ownership(&text, Comment::Lua), Ownership::Managed);
+
+    // Move it at runtime only, then load the file as the user would: add the
+    // line dsplr named, and reload.
+    backend
+        .apply(&edited(&saved, |layout| {
+            entry_mut(layout, "DSPLR-SAVE").state.x = 12000;
+        }))
+        .await
+        .expect("applied");
+    snapshot_until(&backend, "DSPLR-SAVE moved", |layout| {
+        entry(layout, "DSPLR-SAVE").state.x == 12000
+    })
+    .await;
+    let main = std::fs::read_to_string(&file.main_config).expect("hyprland.lua");
+    std::fs::write(&file.main_config, format!("{main}{}\n", file.include_line))
+        .expect("hyprland.lua written");
+    assert_eq!(hyprctl("reload").trim(), "ok");
+    snapshot_until(&backend, "the saved layout", |layout| *layout == saved).await;
+    let errors = hyprctl("configerrors");
+    assert!(errors.trim().is_empty(), "config errors: {errors}");
+
+    // Saved again, it is dsplr's own file and is overwritten, and the config
+    // is seen to require it.
+    let Persisted::File(again) = backend.persist(&saved, None).expect("saved again");
+    assert!(!again.created);
+    assert!(again.included);
+    assert_eq!(std::fs::read_to_string(&monitors).expect("written"), text);
 }

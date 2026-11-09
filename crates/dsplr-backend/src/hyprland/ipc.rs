@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use dsplr_model::Layout;
-use dsplr_persist::hyprland::{MonitorNaming, MonitorsLua, WriteError, monitor_calls};
+use dsplr_persist::hyprland::{MonitorNaming, MonitorsLua, SaveError, WriteError, monitor_calls};
 
 use super::{Monitor, SnapshotError, layout};
 
@@ -52,6 +52,8 @@ pub enum Error {
     Refused { request: String, reply: String },
     #[error("the layout cannot be put into monitor rules: {0}")]
     Write(#[from] WriteError),
+    #[error("cannot save the layout: {0}")]
+    Save(#[source] SaveError),
 }
 
 /// A connection point to one Hyprland instance.

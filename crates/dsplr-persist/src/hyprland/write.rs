@@ -61,20 +61,12 @@ pub fn monitor_call(
     }
     let mirror = match &state.mirror_of {
         None => String::new(),
-        Some(source) => layout
-            .entries
-            .iter()
-            .find(|other| other.id == *source)
-            .and_then(OutputEntry::connector)
-            .or(match source {
-                OutputId::Connector(connector) => Some(connector.as_str()),
-                _ => None,
-            })
-            .ok_or_else(|| WriteError::MirrorSourceUnnamed {
+        Some(source) => {
+            mirror_name(layout, source).ok_or_else(|| WriteError::MirrorSourceUnnamed {
                 output: entry.id.clone(),
                 mirrored: Box::new(source.clone()),
             })?
-            .to_owned(),
+        }
     };
     fields.extend([
         "disabled = false".to_owned(),
@@ -133,6 +125,29 @@ pub fn monitor_calls(file: &MonitorsLua, naming: MonitorNaming) -> Result<String
         .chain(calls)
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+/// How a `mirror` field names `source`: the connector of the entry of
+/// `layout` it is, or failing that names (as a file's `desc:` mirror names a
+/// live output), else `source`'s own connector, or its description as
+/// `desc:` when that is all it is (a mirror read from a file, of a monitor
+/// not connected now). `None` when it has no usable name.
+fn mirror_name(layout: &Layout, source: &OutputId) -> Option<String> {
+    let in_layout = layout
+        .entries
+        .iter()
+        .find(|other| other.id == *source)
+        .or_else(|| layout.entries.iter().find(|other| source.matches(other)));
+    if let Some(connector) = in_layout.and_then(OutputEntry::connector) {
+        return Some(connector.to_owned());
+    }
+    match source {
+        OutputId::Connector(connector) if !connector.is_empty() => Some(connector.clone()),
+        OutputId::Description(description) if !description.trim().is_empty() => {
+            Some(format!("desc:{}", description.trim()))
+        }
+        _ => None,
+    }
 }
 
 fn call(fields: &[String]) -> String {
@@ -325,7 +340,7 @@ hl.monitor({
         );
 
         let mut layout = owners_layout();
-        let missing = OutputId::Description("Some Monitor 1234".into());
+        let missing = OutputId::new("Some", "Monitor", "1234", "DP-9");
         layout.entries[1].state.mirror_of = Some(missing.clone());
         assert_eq!(
             monitor_call(&layout, &layout.entries[1], MonitorNaming::default()),
@@ -342,5 +357,23 @@ hl.monitor({
         assert_eq!(lua_string(r#"a "b" \c"#), r#""a \"b\" \\c""#);
         assert_eq!(lua_string("line\nnext"), r#""line\nnext""#);
         assert_eq!(lua_string("bell\u{7}9"), r#""bell\0079""#);
+    }
+
+    #[test]
+    fn a_mirror_named_by_description_is_written_by_connector_or_kept_as_desc() {
+        let mut layout = owners_layout();
+        layout.entries[0].state.enabled = true;
+        layout.entries[0].state.mode = Some(Mode::new(1920, 1080, 60_000));
+        // A file's `desc:` mirror of a monitor in the layout: its connector.
+        layout.entries[0].state.mirror_of = Some(OutputId::Description("AOC Q27G4".into()));
+        let call = monitor_call(&layout, &layout.entries[0], MonitorNaming::Connector).unwrap();
+        assert!(call.contains("    mirror = \"HDMI-A-1\",\n"), "{call}");
+        // Of a monitor not in the layout: written back as it was read.
+        layout.entries[0].state.mirror_of = Some(OutputId::Description("Dell U2720Q X1".into()));
+        let call = monitor_call(&layout, &layout.entries[0], MonitorNaming::Connector).unwrap();
+        assert!(
+            call.contains("    mirror = \"desc:Dell U2720Q X1\",\n"),
+            "{call}"
+        );
     }
 }
