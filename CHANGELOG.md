@@ -8,6 +8,15 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Hyprland modes, from `hyprctl -j monitors` and from `monitors.lua`, are read
+  by one stricter parser: the size is digits only, and the refresh is plain
+  digits with at most one decimal point and at most one trailing `Hz`, so forms
+  such as `1920x1080@1e2`, `@inf`, `@60HzHz` and `+1920x1080` are refused rather
+  than read. The owner's recorded `hyprctl -j monitors all` reply still reads in
+  full.
+
 ### Added
 
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive
@@ -49,6 +58,22 @@ and this project adheres to
   `--dry-run` checks without applying. Whatever the desktop did not take as
   asked is listed after the apply.
 - `dsplr restore --revert` goes back to the layout from before the last change.
+- `dsplr set <OUTPUT>` changes one output and applies the result through the
+  same confirm flow as `dsplr apply` (validation, the desktop's test, the revert
+  point and watchdog, `--yes`, `--dry-run`): `--mode WxH[@R]`, `--pos X,Y`,
+  `--scale S`, `--transform T`, `--vrr off|on|automatic`, `--enable` or
+  `--disable`, and `--mirror OUT`. The output is named by its connector or its
+  description (or the start of one, when that names one output). `--mode WxH`
+  keeps the current refresh where the output lists it at that size, else takes
+  the highest there; a mode the output does not list is refused, naming the
+  nearest ones, unless the desktop takes custom modes. Transform names are
+  wl_output's, as `dsplr list` prints them, so `90` is sway's `270`; `--help`
+  says so. It names the output it is setting before applying. A name for no
+  output or several exits `2` listing the outputs; so do an output asked to
+  mirror itself and a setting for an output that is off without `--enable` (or
+  given with `--disable`), which no desktop would apply. A setting the desktop
+  cannot take (a mode it does not list, an adaptive sync value it lacks) exits
+  `3`.
 - `dsplr save` makes the current layout last on Hyprland with a Lua config: it
   writes a dsplr-managed `monitors.lua` beside the `hyprland.lua` Hyprland reads
   (found through `HYPRLAND_CONFIG`, `$XDG_CONFIG_HOME/hypr` or `~/.config/hypr`,

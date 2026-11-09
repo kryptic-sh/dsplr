@@ -24,8 +24,11 @@ drives `dsplr apply` in the headless harness, locally and in CI's VM: kept with
 `--yes` then reverted by hand, declined, timed out, and dsplr killed at the
 prompt so its watchdog reverts. `dsplr save` writes the `monitors.lua` beside a
 Hyprland Lua config (`Backend::persist`, built on
-`dsplr_persist::hyprland::save`); its e2e has not run yet (below). Not written
-yet: `dsplr set`, and saving under a hyprlang config or on wlroots.
+`dsplr_persist::hyprland::save`); its e2e has not run yet (below). `dsplr set`
+edits one output of a fresh snapshot and hands the layout to the same flow
+(`apply::run`); its steps run in `apps/dsplr/tests/sway_e2e.rs`, and a mirror
+step in `hyprland_e2e.rs` (not run yet, as below). Not written yet: saving under
+a hyprlang config or on wlroots.
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -162,11 +165,36 @@ milestone:
 
 ## Open work in the Windows-owned crates
 
-- **`dsplr set <output> [--mode …] [--pos …] …`** (`docs/plan/07-cli.md`): not
-  written. It edits one output of a fresh snapshot and hands the result to the
-  same flow as `dsplr apply` (`apply::run` in `apps/dsplr/src/apply.rs`), so
-  only argument parsing (`WxH@R`, `X,Y`, transform and vrr names) and finding
-  the output by connector or description are new.
+- **`dsplr set` cannot stop a mirror**: `--mirror OUT` starts one, and nothing
+  ends it short of `dsplr apply` with a file or a revert. It needs a spelling
+  (`--mirror none` collides with an output named `none`; `--no-mirror` is
+  clearer), which is the owner's call.
+- **`dsplr set --enable` does not place the output**: a desktop that reports a
+  disabled output at the origin (wlroots, Hyprland) gets it back there, so
+  validation refuses the overlap unless `--pos` is given. Placing it beside the
+  others (the right edge of the layout, say) would guess where the user wants
+  it; not done. Turned on without a mode, an output takes its preferred mode,
+  else its largest at the highest refresh (`set::default_mode`); headless sway
+  lists no mode for a disabled output, so there `--mode` is needed too.
+- **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
+  output's size, and a neighbour it now overlaps or leaves a gap beside is
+  refused or warned about by validation, not shifted. `Layout::normalise` and
+  `snap` exist for the GUI; whether `set` should use them is open.
+- **Adaptive sync is checked against `Capabilities` only by `dsplr set`**:
+  `Layout::validate` does not look at `adaptive_sync`, so a layout file asking
+  for a value the backend lacks reaches the backend (on `wlr`, its `Plan` error,
+  exit `4`, not `3`). Moving the check into validation would cover both.
+- **A description can pick a monitor with a longer serial**: `OutputId::matches`
+  reads a description as a prefix, as Hyprland's `desc:` does, and both
+  `dsplr set` (after an exact connector or description match fails) and
+  `apply::bind` use it. With `AOC Q27G4 SER1` unplugged, that name matches
+  `AOC Q27G4 SER12`: `set` then says `dsplr: setting …` naming the monitor it
+  found, but with `--yes` it still edits it; `apply` with a file does so without
+  naming it. Options for the owner: match only up to a word boundary (the prefix
+  must end where a word of the description ends), which stops this and still
+  matches `AOC Q27G4` to every Q27G4; or keep Hyprland's semantics, so a profile
+  matches what Hyprland's own `desc:` rule would. Not changed: the rule is
+  shared with how profiles will match.
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.
@@ -200,12 +228,13 @@ milestone:
   lock: nothing else that writes the file would honour one.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files, which wait for the profile store's format.
-- **`Transform`'s text uses wl_output's quarter turns, not sway's**: its
-  `Display` says it writes sway's names, but `Rotate90` (wl_output 1) writes
-  `90`, while sway calls that turn `270`: `swaymsg output X transform 90` sets
-  wl_output transform 3, and sway's IPC reports wl_output 1 as `"270"` (sway
-  1.12, 2026-11-09). The flipped quarter turns presumably swap the same way; not
-  checked. It decides what M4's sway `outputs` writer writes.
+- **`Transform`'s text uses wl_output's quarter turns, not sway's**: `Rotate90`
+  (wl_output 1) writes and parses as `90`, while sway calls that turn `270`:
+  `swaymsg output X transform 90` sets wl_output transform 3, and sway's IPC
+  reports wl_output 1 as `"270"` (sway 1.12, 2026-11-09; `sway_e2e` checks the
+  latter through `dsplr set --transform 90`). `Display`'s doc and
+  `dsplr set --help` now say so. The flipped quarter turns presumably swap the
+  same way; not checked. It decides what M4's sway `outputs` writer writes.
 - **`dsplr list` prints `@ 0 Hz` for a mode with no refresh**: headless sway's
   outputs report refresh 0, which the protocol means as "not said".
 - **Some error paths of `dsplr apply` have no test**: a test or apply the

@@ -12,6 +12,7 @@ mod id;
 mod json;
 mod layout;
 mod mode;
+mod name;
 mod rect;
 mod transform;
 mod validate;
@@ -21,7 +22,13 @@ pub use capabilities::Capabilities;
 pub use compare::{Difference, Setting};
 pub use id::OutputId;
 pub use json::{JSON_VERSION, JsonError};
-pub use layout::{AdaptiveSync, Layout, Output, OutputEntry, OutputState, RgbRange};
-pub use mode::{Mode, ModeHandle, REFRESH_TOLERANCE_MHZ, hz_to_mhz, mhz_to_hz_text};
+pub use layout::{
+    AdaptiveSync, Layout, Output, OutputEntry, OutputState, RgbRange, is_valid_scale,
+};
+pub use mode::{
+    Mode, ModeHandle, ModeSpec, ParseModeError, REFRESH_TOLERANCE_MHZ, hz_text_to_mhz, hz_to_mhz,
+    mhz_to_hz_text,
+};
+pub use name::ParseNameError;
 pub use transform::Transform;
 pub use validate::{Field, Problem, ProblemKind, Severity};

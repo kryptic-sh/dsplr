@@ -3,7 +3,7 @@
 //! a setting left out keeps whatever it was (`disabled`, `mirror`), which
 //! matters for a live `eval` even more than for a file read fresh.
 
-use dsplr_model::{AdaptiveSync, Layout, OutputEntry, OutputId, mhz_to_hz_text};
+use dsplr_model::{AdaptiveSync, Layout, OutputEntry, OutputId, is_valid_scale};
 
 use super::{MonitorNaming, MonitorsLua, output_name};
 
@@ -56,7 +56,7 @@ pub fn monitor_call(
         .mode
         .as_ref()
         .ok_or_else(|| WriteError::NoMode(entry.id.clone()))?;
-    if !(state.scale.is_finite() && state.scale > 0.0) {
+    if !is_valid_scale(state.scale) {
         return Err(WriteError::InvalidScale(entry.id.clone()));
     }
     let mirror = match &state.mirror_of {
@@ -70,15 +70,7 @@ pub fn monitor_call(
     };
     fields.extend([
         "disabled = false".to_owned(),
-        format!(
-            "mode = {}",
-            lua_string(&format!(
-                "{}x{}@{}",
-                mode.width,
-                mode.height,
-                mhz_to_hz_text(mode.refresh_mhz)
-            ))
-        ),
+        format!("mode = {}", lua_string(&mode.to_string())),
         format!(
             "position = {}",
             lua_string(&format!("{}x{}", state.x, state.y))

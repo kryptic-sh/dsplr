@@ -1,13 +1,20 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::name::{ParseNameError, parse_name};
 use crate::{Mode, OutputId, Transform};
 
 /// Two scales closer than this are the same scale. Backends report scales as
 /// doubles or `wl_fixed`, so an exact comparison would tell two scales apart
 /// over their last bit.
 pub const SCALE_EPSILON: f64 = 1e-6;
+
+/// Whether `scale` can be an output's scale: a finite number above zero.
+pub fn is_valid_scale(scale: f64) -> bool {
+    scale.is_finite() && scale > 0.0
+}
 
 /// Every monitor and its settings: the one struct the GUI edits, the CLI
 /// prints, and every backend and config format converts to and from.
@@ -155,7 +162,7 @@ impl OutputState {
     /// until then this is the one rule.
     pub fn logical_size(&self) -> Option<(u32, u32)> {
         let mode = self.mode.as_ref()?;
-        if !(self.scale.is_finite() && self.scale > 0.0) {
+        if !is_valid_scale(self.scale) {
             return None;
         }
         let (width, height) = if self.transform.swaps_axes() {
@@ -186,6 +193,10 @@ pub enum AdaptiveSync {
     Automatic,
 }
 
+impl AdaptiveSync {
+    const ALL: [Self; 3] = [Self::Off, Self::On, Self::Automatic];
+}
+
 /// `off`, `on` or `automatic`.
 impl fmt::Display for AdaptiveSync {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -194,6 +205,15 @@ impl fmt::Display for AdaptiveSync {
             Self::On => "on",
             Self::Automatic => "automatic",
         })
+    }
+}
+
+/// The names [`Display`](fmt::Display) writes, and nothing else.
+impl FromStr for AdaptiveSync {
+    type Err = ParseNameError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        parse_name("adaptive sync setting", &Self::ALL, text)
     }
 }
 
@@ -219,7 +239,7 @@ impl fmt::Display for RgbRange {
 
 #[cfg(test)]
 mod tests {
-    use super::OutputState;
+    use super::{AdaptiveSync, OutputState};
     use crate::{Mode, Transform};
 
     fn state(transform: Transform, scale: f64) -> OutputState {
@@ -281,5 +301,16 @@ mod tests {
         assert_eq!(state.transform, Transform::Normal);
         assert_eq!(state.adaptive_sync, None);
         assert!(state.mode.is_none() && state.mirror_of.is_none());
+    }
+
+    #[test]
+    fn adaptive_sync_reads_back_its_own_names_only() {
+        for sync in AdaptiveSync::ALL {
+            assert_eq!(sync.to_string().parse(), Ok(sync));
+        }
+        for text in ["", "On", "true", "1", "auto"] {
+            let error = text.parse::<AdaptiveSync>().unwrap_err().to_string();
+            assert!(error.contains("off, on, automatic"), "{text:?}: {error}");
+        }
     }
 }

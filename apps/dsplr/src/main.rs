@@ -1,9 +1,9 @@
 //! The `dsplr` binary: a display settings editor for Linux.
 //!
 //! `dsplr list` and `dsplr backend` read the desktop; `dsplr apply` changes
-//! it from a layout file, `dsplr restore --revert` goes back, and
-//! `dsplr save` makes the current state last. The GUI, `dsplr set` and
-//! profiles are not written yet.
+//! it from a layout file and `dsplr set` one output at a time,
+//! `dsplr restore --revert` goes back, and `dsplr save` makes the current
+//! state last. The GUI and profiles are not written yet.
 
 use std::fs;
 use std::io::{self, Write};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use dsplr_backend::{Backend, Detection, detect};
 use dsplr_config::Config;
 use dsplr_model::Layout;
@@ -22,6 +22,7 @@ mod backend;
 mod list;
 mod restore;
 mod save;
+mod set;
 
 /// Arrange, size and configure monitors on Hyprland, wlroots compositors,
 /// KDE Plasma, GNOME and X11.
@@ -47,18 +48,20 @@ enum Command {
     Apply {
         /// The layout file.
         file: PathBuf,
-        /// Keep the change without asking. The revert point is still
-        /// written, for `dsplr restore --revert`.
-        #[arg(long)]
-        yes: bool,
-        /// Check the layout without applying it: validate it, then have the
-        /// desktop test it where it has a real test.
-        #[arg(long)]
-        dry_run: bool,
-        /// Seconds to wait for an answer before reverting, in place of the
-        /// configured `confirm.timeout_secs`.
-        #[arg(long, hide = true, value_name = "SECS")]
-        confirm_timeout: Option<NonZeroU32>,
+        #[command(flatten)]
+        apply: ApplyArgs,
+    },
+    /// Change one output's settings, leaving the others as they are, and ask
+    /// whether to keep the change, as `dsplr apply` does.
+    Set {
+        /// The output: its connector (`DP-1`), or its description as
+        /// `dsplr list` prints it (make, model and serial). The start of a
+        /// description is enough when it names one output.
+        output: String,
+        #[command(flatten)]
+        changes: set::Changes,
+        #[command(flatten)]
+        apply: ApplyArgs,
     },
     /// Save the displays as they are now where the desktop reads them when
     /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua.
@@ -87,12 +90,33 @@ enum Command {
     },
 }
 
-/// dsplr's exit codes (`docs/plan/07-cli.md`). Usage errors exit with
-/// clap's own code.
+/// The flags of every command that changes the displays through the confirm
+/// flow (`apply::run`).
+#[derive(Debug, Args)]
+struct ApplyArgs {
+    /// Keep the change without asking. The revert point is still written,
+    /// for `dsplr restore --revert`.
+    #[arg(long)]
+    yes: bool,
+    /// Check the layout without applying it: validate it, then have the
+    /// desktop test it where it has a real test.
+    #[arg(long)]
+    dry_run: bool,
+    /// Seconds to wait for an answer before reverting, in place of the
+    /// configured `confirm.timeout_secs`.
+    #[arg(long, hide = true, value_name = "SECS")]
+    confirm_timeout: Option<NonZeroU32>,
+}
+
+/// dsplr's exit codes (`docs/plan/07-cli.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exit {
     Success = 0,
     Failure = 1,
+    /// A usage error: clap exits with this code for the ones it finds, and
+    /// dsplr for the ones only the displays show, such as an output name
+    /// that names no output.
+    Usage = 2,
     /// Validation refused the layout.
     Refused = 3,
     /// The desktop refused the layout.
@@ -141,12 +165,12 @@ async fn run(cli: Cli) -> Exit {
             print(&backend::describe(&detection)).unwrap_or(code)
         }
         Some(Command::List { json }) => list(json).await,
-        Some(Command::Apply {
-            file,
-            yes,
-            dry_run,
-            confirm_timeout,
-        }) => apply(&file, yes, dry_run, confirm_timeout).await,
+        Some(Command::Apply { file, apply }) => apply_file(&file, &apply).await,
+        Some(Command::Set {
+            output,
+            changes,
+            apply,
+        }) => set(&output, &changes, &apply).await,
         Some(Command::Save { force, yes }) => match find_backend().await {
             Ok(backend) => save::run(&backend, &save::Options { force, yes }).await,
             Err(exit) => exit,
@@ -170,7 +194,7 @@ async fn find_backend() -> Result<Backend, Exit> {
     })
 }
 
-async fn apply(file: &Path, yes: bool, dry_run: bool, confirm_timeout: Option<NonZeroU32>) -> Exit {
+async fn apply_file(file: &Path, args: &ApplyArgs) -> Exit {
     let layout = match fs::read_to_string(file)
         .map_err(|error| error.to_string())
         .and_then(|text| Layout::from_json(&text).map_err(|error| error.to_string()))
@@ -181,26 +205,59 @@ async fn apply(file: &Path, yes: bool, dry_run: bool, confirm_timeout: Option<No
             return Exit::Failure;
         }
     };
-    let confirm_timeout = match confirm_timeout {
-        Some(secs) => Duration::from_secs(secs.get().into()),
-        None => match Config::load() {
-            Ok((config, _)) => config.confirm.timeout(),
-            Err(error) => {
-                eprintln!("dsplr: {error}");
-                return Exit::Failure;
-            }
-        },
+    let options = match apply_options(args) {
+        Ok(options) => options,
+        Err(exit) => return exit,
     };
     let backend = match find_backend().await {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    let options = apply::Options {
-        yes,
-        dry_run,
-        confirm_timeout,
+    apply::file(&backend, &layout, &options).await
+}
+
+async fn set(output: &str, changes: &set::Changes, args: &ApplyArgs) -> Exit {
+    let options = match apply_options(args) {
+        Ok(options) => options,
+        Err(exit) => return exit,
     };
-    apply::run(&backend, &layout, &options).await
+    let backend = match find_backend().await {
+        Ok(backend) => backend,
+        Err(exit) => return exit,
+    };
+    set::run(&backend, output, changes, &options).await
+}
+
+/// The confirm flow's options from its flags, the timeout from the config
+/// unless `--confirm-timeout` gives one.
+fn apply_options(args: &ApplyArgs) -> Result<apply::Options, Exit> {
+    let confirm_timeout = match args.confirm_timeout {
+        Some(secs) => Duration::from_secs(secs.get().into()),
+        None => match Config::load() {
+            Ok((config, _)) => config.confirm.timeout(),
+            Err(error) => {
+                eprintln!("dsplr: {error}");
+                return Err(Exit::Failure);
+            }
+        },
+    };
+    Ok(apply::Options {
+        yes: args.yes,
+        dry_run: args.dry_run,
+        confirm_timeout,
+    })
+}
+
+/// The displays' current state, or, when they cannot be read, the error
+/// reported and the exit code.
+async fn snapshot(backend: &Backend) -> Result<Layout, Exit> {
+    backend.snapshot().await.map_err(|error| {
+        eprintln!(
+            "dsplr: cannot read the displays from {}: {error}",
+            backend.name()
+        );
+        Exit::Failure
+    })
 }
 
 async fn list(json: bool) -> Exit {
@@ -208,15 +265,9 @@ async fn list(json: bool) -> Exit {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    let layout = match backend.snapshot().await {
+    let layout = match snapshot(&backend).await {
         Ok(layout) => layout,
-        Err(error) => {
-            eprintln!(
-                "dsplr: cannot read the displays from {}: {error}",
-                backend.name()
-            );
-            return Exit::Failure;
-        }
+        Err(exit) => return exit,
     };
     let text = if json {
         match layout.to_json() {
@@ -257,7 +308,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{Cli, Command, Exit};
+    use super::{ApplyArgs, Cli, Command, Exit};
 
     #[test]
     fn cli_definition_is_valid() {
@@ -293,9 +344,11 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Apply {
-                yes: true,
-                dry_run: true,
-                confirm_timeout: None,
+                apply: ApplyArgs {
+                    yes: true,
+                    dry_run: true,
+                    confirm_timeout: None,
+                },
                 ..
             })
         ));
@@ -326,9 +379,82 @@ mod tests {
     }
 
     #[test]
+    fn dsplr_s_usage_code_is_clap_s() {
+        let error = Cli::try_parse_from(["dsplr", "set", "DP-1", "--scale", "0"]).unwrap_err();
+        assert_eq!(error.exit_code(), Exit::Usage as i32);
+    }
+
+    #[test]
+    fn set_takes_an_output_its_changes_and_the_apply_flags() {
+        let cli = Cli::try_parse_from([
+            "dsplr",
+            "set",
+            "DP-1",
+            "--pos",
+            "-1920,0",
+            "--disable",
+            "--yes",
+        ])
+        .unwrap();
+        let Some(Command::Set {
+            output,
+            changes,
+            apply,
+        }) = cli.command
+        else {
+            panic!("not set: {cli:?}");
+        };
+        assert_eq!(output, "DP-1");
+        assert_eq!(changes.pos, Some((-1920, 0)));
+        assert!(changes.disable && !changes.enable);
+        assert!(apply.yes && !apply.dry_run);
+    }
+
+    #[test]
+    fn set_needs_a_change_and_takes_one_of_enable_and_disable() {
+        for args in [
+            &["dsplr", "set", "DP-1"][..],
+            &["dsplr", "set", "DP-1", "--yes", "--dry-run"],
+            &["dsplr", "set", "DP-1", "--enable", "--disable"],
+            &["dsplr", "set", "--pos", "0,0"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");
+        }
+        for change in [
+            &["--mode", "1920x1080"][..],
+            &["--pos", "0,0"],
+            &["--scale", "1.5"],
+            &["--transform", "flipped-90"],
+            &["--vrr", "on"],
+            &["--enable"],
+            &["--disable"],
+            &["--mirror", "DP-2"],
+        ] {
+            let args = [&["dsplr", "set", "DP-1"][..], change].concat();
+            assert!(Cli::try_parse_from(&args).is_ok(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn set_refuses_values_its_parsers_refuse() {
+        for (flag, value) in [
+            ("--mode", "1920x1080@"),
+            ("--pos", "0"),
+            ("--scale", "-1"),
+            ("--transform", "rotate-90"),
+            ("--vrr", "yes"),
+        ] {
+            let error = Cli::try_parse_from(["dsplr", "set", "DP-1", flag, value]).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{flag} {value}");
+        }
+    }
+
+    #[test]
     fn exit_codes_are_the_documented_numbers() {
         assert_eq!(ExitCode::from(Exit::Success), ExitCode::from(0));
         assert_eq!(ExitCode::from(Exit::Failure), ExitCode::from(1));
+        assert_eq!(ExitCode::from(Exit::Usage), ExitCode::from(2));
         assert_eq!(ExitCode::from(Exit::Refused), ExitCode::from(3));
         assert_eq!(ExitCode::from(Exit::BackendRefused), ExitCode::from(4));
         assert_eq!(ExitCode::from(Exit::Reverted), ExitCode::from(5));

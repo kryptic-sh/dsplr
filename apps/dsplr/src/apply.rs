@@ -1,5 +1,6 @@
 //! `dsplr apply <FILE>`: a whole layout from a file, through the confirm flow
-//! (`docs/plan/02-architecture.md`, "Apply, confirm, revert").
+//! (`docs/plan/02-architecture.md`, "Apply, confirm, revert"), which
+//! `dsplr set` shares ([`run`]).
 
 use std::io::{self, BufRead, IsTerminal};
 use std::sync::mpsc;
@@ -27,7 +28,7 @@ pub fn settle_limit(request_timeout: Duration) -> Duration {
     SETTLE + SETTLE_POLL + request_timeout
 }
 
-/// How `dsplr apply` was asked to run.
+/// How `dsplr apply` or `dsplr set` was asked to run.
 pub struct Options {
     /// Keep the change without asking.
     pub yes: bool,
@@ -38,16 +39,10 @@ pub struct Options {
 }
 
 /// Applies `file`, read from a layout file, on `backend`.
-pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
-    let current = match backend.snapshot().await {
+pub async fn file(backend: &Backend, file: &Layout, options: &Options) -> Exit {
+    let current = match crate::snapshot(backend).await {
         Ok(layout) => layout,
-        Err(error) => {
-            eprintln!(
-                "dsplr: cannot read the displays from {}: {error}",
-                backend.name()
-            );
-            return Exit::Failure;
-        }
+        Err(exit) => return exit,
     };
     let asked = match bind(file, &current) {
         Ok(layout) => layout,
@@ -58,6 +53,13 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
             return Exit::Refused;
         }
     };
+    run(backend, current, &asked, options).await
+}
+
+/// Takes `backend` from `current`, the snapshot just read, to `asked`, a
+/// whole layout naming the live outputs: validate, test, keep a revert
+/// point and start its watchdog, apply, read back, and keep or revert.
+pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &Options) -> Exit {
     let capabilities = backend.capabilities();
     let problems = asked.validate(&capabilities);
     for problem in &problems {
@@ -72,7 +74,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
         return Exit::Refused;
     }
     // Step 2: the desktop's own test, where it has a real one.
-    match backend.test(&asked).await {
+    match backend.test(asked).await {
         Ok(()) if options.dry_run => {
             eprintln!(
                 "dsplr: {} tested the layout and would apply it",
@@ -101,7 +103,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
                 "dsplr: the displays changed while {} tested the layout, so nothing was applied: {error}",
                 backend.name()
             );
-            show_now(backend, &asked, &capabilities).await;
+            show_now(backend, asked, &capabilities).await;
             return Exit::BackendRefused;
         }
         Err(error) => {
@@ -112,7 +114,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
             return Exit::Failure;
         }
     }
-    let ask = !options.yes && needs_confirm(&asked, &current, &capabilities);
+    let ask = !options.yes && needs_confirm(asked, &current, &capabilities);
     if ask && !io::stdin().is_terminal() {
         eprintln!(
             "dsplr: this change can hide or move a screen, and there is no terminal to confirm it on; pass --yes to keep it without asking"
@@ -143,7 +145,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
         return Exit::Failure;
     }
 
-    if let Err(error) = backend.apply(&asked).await {
+    if let Err(error) = backend.apply(asked).await {
         if error.is_stale() {
             // Nothing was applied, and the displays changed since the revert
             // point was read: going back would undo that other change. Show
@@ -155,7 +157,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
             if let Err(error) = revert::remove_if(&path, &point.token) {
                 eprintln!("dsplr: {error}");
             }
-            show_now(backend, &asked, &capabilities).await;
+            show_now(backend, asked, &capabilities).await;
             return Exit::BackendRefused;
         }
         // Refused or not, something may have changed (a connection lost
@@ -173,7 +175,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
         restore::go_back(backend, &path, &point).await;
         return exit;
     }
-    match settle(backend, &asked, &capabilities).await {
+    match settle(backend, asked, &capabilities).await {
         Ok(differences) => report(&differences),
         Err(error) => {
             // Without a re-read nothing says what the screens show: go back

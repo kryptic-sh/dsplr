@@ -21,15 +21,9 @@ pub struct Options {
 
 /// Saves the current state of `backend`'s displays.
 pub async fn run(backend: &Backend, options: &Options) -> Exit {
-    let layout = match backend.snapshot().await {
+    let layout = match crate::snapshot(backend).await {
         Ok(layout) => layout,
-        Err(error) => {
-            eprintln!(
-                "dsplr: cannot read the displays from {}: {error}",
-                backend.name()
-            );
-            return Exit::Failure;
-        }
+        Err(exit) => return exit,
     };
     let conflict = match backend.persist(&layout, None) {
         Ok(persisted) => return saved(&persisted),

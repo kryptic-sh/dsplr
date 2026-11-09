@@ -7,7 +7,7 @@
 use std::fmt;
 
 use crate::layout::SCALE_EPSILON;
-use crate::{Capabilities, Layout, Mode, OutputEntry, OutputId, OutputState, mhz_to_hz_text};
+use crate::{Capabilities, Layout, OutputEntry, OutputId, OutputState};
 
 /// One way the layout read back differs from the one asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,8 +139,10 @@ fn compare(
     {
         differ(
             Setting::Mode,
-            mode_text(mode),
-            g.mode.as_ref().map_or_else(|| "none".to_owned(), mode_text),
+            mode.to_string(),
+            g.mode
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), ToString::to_string),
         );
     }
     if (a.x, a.y) != (g.x, g.y) {
@@ -214,16 +216,6 @@ fn compare_known(
     {
         differ(Setting::RgbRange, asked.to_string(), got.to_string());
     }
-}
-
-/// `1920x1080@59.94`.
-fn mode_text(mode: &Mode) -> String {
-    format!(
-        "{}x{}@{}",
-        mode.width,
-        mode.height,
-        mhz_to_hz_text(mode.refresh_mhz)
-    )
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Hyprland's `j/monitors all` reply, as Hyprland writes it.
 
-use dsplr_model::{Mode, hz_to_mhz};
+use dsplr_model::{Mode, ModeSpec};
 use serde::Deserialize;
 
 /// One monitor from `j/monitors all`: every output Hyprland knows, disabled
@@ -84,21 +84,11 @@ pub struct ModeError(String);
 /// `2560x1440@120.00Hz`. Hyprland lists no preferred mode and no per-mode
 /// scales here, so those stay empty.
 pub fn parse_mode(text: &str) -> Result<Mode, ModeError> {
-    let invalid = || ModeError(text.to_owned());
-    let (size, refresh) = text
-        .strip_suffix("Hz")
-        .and_then(|mode| mode.split_once('@'))
-        .ok_or_else(invalid)?;
-    let (width, height) = size.split_once('x').ok_or_else(invalid)?;
-    let hertz: f64 = refresh.parse().map_err(|_| invalid())?;
-    let refresh_mhz = hz_to_mhz(hertz)
-        .filter(|&mhz| mhz > 0)
-        .ok_or_else(invalid)?;
-    Ok(Mode::new(
-        width.parse().map_err(|_| invalid())?,
-        height.parse().map_err(|_| invalid())?,
-        refresh_mhz,
-    ))
+    text.strip_suffix("Hz")
+        .and_then(|mode| mode.parse::<ModeSpec>().ok())
+        .and_then(ModeSpec::to_mode)
+        .filter(|mode| mode.refresh_mhz > 0)
+        .ok_or_else(|| ModeError(text.to_owned()))
 }
 
 #[cfg(test)]
@@ -167,6 +157,10 @@ mod tests {
             "1920x1080@0.00Hz",
             "1920x1080@-60.00Hz",
             "1920x1080@1e12Hz",
+            "1920x1080@1e2Hz",
+            "1920x1080@60HzHz",
+            "1920x1080@inf",
+            "+1920x1080@60.00Hz",
         ] {
             assert_eq!(
                 parse_mode(text),

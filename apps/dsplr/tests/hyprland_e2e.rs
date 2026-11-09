@@ -1,6 +1,7 @@
 //! `dsplr apply` and `dsplr restore --revert` against a real, headless
 //! Hyprland: keeping a change, declining it, letting the prompt time out, and
-//! the watchdog reverting for a dsplr that died. And `dsplr save`: creating
+//! the watchdog reverting for a dsplr that died; `dsplr set` mirroring one
+//! output, through the same flow. And `dsplr save`: creating
 //! monitors.lua, and asking before it replaces one it may not simply
 //! overwrite.
 //!
@@ -203,6 +204,29 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
     )
     .await;
     assert!(!revert_file.exists(), "a revert removes the revert point");
+
+    // dsplr set edits one output through the same flow: a mirror, which
+    // Hyprland has and wlroots has not.
+    let wayland_1 = entry(&start, "WAYLAND-1").id.clone();
+    let output = Command::new(dsplr_bin())
+        .args(["set", "DSPLR-1", "--mirror", "WAYLAND-1", "--yes"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("dsplr runs");
+    let (code, text) = exit_and_output(&output);
+    assert_eq!(code, Some(0), "{text}");
+    snapshot_until(&backend, "DSPLR-1 mirroring", |layout| {
+        entry(layout, "DSPLR-1").state.mirror_of.as_ref() == Some(&wayland_1)
+    })
+    .await;
+    let output = Command::new(dsplr_bin())
+        .args(["restore", "--revert"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("dsplr runs");
+    let (code, text) = exit_and_output(&output);
+    assert_eq!(code, Some(0), "{text}");
+    back_to(&backend, &start, "set reverted", hyprland_support::SETTLE).await;
 
     // "n" on the prompt reverts, and so does no answer.
     let pid_file = runtime.join("dsplr.pid");

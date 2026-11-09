@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use crate::layout::SCALE_EPSILON;
+use crate::layout::{SCALE_EPSILON, is_valid_scale};
 use crate::rect::Rect;
 use crate::{Capabilities, Layout, Mode, OutputEntry, OutputId};
 
@@ -221,7 +221,7 @@ fn check_mode_and_scale(
         problems.push(Problem::error(&entry.id, ProblemKind::ModeNotListed));
     }
 
-    if !(state.scale.is_finite() && state.scale > 0.0) {
+    if !is_valid_scale(state.scale) {
         problems.push(Problem::error(&entry.id, ProblemKind::InvalidScale));
         return;
     }

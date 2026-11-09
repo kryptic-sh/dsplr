@@ -1,6 +1,9 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+
+use crate::name::{ParseNameError, parse_name};
 
 /// The eight Wayland output transforms. XRandR's rotation and reflection
 /// pairs map onto the same eight.
@@ -64,7 +67,9 @@ impl Transform {
 }
 
 /// `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180` or
-/// `flipped-270`: sway's names, read clockwise.
+/// `flipped-270`: `wl_output.transform`'s names, so `90` is its value 1,
+/// which the protocol calls 90 degrees counter-clockwise. sway names the
+/// quarter turns the other way round: its `90` is this `270` (sway 1.12).
 impl fmt::Display for Transform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -77,6 +82,15 @@ impl fmt::Display for Transform {
             Self::Flipped180 => "flipped-180",
             Self::Flipped270 => "flipped-270",
         })
+    }
+}
+
+/// The names [`Display`](fmt::Display) writes, and nothing else.
+impl FromStr for Transform {
+    type Err = ParseNameError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        parse_name("transform", &Self::ALL, text)
     }
 }
 
@@ -120,5 +134,25 @@ mod tests {
                 Transform::Flipped270,
             ]
         );
+    }
+
+    #[test]
+    fn each_name_reads_back_as_the_transform_that_wrote_it() {
+        for transform in Transform::ALL {
+            assert_eq!(transform.to_string().parse(), Ok(transform));
+        }
+        assert_eq!("90".parse(), Ok(Transform::Rotate90));
+        assert_eq!("flipped-270".parse(), Ok(Transform::Flipped270));
+    }
+
+    #[test]
+    fn other_names_are_refused_listing_the_names() {
+        for text in ["", "rotate90", "Normal", " 90", "90deg", "flipped90", "360"] {
+            let error = text.parse::<Transform>().unwrap_err().to_string();
+            assert!(
+                error.contains("normal, 90, 180, 270, flipped, flipped-90"),
+                "{text:?}: {error}"
+            );
+        }
     }
 }

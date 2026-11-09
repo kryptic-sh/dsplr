@@ -10,18 +10,24 @@ pub fn describe(layout: &Layout) -> String {
     layout.entries.iter().map(describe_entry).collect()
 }
 
-fn describe_entry(entry: &OutputEntry) -> String {
-    // The connector when it is known, else the name the identity carries.
+/// The line `dsplr list` heads an output with, and other commands name one
+/// by: its connector when it is known, else the name its identity carries,
+/// then the description the backend reported (`DP-1: AOC Q27G4 SERIAL`).
+pub fn heading(entry: &OutputEntry) -> String {
     let name = entry
         .output
         .as_ref()
         .map_or_else(|| entry.id.to_string(), |output| output.connector.clone());
-    let mut lines = vec![match &entry.output {
+    match &entry.output {
         Some(output) if !output.description.is_empty() => {
             format!("{name}: {}", output.description)
         }
         _ => name,
-    }];
+    }
+}
+
+fn describe_entry(entry: &OutputEntry) -> String {
+    let mut lines = vec![heading(entry)];
     let state = &entry.state;
     if state.enabled {
         let mut settings = vec![

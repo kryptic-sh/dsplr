@@ -7,7 +7,9 @@
 //! setting beside `disabled = true`) is an error naming it, never dropped: a
 //! file read without it would be saved back without it.
 
-use dsplr_model::{AdaptiveSync, Mode, OutputEntry, OutputId, OutputState, Transform, hz_to_mhz};
+use dsplr_model::{
+    AdaptiveSync, Mode, ModeSpec, OutputEntry, OutputId, OutputState, Transform, is_valid_scale,
+};
 
 use super::MonitorsLua;
 use super::lua::{self, Value};
@@ -242,7 +244,8 @@ fn output_id(name: &str) -> Option<OutputId> {
     }
 }
 
-/// `WxH@R`. Hyprland's other forms (`preferred`, `highres`, a modeline, or
+/// `WxH@R`, the refresh in hertz with an optional `Hz` after it
+/// ([`ModeSpec`]). Hyprland's other forms (`preferred`, `highres`, a modeline, or
 /// no refresh) pick a mode from the live monitor, which a file has no list
 /// of, so they are refused.
 fn mode(field: Option<Located>, line: usize) -> Result<Mode, ReadError> {
@@ -252,15 +255,12 @@ fn mode(field: Option<Located>, line: usize) -> Result<Mode, ReadError> {
     let Value::Str(text) = &value else {
         return Err(invalid("mode", &value, line));
     };
-    let parsed = text.split_once('@').and_then(|(size, refresh)| {
-        let (width, height) = size.split_once('x')?;
-        let refresh: f64 = refresh.trim_end_matches("Hz").parse().ok()?;
-        Some(Mode::new(
-            width.parse().ok()?,
-            height.parse().ok()?,
-            hz_to_mhz(refresh)?,
-        ))
-    });
+    let parsed = text
+        .strip_suffix("Hz")
+        .unwrap_or(text)
+        .parse::<ModeSpec>()
+        .ok()
+        .and_then(ModeSpec::to_mode);
     parsed.ok_or_else(|| unsupported("mode", &render(&value), line))
 }
 
@@ -291,7 +291,7 @@ fn scale(field: Option<Located>, line: usize) -> Result<f64, ReadError> {
         Value::Bool(_) => None,
     };
     match scale {
-        Some(scale) if scale.is_finite() && scale > 0.0 => Ok(scale),
+        Some(scale) if is_valid_scale(scale) => Ok(scale),
         _ => Err(unsupported("scale", &render(&value), line)),
     }
 }
@@ -519,6 +519,38 @@ hl.monitor({ output = "", mode = "highres" })
             kind(r#"hl.monitor({ output = "desc: ", disabled = true })"#),
             ReadErrorKind::UnsupportedValue { ref field, .. } if field == "output"
         ));
+        for mode in [
+            "1920x1080",
+            "1920x1080@1e2",
+            "1920x1080@60HzHz",
+            "1920x1080@inf",
+        ] {
+            let source = format!(
+                r#"hl.monitor({{ output = "DP-1", mode = "{mode}", position = "0x0", scale = 1 }})"#
+            );
+            assert!(
+                matches!(
+                    kind(&source),
+                    ReadErrorKind::UnsupportedValue { ref field, .. } if field == "mode"
+                ),
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mode_reads_with_or_without_its_hz() {
+        for mode in ["1920x1080@59.94", "1920x1080@59.94Hz"] {
+            let text = format!(
+                r#"hl.monitor({{ output = "DP-1", mode = "{mode}", position = "0x0", scale = 1 }})"#
+            );
+            let layout = read_monitors_lua(&text).expect("reads").layout;
+            assert_eq!(
+                layout.entries[0].state.mode,
+                Some(Mode::new(1920, 1080, 59_940)),
+                "{mode}"
+            );
+        }
     }
 
     #[test]
