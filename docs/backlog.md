@@ -149,16 +149,19 @@ milestone:
   tests. On Wayland the name can arrive after the output first appears, so match
   on hotplug and change events too. On wlroots and Hyprland it equals
   wlr-output-management's `head.name`.
-- **`crcbl-wl-scanner`'s `decode_event` reads past its borrow; crcbl is fixing
-  it.** The generated `decode_event(opcode, args: &WlArgument)` turns the
-  reference to one slot into a pointer and reads `args.add(1..)` for events with
-  more than one argument, which is outside that reference's provenance under
-  Stacked Borrows (undefined behaviour by Rust's rules, though it works in
-  practice). Reported 2026-11-09; crcbl confirmed it and is changing the
-  generated signature to a slice `&[WlArgument]` sized from the message
-  signature, with a Miri test. That is a breaking change to the generated API:
-  when the crcbl release lands, bump every crcbl crate and have dsplr's
-  dispatcher in `wlr::connection` build the slice (crcbl will send the helper).
+- **`crcbl-wl-scanner`'s `decode_event` reads past its borrow; fixed in crcbl,
+  not released.** The generated `decode_event(opcode, args: &WlArgument)` turns
+  the reference to one slot into a pointer and reads `args.add(1..)`, outside
+  that reference's provenance under Stacked Borrows. Fixed on crcbl's main
+  (755fe629, CI and Miri green, 2026-11-09); the release is the owner's call.
+  The new API: `decode_event<'a>(opcode, args: &'a [WlArgument])` (a short slice
+  gives `None`), and
+  `crcbl_wayland::ffi::with_dispatcher_args(message, args, f)`, which sizes the
+  slice from the message signature and takes a closure for every lifetime, so
+  decoded strings must be copied out inside it. When the release lands: bump
+  every crcbl crate with `cargo add`, and have `wlr::connection`'s dispatcher
+  decode inside `with_dispatcher_args`, as crcbl's `crcbl-wayland-probe`
+  `outputs.rs` `dispatch` does.
 - **e2e for the other desktops**: each backend (M5 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`. niri has no
