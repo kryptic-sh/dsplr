@@ -3,9 +3,11 @@
 //! (`docs/plan/03-display-model.md`). No I/O.
 //!
 //! What is here: the types, their JSON form, validation, snapping and
-//! normalisation.
+//! normalisation, and pairing a saved layout's entries with the connected
+//! outputs.
 
 mod arrange;
+mod assign;
 mod capabilities;
 mod compare;
 mod id;
@@ -18,6 +20,7 @@ mod transform;
 mod validate;
 
 pub use arrange::PositionOutOfRange;
+pub use assign::assign;
 pub use capabilities::Capabilities;
 pub use compare::{Difference, Setting};
 pub use id::OutputId;

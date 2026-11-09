@@ -1,6 +1,7 @@
 //! `dsplr apply <FILE>`: a whole layout from a file, through the confirm flow
 //! (`docs/plan/02-architecture.md`, "Apply, confirm, revert"), which
-//! `dsplr set` shares ([`run`]).
+//! `dsplr set` ([`run`]) and `dsplr restore` with a profile ([`onto`])
+//! share.
 
 use std::io::{self, BufRead, IsTerminal};
 use std::sync::mpsc;
@@ -8,7 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use dsplr_backend::Backend;
-use dsplr_model::{Capabilities, Difference, Layout, OutputEntry, OutputId, Problem, Setting};
+use dsplr_model::{
+    Capabilities, Difference, Layout, OutputEntry, OutputId, Problem, Setting, assign,
+};
 use dsplr_persist::revert::{self, RevertPoint};
 
 use crate::{Exit, restore};
@@ -44,11 +47,19 @@ pub async fn file(backend: &Backend, file: &Layout, options: &Options) -> Exit {
         Ok(layout) => layout,
         Err(exit) => return exit,
     };
+    onto(backend, current, file, options).await
+}
+
+/// Applies `file`, a layout read from a file or a profile, onto `current`,
+/// the snapshot just read: each of its outputs is paired with its own
+/// connected output that its identity names, the others stay as they are,
+/// and one left without an output refuses it all.
+pub async fn onto(backend: &Backend, current: Layout, file: &Layout, options: &Options) -> Exit {
     let asked = match bind(file, &current) {
         Ok(layout) => layout,
-        Err(missing) => {
-            for output in missing {
-                eprintln!("dsplr: {output}: not connected");
+        Err(unbound) => {
+            for output in unbound {
+                eprintln!("dsplr: {output}");
             }
             return Exit::Refused;
         }
@@ -222,39 +233,74 @@ pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &O
     }
 }
 
-/// Pairs each entry of `file` with the live output its identity matches,
-/// taking the live identity and hardware facts so the backend can name it,
-/// and mirrors likewise. Live outputs the file does not mention keep their
-/// current state. The error lists the file's outputs that are not connected.
-fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<OutputId>> {
-    let find = |id: &OutputId| live.entries.iter().find(|entry| id.matches(entry));
-    let mut missing = Vec::new();
-    let mut entries = Vec::new();
-    for entry in &file.entries {
-        let Some(found) = find(&entry.id) else {
-            missing.push(entry.id.clone());
-            continue;
-        };
-        let mut state = entry.state.clone();
-        state.mirror_of = entry
-            .state
-            .mirror_of
-            .as_ref()
-            .map(|source| find(source).map_or_else(|| source.clone(), |live| live.id.clone()));
-        entries.push(OutputEntry {
-            id: found.id.clone(),
-            output: found.output.clone(),
-            state,
-        });
+/// A layout file's output that has no connected output of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Unbound {
+    /// It names no connected output.
+    NotConnected(OutputId),
+    /// Every connected output it names is another entry's.
+    Taken(OutputId),
+}
+
+impl std::fmt::Display for Unbound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotConnected(id) => write!(f, "{id}: not connected"),
+            Self::Taken(id) => write!(
+                f,
+                "{id}: every connected output it names is taken by another of the layout's outputs"
+            ),
+        }
     }
-    if !missing.is_empty() {
-        return Err(missing);
-    }
-    entries.extend(
-        live.entries
+}
+
+/// Pairs each entry of `file` with its own live output that its identity
+/// names ([`assign`]), taking the live identity and hardware facts so the
+/// backend can name it. A mirror's source is the live output its file
+/// entry was paired with, or else the first one its identity names. Live
+/// outputs left unpaired keep their current state. The error lists the
+/// file's outputs left without one.
+fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
+    let paired = assign(&file.entries, &live.entries).map_err(|unpaired| {
+        unpaired
+            .into_iter()
+            .map(|index| {
+                let id = file.entries[index].id.clone();
+                if live.entries.iter().any(|live| id.matches(live)) {
+                    Unbound::Taken(id)
+                } else {
+                    Unbound::NotConnected(id)
+                }
+            })
+            .collect::<Vec<_>>()
+    })?;
+    let source = |id: &OutputId| {
+        file.entries
             .iter()
-            .filter(|live| !file.entries.iter().any(|entry| entry.id.matches(live)))
-            .cloned(),
+            .position(|entry| entry.id == *id)
+            .map(|index| &live.entries[paired[index]])
+            .or_else(|| live.entries.iter().find(|live| id.matches(live)))
+            .map_or_else(|| id.clone(), |live| live.id.clone())
+    };
+    let mut entries: Vec<OutputEntry> = file
+        .entries
+        .iter()
+        .zip(&paired)
+        .map(|(entry, &index)| {
+            let found = &live.entries[index];
+            let mut state = entry.state.clone();
+            state.mirror_of = entry.state.mirror_of.as_ref().map(source);
+            OutputEntry {
+                id: found.id.clone(),
+                output: found.output.clone(),
+                state,
+            }
+        })
+        .collect();
+    entries.extend(
+        (0..live.entries.len())
+            .filter(|index| !paired.contains(index))
+            .map(|index| live.entries[index].clone()),
     );
     Ok(Layout { entries })
 }
@@ -370,7 +416,7 @@ mod tests {
         Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
     };
 
-    use super::{bind, is_yes, needs_confirm};
+    use super::{Unbound, bind, is_yes, needs_confirm};
 
     fn live_entry(connector: &str, serial: &str) -> OutputEntry {
         OutputEntry {
@@ -438,8 +484,82 @@ mod tests {
                     state: OutputState::default(),
                 }],
             };
-            assert_eq!(bind(&file, &live()), Err(vec![id]));
+            assert_eq!(bind(&file, &live()), Err(vec![Unbound::NotConnected(id)]));
         }
+    }
+
+    /// Two entries whose identities both name one output, with another
+    /// output that only the second names: each gets its own, whichever is
+    /// listed first, though the first is the description's first match.
+    #[test]
+    fn a_description_naming_two_outputs_takes_the_one_left() {
+        let entry = |id: OutputId, x: i32| OutputEntry {
+            id,
+            output: None,
+            state: OutputState {
+                x,
+                ..live().entries[0].state.clone()
+            },
+        };
+        let file = Layout {
+            entries: vec![
+                entry(OutputId::Description("AOC Q27G4".into()), 100),
+                entry(OutputId::Connector("DP-1".into()), 200),
+            ],
+        };
+        let bound = bind(&file, &live()).unwrap();
+        let x = |connector: &str| {
+            bound
+                .entries
+                .iter()
+                .find(|entry| entry.connector() == Some(connector))
+                .unwrap()
+                .state
+                .x
+        };
+        assert_eq!((x("HDMI-A-1"), x("DP-1")), (100, 200));
+        assert_eq!(bound.entries.len(), 2, "each output once");
+
+        // A third for two outputs is left over, though it names one.
+        let mut three = file.clone();
+        three
+            .entries
+            .push(entry(OutputId::Connector("HDMI-A-1".into()), 300));
+        assert_eq!(
+            bind(&three, &live()),
+            Err(vec![Unbound::Taken(OutputId::Description(
+                "AOC Q27G4".into()
+            ))])
+        );
+    }
+
+    /// Two monitors with one EDID identity, each saved on its connector.
+    #[test]
+    fn twins_each_take_their_own_output() {
+        let twin = |connector: &str| {
+            let mut entry = live_entry(connector, "SAME");
+            entry.state.x = if connector == "DP-1" { 0 } else { 2560 };
+            entry
+        };
+        let now = Layout {
+            entries: vec![twin("DP-1"), twin("HDMI-A-1")],
+        };
+        let mut file = now.clone();
+        file.entries.reverse();
+        for entry in &mut file.entries {
+            entry.state.y = 10;
+        }
+        let bound = bind(&file, &now).unwrap();
+        assert_eq!(bound.entries.len(), 2);
+        for entry in &bound.entries {
+            let x = if entry.connector() == Some("DP-1") {
+                0
+            } else {
+                2560
+            };
+            assert_eq!((entry.state.x, entry.state.y), (x, 10), "{entry:?}");
+        }
+        assert_ne!(bound.entries[0].connector(), bound.entries[1].connector());
     }
 
     #[test]

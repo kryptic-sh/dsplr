@@ -2,8 +2,9 @@
 //!
 //! `dsplr list` and `dsplr backend` read the desktop; `dsplr apply` changes
 //! it from a layout file and `dsplr set` one output at a time,
-//! `dsplr restore --revert` goes back, and `dsplr save` makes the current
-//! state last. The GUI and profiles are not written yet.
+//! `dsplr restore --revert` goes back, `dsplr save` makes the current state
+//! last, and `dsplr save --profile`, `dsplr restore` and `dsplr profile` keep
+//! named layouts. The GUI is not written yet.
 
 use std::fs;
 use std::io::{self, Write};
@@ -16,10 +17,12 @@ use clap::{Args, Parser, Subcommand};
 use dsplr_backend::{Backend, Detection, detect};
 use dsplr_config::Config;
 use dsplr_model::Layout;
+use dsplr_persist::profile::ProfileName;
 
 mod apply;
 mod backend;
 mod list;
+mod profile;
 mod restore;
 mod save;
 mod set;
@@ -64,30 +67,79 @@ enum Command {
         apply: ApplyArgs,
     },
     /// Save the displays as they are now where the desktop reads them when
-    /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua.
+    /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua; on
+    /// sway, the outputs file beside its config. With --profile, as a named
+    /// profile in dsplr's own store instead, on any desktop.
     Save {
         /// Overwrite the file even when it was edited by hand, or holds
-        /// settings dsplr cannot keep (they are lost).
+        /// settings dsplr cannot keep (they are lost); replace a profile, or
+        /// one that cannot be read, without asking.
         #[arg(long)]
         force: bool,
-        /// Replace a file another tool wrote (nwg-displays') without asking.
+        /// Replace a file another tool wrote (nwg-displays'), or a profile of
+        /// the same name, without asking.
         #[arg(long)]
         yes: bool,
+        /// Save as the profile NAME in $XDG_CONFIG_HOME/dsplr/profiles:
+        /// ASCII letters and digits, spaces, '-', '_' and '.', starting with a
+        /// letter, a digit or '_', and not ending in a space or '.'.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<ProfileName>,
     },
-    /// Go back to the layout from before the last change.
+    /// Apply a saved profile: the one named, or else the one saved for
+    /// exactly the outputs connected now, else the most recently saved one
+    /// for some of them; with none, nothing changes (exit 7). With --revert,
+    /// go back to the layout from before the last change instead.
+    ///
+    /// Run from a desktop's autostart, where there is no terminal to
+    /// confirm on, it needs --yes to change the displays.
     Restore {
-        /// Apply the last revert point. Profiles are not written yet, so
-        /// this is the only thing restore does.
-        #[arg(long, required = true)]
+        /// The profile to apply.
+        #[arg(value_name = "NAME", conflicts_with = "revert")]
+        name: Option<ProfileName>,
+        /// Apply the last revert point, without asking.
+        #[arg(long, conflicts_with_all = ["yes", "dry_run", "confirm_timeout"])]
         revert: bool,
         /// Run as a change's watchdog: wait this many seconds first.
-        #[arg(long, hide = true, value_name = "SECS", requires = "token")]
+        #[arg(
+            long,
+            hide = true,
+            value_name = "SECS",
+            requires = "token",
+            requires = "revert"
+        )]
         after: Option<u64>,
         /// Run as a change's watchdog: revert only while the revert point
         /// holds this token.
         #[arg(long, hide = true, requires = "after")]
         token: Option<String>,
+        #[command(flatten)]
+        apply: ApplyArgs,
     },
+    /// List, show and remove the profiles `dsplr save --profile` saves.
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    /// Each profile's name, the outputs it is for, and when it was saved.
+    List {
+        /// Print them as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// A profile's layout, as `dsplr list` prints one.
+    Show {
+        name: ProfileName,
+        /// Print it as JSON, the form `dsplr apply` reads.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a profile.
+    Rm { name: ProfileName },
 }
 
 /// The flags of every command that changes the displays through the confirm
@@ -126,6 +178,9 @@ enum Exit {
     /// The change was reverted: declined, or not confirmed in time.
     Reverted = 5,
     NoBackend = 6,
+    /// `dsplr restore` without a name found no profile for the outputs
+    /// connected now, and changed nothing.
+    NoProfile = 7,
 }
 
 impl From<Exit> for ExitCode {
@@ -173,15 +228,35 @@ async fn run(cli: Cli) -> Exit {
             changes,
             apply,
         }) => set(&output, &changes, &apply).await,
-        Some(Command::Save { force, yes }) => match find_backend().await {
-            Ok(backend) => save::run(&backend, &save::Options { force, yes }).await,
+        Some(Command::Save {
+            force,
+            yes,
+            profile,
+        }) => match find_backend().await {
+            Ok(backend) => {
+                let options = save::Options { force, yes };
+                match profile {
+                    Some(name) => profile::save(&backend, &name, &options).await,
+                    None => save::run(&backend, &options).await,
+                }
+            }
             Err(exit) => exit,
         },
         Some(Command::Restore {
-            revert: _,
+            revert: true,
             after,
             token,
+            ..
         }) => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
+        Some(Command::Restore { name, apply, .. }) => match apply_options(&apply) {
+            Ok(options) => profile::restore(name.as_ref(), &options).await,
+            Err(exit) => exit,
+        },
+        Some(Command::Profile { command }) => match command {
+            ProfileCommand::List { json } => profile::list(json),
+            ProfileCommand::Show { name, json } => profile::show(&name, json),
+            ProfileCommand::Rm { name } => profile::remove(&name),
+        },
     }
 }
 
@@ -310,7 +385,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{ApplyArgs, Cli, Command, Exit};
+    use super::{ApplyArgs, Cli, Command, Exit, ProfileCommand};
 
     #[test]
     fn cli_definition_is_valid() {
@@ -326,10 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn restore_needs_revert_and_the_watchdog_needs_both_its_arguments() {
-        assert!(Cli::try_parse_from(["dsplr", "restore"]).is_err());
+    fn the_watchdog_needs_revert_and_both_its_arguments() {
         assert!(Cli::try_parse_from(["dsplr", "restore", "--revert", "--after", "25"]).is_err());
         assert!(Cli::try_parse_from(["dsplr", "restore", "--revert", "--token", "t"]).is_err());
+        assert!(
+            Cli::try_parse_from(["dsplr", "restore", "--after", "25", "--token", "t"]).is_err()
+        );
         let cli = Cli::try_parse_from([
             "dsplr", "restore", "--revert", "--after", "25", "--token", "t",
         ])
@@ -361,13 +438,14 @@ mod tests {
     }
 
     #[test]
-    fn save_takes_force_and_yes() {
+    fn save_takes_force_yes_and_a_profile() {
         let cli = Cli::try_parse_from(["dsplr", "save"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Save {
                 force: false,
-                yes: false
+                yes: false,
+                profile: None,
             })
         ));
         let cli = Cli::try_parse_from(["dsplr", "save", "--force", "--yes"]).unwrap();
@@ -375,9 +453,93 @@ mod tests {
             cli.command,
             Some(Command::Save {
                 force: true,
-                yes: true
+                yes: true,
+                profile: None,
             })
         ));
+        let cli = Cli::try_parse_from(["dsplr", "save", "--profile", "laptop only"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Save { profile: Some(ref name), .. }) if name.as_str() == "laptop only"
+        ));
+    }
+
+    /// The name becomes a file name, so one that could reach outside the
+    /// store is a usage error before anything runs.
+    #[test]
+    fn a_profile_name_that_is_not_a_plain_file_name_is_a_usage_error() {
+        for name in ["", "../x", "a/b", ".hidden", "a..b", "-x", "desk.", "Büro"] {
+            for args in [
+                &["dsplr", "save", "--profile", name][..],
+                &["dsplr", "restore", name],
+                &["dsplr", "profile", "show", name],
+                &["dsplr", "profile", "rm", name],
+            ] {
+                let error = Cli::try_parse_from(args).unwrap_err();
+                assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn restore_takes_a_name_or_revert_and_the_apply_flags() {
+        let cli = Cli::try_parse_from(["dsplr", "restore"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Restore {
+                name: None,
+                revert: false,
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(["dsplr", "restore", "desk", "--yes", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Restore {
+                name: Some(ref name),
+                revert: false,
+                apply: ApplyArgs { yes: true, dry_run: true, .. },
+                ..
+            }) if name.as_str() == "desk"
+        ));
+        // A revert goes back without asking, so the confirm flow's flags
+        // mean nothing to it.
+        for args in [
+            &["dsplr", "restore", "desk", "--revert"][..],
+            &["dsplr", "restore", "--revert", "--yes"],
+            &["dsplr", "restore", "--revert", "--dry-run"],
+            &["dsplr", "restore", "--revert", "--confirm-timeout", "5"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn profile_lists_shows_and_removes() {
+        let cli = Cli::try_parse_from(["dsplr", "profile", "list", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::List { json: true }
+            })
+        ));
+        let cli = Cli::try_parse_from(["dsplr", "profile", "show", "desk", "--json"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Show { ref name, json: true }
+            }) if name.as_str() == "desk"
+        ));
+        let cli = Cli::try_parse_from(["dsplr", "profile", "rm", "desk"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Rm { ref name }
+            }) if name.as_str() == "desk"
+        ));
+        assert!(Cli::try_parse_from(["dsplr", "profile"]).is_err());
+        assert!(Cli::try_parse_from(["dsplr", "profile", "show"]).is_err());
     }
 
     #[test]
@@ -463,5 +625,6 @@ mod tests {
         assert_eq!(ExitCode::from(Exit::BackendRefused), ExitCode::from(4));
         assert_eq!(ExitCode::from(Exit::Reverted), ExitCode::from(5));
         assert_eq!(ExitCode::from(Exit::NoBackend), ExitCode::from(6));
+        assert_eq!(ExitCode::from(Exit::NoProfile), ExitCode::from(7));
     }
 }

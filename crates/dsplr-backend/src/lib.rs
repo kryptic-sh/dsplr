@@ -4,8 +4,9 @@
 //! [`detect`] finds the backend for the running desktop and reports what it
 //! looked at. So far Hyprland and wlroots compositors exist; both read and
 //! apply, wlroots tests, Hyprland persists to its Lua config and sway to its
-//! `outputs` file, while persisting on other wlroots compositors and the
-//! other desktops is not written yet. Every
+//! `outputs` file; other wlroots compositors have no native persistence and
+//! use dsplr's profile store (`dsplr save --profile`), and the other
+//! desktops are not written yet. Every
 //! backend is Linux-only; on other targets [`Backend`] has no variants and
 //! detection says why.
 
@@ -294,7 +295,7 @@ impl Backend {
                 if !wlr.is_sway() {
                     return Err(Error::Unsupported {
                         what: "saving the layout",
-                        reason: "SWAYSOCK is not set, or its socket does not answer as sway's, so this is not sway, the one wlroots compositor whose config dsplr writes; dsplr's own profile store for the others is not written yet",
+                        reason: "SWAYSOCK is not set, or its socket does not answer as sway's, so this is not sway, the one wlroots compositor whose config dsplr writes; on another, save a profile with `dsplr save --profile NAME` and run `dsplr restore --yes` from the compositor's autostart",
                     });
                 }
                 match save(|name| std::env::var_os(name), layout, approved) {

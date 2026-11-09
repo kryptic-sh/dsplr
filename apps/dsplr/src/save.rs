@@ -82,7 +82,13 @@ fn allowed(conflict: &Conflict, options: &Options) -> bool {
         eprintln!("dsplr: nothing was saved; --force replaces the file");
         return false;
     }
-    if options.yes {
+    replace_allowed(&path.to_string(), options.yes)
+}
+
+/// Whether the user allows replacing `what`: `yes` (`--yes`), or a yes on
+/// the terminal. Without either, says why nothing was saved.
+pub fn replace_allowed(what: &str, yes: bool) -> bool {
+    if yes {
         return true;
     }
     if !io::stdin().is_terminal() {
@@ -91,7 +97,7 @@ fn allowed(conflict: &Conflict, options: &Options) -> bool {
         );
         return false;
     }
-    if ask(&format!("Replace {path}? [y/N] ")) {
+    if ask(&format!("Replace {what}? [y/N] ")) {
         true
     } else {
         eprintln!("dsplr: nothing was saved");

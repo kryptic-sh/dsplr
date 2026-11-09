@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, io};
 
-use dsplr_model::{JsonError, Layout};
+use dsplr_model::Layout;
 
+use crate::layout_json;
 use crate::managed::write_atomic;
 
 /// A layout to go back to, and the token naming the change it guards.
@@ -85,15 +86,12 @@ pub fn save(path: &Path, point: &RevertPoint) -> Result<(), RevertError> {
         path: path.to_owned(),
         reason,
     };
-    let text = point.layout.to_json().map_err(|e| invalid(e.to_string()))?;
-    let mut value: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
-    value.insert(TOKEN_KEY.to_owned(), point.token.clone().into());
-    let text = serde_json::to_string_pretty(&value).map_err(|e| invalid(e.to_string()))?;
+    let text = layout_json::write(&point.layout, TOKEN_KEY, point.token.clone().into())
+        .map_err(invalid)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_error)?;
     }
-    write_atomic(path, &(text + "\n")).map_err(io_error)
+    write_atomic(path, &text).map_err(io_error)
 }
 
 /// The revert point at `path`, or `None` when there is none.
@@ -116,13 +114,10 @@ pub fn load(path: &Path) -> Result<Option<RevertPoint>, RevertError> {
         path: path.to_owned(),
         reason,
     };
-    let mut value: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(&text).map_err(|e| invalid(e.to_string()))?;
-    let Some(serde_json::Value::String(token)) = value.remove(TOKEN_KEY) else {
+    let (layout, token) = layout_json::read(&text, TOKEN_KEY).map_err(invalid)?;
+    let Some(serde_json::Value::String(token)) = token else {
         return Err(invalid(format!("no `{TOKEN_KEY}`")));
     };
-    let layout_text = serde_json::to_string(&value).map_err(|e| invalid(e.to_string()))?;
-    let layout = Layout::from_json(&layout_text).map_err(|e: JsonError| invalid(e.to_string()))?;
     Ok(Some(RevertPoint { token, layout }))
 }
 

@@ -32,9 +32,11 @@ step and a `--no-mirror` step in `hyprland_e2e.rs` (not run yet, as below).
 (`dsplr_persist::sway::save`); both sway e2e tests save, change the outputs at
 runtime, reload and read the saved layout back, and start a second sway on the
 saved file, green on headless sway 1.12 locally (2026-11-10), each alone and
-both in one harness in either order. Not written yet: saving on other wlroots
-compositors (dsplr's profile store). Saving under a hyprlang config is declined
-(below).
+both in one harness in either order. dsplr's profile store
+(`dsplr_persist::profile`; `dsplr save --profile`, `dsplr restore [NAME]`,
+`dsplr profile list|show|rm`) is written, and `apps/dsplr/tests/sway_e2e.rs`
+saves, moves, restores (picked and by name) and removes profiles on headless
+sway 1.12 (2026-11-10). Saving under a hyprlang config is declined (below).
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -114,6 +116,58 @@ milestone:
     need `--force`. nwg-displays writes a sway `outputs` too, and if it writes
     settings dsplr does not (`scale_filter`, `power`; not checked against
     nwg-displays itself), replacing its file takes `--force`.
+
+- **The profile store, decided while building it (2026-11-10); confirm or
+  change**:
+  - **JSON, not TOML** (`<name>.json`, plan 05 said `.toml`). No dependency
+    dsplr has writes TOML: `hjkl-config` 0.45 reads it (`load_from`, into any
+    `AppConfig`) and writes only one key at a time (`write_key_at`, taking
+    `toml_edit` values it does not re-export, under a lock file), so a whole
+    `Layout` cannot be written through it. Adding `toml` was left to the owner.
+    For TOML: hand-editable, and the format plan 05 and `dsplr apply`'s TOML
+    files (plan 07) name. For JSON: no new dependency, one format for
+    `dsplr list --json`, `dsplr apply` and the store (a profile file is a layout
+    file plus `saved_unix_ms`; `dsplr list --json > …/desk.json` is a profile),
+    and TOML has no `null`, so the `Option` fields would be written by leaving
+    them out. Switching later means reading both extensions for a while.
+  - **Exit `7`** when `dsplr restore` without a name finds no profile for the
+    connected outputs (nothing changed). The other choices were `0` (an
+    autostart run away from the desk is not a failure, but a script cannot tell
+    "nothing to do" from "restored") and `1` (indistinguishable from a real
+    failure). A name that names no profile exits `2`, as an unknown output name
+    does.
+  - **Unattended restore takes `--yes`**: `dsplr restore` is `dsplr apply`'s
+    flow, so with no terminal a change that can hide or move a screen is not
+    applied without `--yes` (exit `1`); autostart lines are
+    `dsplr restore --yes`. The other choice, restore implying `--yes` when there
+    is no terminal, would make it the one command where no terminal means keep;
+    the profile was on screen when saved, so `--yes` is the expected case and
+    one flag in the autostart line is cheap.
+  - Replacing a profile takes `--yes`, `--force` or a yes on the terminal, after
+    a diff of the two layouts as `dsplr list` text; a profile file that cannot
+    be read takes `--force`. Profile files carry no managed-file header (JSON
+    has no comments), so a hand-edited profile is replaced like any other.
+  - Names: ASCII letters and digits, spaces, `-`, `_`, `.`; starting with a
+    letter, digit or `_`; not ending in a space or `.`; no `..`; at most 200
+    bytes. A `.json` file in the store whose name fails this is reported and
+    passed over (`dsplr profile list` still exits `0` for it; a profile that
+    cannot be read makes it exit `1`).
+  - Pairing a profile's or layout file's outputs with the connected ones is a
+    maximum bipartite matching (`dsplr_model::assign`, Kuhn's augmenting paths),
+    shared by `dsplr restore`'s pick and `dsplr apply`. Where several pairings
+    exist it places the closest matches first (an EDID identity on the connector
+    it was saved on, then an EDID identity or a connector, then a whole
+    description, then a description's first words), each entry taking its
+    closest free output and moving one already placed only when it must; ties go
+    in the order listed. So twins saved on ports still connected keep them, and
+    twins saved elsewhere pair in the order listed, which may swap their
+    settings.
+  - Recency is `saved_unix_ms` in the file, falling back to the file's mtime
+    when absent, so a copied profile keeps its save time; ties go to the earlier
+    name.
+  - `Persisted::Profile(name)` (plan 05's intro) was not added: profiles are
+    saved by the CLI through `dsplr_persist::profile`, not through
+    `Backend::persist`; the GUI may want it at M8.
 
 ## Open work in the Linux-owned crates
 
@@ -321,7 +375,14 @@ milestone:
   contradict itself is unchecked. Needs a rule cut mid-word or a mid-word prefix
   between monitors; dsplr and nwg-displays write full descriptions.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
-  layout files, which wait for the profile store's format.
+  layout files; the profile store went with JSON, and TOML for both waits on the
+  owner (the profile store's decisions above).
+- **Profile store gaps**: `dsplr restore` with a profile on Hyprland, and run
+  from a real compositor's autostart (river, labwc, niri), have not been run;
+  only headless sway has. The X11 autostart entry and the line shown to i3 and
+  bspwm users are M7's. A profile file changed between the read and the rename
+  of `dsplr save --profile` is overwritten without the question, as for
+  `dsplr save`.
 - **`dsplr list` prints `@ 0 Hz` for a mode with no refresh**: headless sway's
   outputs report refresh 0, which the protocol means as "not said".
 - **Some error paths of `dsplr apply` have no test**: a test or apply the

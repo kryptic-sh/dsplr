@@ -4,13 +4,15 @@
 //! What is here: Hyprland's Lua `monitors.lua` and sway's `outputs`, each
 //! written and read as text and saved beside the desktop's own config, the
 //! managed-file header, conflict check and atomic write every saved file
-//! goes through, a line diff to show what a save would change, and the
-//! revert point.
-//! The other desktops and the profile store are not written yet; Hyprland's
-//! legacy hyprlang `monitors.conf` is not written at all.
+//! goes through, a line diff to show what a save would change, the revert
+//! point, and the profile store.
+//! The other desktops are not written yet; Hyprland's legacy hyprlang
+//! `monitors.conf` is not written at all.
 
 pub mod diff;
 pub mod hyprland;
+mod layout_json;
 pub mod managed;
+pub mod profile;
 pub mod revert;
 pub mod sway;

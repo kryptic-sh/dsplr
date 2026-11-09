@@ -16,7 +16,7 @@ conversion of it.**
  desktop state ──► Layout ──► live apply (wlr protocol, KDE protocol,
    (read in by                 Mutter D-Bus, RandR, Hyprland eval)
     each backend)        └──► saved formats (monitors.lua,
-                               sway outputs, niri KDL, dsplr profile TOML)
+                               sway outputs, niri KDL, dsplr profile JSON)
 ```
 
 - The GUI holds a `Layout` (plus pending edits, which are a second `Layout`) and

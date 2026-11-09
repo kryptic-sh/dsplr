@@ -53,7 +53,7 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
 | ----------------------------- | --------------------------------------------------------------------------------------------------- |
 | sway                          | `outputs` beside the sway config, with `output … { … }` blocks, `include outputs` from that config  |
 | niri                          | a managed `outputs.kdl`, if the niri version supports `include`; else dsplr's store (checked at M4) |
-| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore` from the compositor's autostart                                  |
+| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore --yes` from the compositor's autostart                            |
 
 ### sway
 
@@ -71,10 +71,11 @@ the saved file.
 - The `wlr` backend saves only when the socket `SWAYSOCK` names answers sway's
   IPC (`GET_VERSION`), so a stale `SWAYSOCK` left in a session manager's
   environment does not count; on any other wlroots compositor `persist` is
-  `Unsupported` until dsplr's store exists. The socket is asked only by
-  `persist` and `dsplr backend`, not at detection, so a socket that hangs delays
-  only those. `Capabilities::native_persistence` says only that `SWAYSOCK` is
-  set; `Backend::native_persistence` is the checked answer.
+  `Unsupported` (exit `3`), and its message points at `dsplr save --profile` and
+  `dsplr restore --yes` from the compositor's autostart. The socket is asked
+  only by `persist` and `dsplr backend`, not at detection, so a socket that
+  hangs delays only those. `Capabilities::native_persistence` says only that
+  `SWAYSOCK` is set; `Backend::native_persistence` is the checked answer.
 - The config is found as sway(1) says sway finds it: `~/.sway/config`,
   `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config`, `$XDG_CONFIG_HOME/i3/config`
   (`XDG_CONFIG_HOME` defaulting to `~/.config`); not `sway --config` nor
@@ -127,19 +128,65 @@ The desktop saves it. `persist` on KDE is a no-op returning
 
 No native store. dsplr saves to its own profile store and installs (on confirm)
 an XDG autostart entry `~/.config/autostart/dsplr-restore.desktop` running
-`dsplr restore`. Window managers that do not run XDG autostart (i3, bspwm) get
-the one line to add (`exec --no-startup-id dsplr restore`) shown instead.
+`dsplr restore --yes`. Window managers that do not run XDG autostart (i3, bspwm)
+get the one line to add (`exec --no-startup-id dsplr restore --yes`) shown
+instead. Not written yet (M7).
 
 ## dsplr's profile store
 
-`$XDG_CONFIG_HOME/dsplr/profiles/<name>.toml`: a `Layout` plus the set of
-`OutputId`s it applies to. Used for X11 and the compositors without native
-persistence, and by anyone on any desktop who wants named layouts ("desk",
-"laptop only", "presentation").
+Written (`dsplr_persist::profile`), and checked on headless sway 1.12 by saving
+a profile, moving an output and restoring it, by name and picked.
 
-`dsplr restore` picks the profile whose output set exactly matches what is
-connected (kanshi's rule), else the most recently saved one that covers a
-subset, else does nothing and says so.
+- `$XDG_CONFIG_HOME/dsplr/profiles/<name>.json`: the layout in the JSON form
+  `dsplr list --json` prints, with `saved_unix_ms` (milliseconds since the Unix
+  epoch) beside its fields, so `dsplr apply` reads a profile too. A layout file
+  without it (`dsplr list --json > …/desk.json`, or one written by hand) is a
+  profile saved at its file's modification time. JSON, not the TOML planned
+  first: no dependency dsplr has writes TOML (`hjkl-config` only reads it), and
+  adding `toml` is the owner's call (`docs/backlog.md`).
+- The outputs a profile applies to are its entries' `OutputId`s: saved from the
+  displays, it names every connected output, on or off.
+- A name is ASCII letters and digits, spaces, `-`, `_` and `.`, starts with a
+  letter, a digit or `_`, does not end in a space or `.`, has no `..`, and is at
+  most 200 bytes, so it is a file name in the store and nothing else; anything
+  else is a usage error (exit `2`), and a `.json` file in the store whose name
+  is not one is reported and passed over. A name that names no profile is one
+  too, as an output name that names no output is.
+- `dsplr save --profile NAME` saves the current snapshot on any desktop,
+  alongside native saving rather than in its place. Replacing a profile of that
+  name shows what changes (as `dsplr list` text) and takes `--yes`, `--force` or
+  a yes on the terminal; one that cannot be read takes `--force`. The write is
+  atomic, and a symbolic link at the profile's path is refused, as for every
+  file dsplr writes; reading through one is fine.
+- `dsplr restore` picks the profile whose outputs are exactly the connected ones
+  (kanshi's rule), else, as dsplr's own fallback (kanshi matches exactly or not
+  at all), the most recently saved one whose outputs are all connected (others
+  stay as they are), the earlier name winning a tie; with none it changes
+  nothing, says so and exits `7`. An output matches as `dsplr apply` matches one
+  (`OutputId::matches`): a monitor with a serial on any port, one without on its
+  connector. Each profile output takes its own connected output, paired by a
+  maximum bipartite matching shared with `dsplr apply` (`dsplr_model::assign`),
+  so an identity naming several outputs (a description, twins with one EDID
+  identity) takes whichever is left; where several pairings exist, the closest
+  matches are placed first (EDID on its saved connector, then EDID or connector,
+  then a whole description, then a description's first words), ties in the order
+  listed. An empty profile is never picked. A profile file that cannot be read
+  is reported and passed over.
+- `dsplr restore NAME` applies that profile, refused (exit `3`) when one of its
+  outputs is not connected or every output it names is another's. Either way the
+  layout goes through `dsplr apply`'s flow: validate, test, revert point and
+  watchdog, apply, confirm.
+- **Unattended**: run from an autostart there is no terminal, and a change that
+  can hide or move a screen is not applied without `--yes` (exit `1`, nothing
+  changed), as for `dsplr apply`. So autostart lines run `dsplr restore --yes`,
+  which keeps the change without asking and still writes the revert point for
+  `dsplr restore --revert`. A profile is a layout that was on screen when it was
+  saved, so keeping it unseen is the expected case; one that no longer suits the
+  connected outputs is either not picked or refused before anything is sent, and
+  a restore that changes nothing needs no `--yes` at all.
+- `dsplr profile list [--json]` (name, outputs, how long ago it was saved),
+  `dsplr profile show NAME [--json]` (the layout as `dsplr list` prints it, or
+  its JSON), `dsplr profile rm NAME`.
 
 ## Hotplug profiles
 

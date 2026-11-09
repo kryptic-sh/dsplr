@@ -1,6 +1,7 @@
 //! `dsplr backend`, `dsplr apply` (with and without `--dry-run`),
-//! `dsplr set`, `dsplr save` and `dsplr restore --revert` against a real,
-//! headless sway, whose backend has a real test.
+//! `dsplr set`, `dsplr save`, the profile store (`dsplr save --profile`,
+//! `dsplr restore`, `dsplr profile`) and `dsplr restore --revert` against a
+//! real, headless sway, whose backend has a real test.
 //!
 //! Run through the harness, which starts that sway where it cannot reach the
 //! desktop session and gives dsplr a private state and config directory:
@@ -21,8 +22,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use dsplr_backend::Backend;
-use dsplr_model::{AdaptiveSync, Layout, Mode, OutputState, Transform};
+use std::time::SystemTime;
+
+use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, Transform};
 use dsplr_persist::managed::{Comment, Ownership, ownership};
+use dsplr_persist::profile::{self, Profile, unix_ms};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/support.rs"]
@@ -43,6 +47,9 @@ const REFUSED: i32 = 3;
 
 /// The exit code of a layout the desktop refused (`Exit::BackendRefused`).
 const BACKEND_REFUSED: i32 = 4;
+
+/// The exit code of `dsplr restore` finding no profile (`Exit::NoProfile`).
+const NO_PROFILE: i32 = 7;
 
 fn dsplr_bin() -> PathBuf {
     std::env::var_os("DSPLR_BIN").map_or_else(|| env!("CARGO_BIN_EXE_dsplr").into(), PathBuf::from)
@@ -115,6 +122,7 @@ async fn dsplr_applies_sets_and_reverts_on_sway() {
     // goes last, as a reload puts back whatever the saved file says.
     apply_tests_on_a_dry_run_and_applies_and_reverts(&backend, &runtime).await;
     set_edits_one_output(&backend).await;
+    profiles_are_saved_picked_and_restored(&backend).await;
     save_writes_outputs_and_asks_before_replacing_one(&backend).await;
 }
 
@@ -382,6 +390,274 @@ async fn set_edits_one_output(backend: &Backend) {
     assert_eq!(snapshot().await, start);
 }
 
+async fn profiles_are_saved_picked_and_restored(backend: &Backend) {
+    let start = backend.snapshot().await.expect("snapshot");
+    let snapshot = || async { backend.snapshot().await.expect("snapshot") };
+    let store = profile::default_dir().expect("XDG_CONFIG_HOME is set by the harness");
+    assert!(store.starts_with(harness_runtime()), "{}", store.display());
+    let revert_file = revert::default_path().expect("XDG_STATE_HOME is set by the harness");
+    let revert_point = || revert::load(&revert_file).expect("a revert point or none");
+    let last_change = revert_point();
+
+    let (code, text) = dsplr(&["profile", "list"]);
+    assert_eq!((code, &*text), (Some(0), "no profiles\n"));
+    let (code, text) = dsplr(&["restore", "--yes"]);
+    assert_eq!(code, Some(NO_PROFILE), "{text}");
+    assert!(text.contains("there are no profiles"), "{text}");
+
+    // A layout file put in the store by hand is a profile too, here one for
+    // an output that is not connected: never picked, and refused by name.
+    let elsewhere = Layout {
+        entries: vec![OutputEntry {
+            id: OutputId::Connector("HEADLESS-9".into()),
+            output: None,
+            state: OutputState {
+                mode: Some(Mode::new(1280, 720, 0)),
+                ..OutputState::default()
+            },
+        }],
+    };
+    std::fs::create_dir_all(&store).expect("store made");
+    std::fs::write(
+        store.join("elsewhere.json"),
+        elsewhere.to_json().expect("JSON"),
+    )
+    .expect("profile written");
+    let (code, text) = dsplr(&["restore", "--yes"]);
+    assert_eq!(code, Some(NO_PROFILE), "{text}");
+    // The outputs in the order sway lists them.
+    let line = text
+        .lines()
+        .find(|line| line.contains("no profile is for the outputs connected now ("))
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        line.contains("HEADLESS-1")
+            && line.contains("HEADLESS-2")
+            && line.contains("nothing changed"),
+        "{text}"
+    );
+    let (code, text) = dsplr(&["restore", "elsewhere", "--yes"]);
+    assert_eq!(code, Some(REFUSED), "{text}");
+    assert!(text.contains("HEADLESS-9: not connected"), "{text}");
+    let (code, text) = dsplr(&["restore", "nowhere", "--yes"]);
+    assert_eq!(code, Some(USAGE), "{text}");
+    assert!(text.contains("no profile named \"nowhere\""), "{text}");
+    assert_eq!(snapshot().await, start);
+    assert_eq!(
+        revert_point(),
+        last_change,
+        "a refused restore starts no change"
+    );
+
+    // Saved on any wlroots compositor, not only sway: here with no SWAYSOCK.
+    let (code, text) = exit_and_output(
+        &Command::new(dsplr_bin())
+            .args(["save", "--profile", "desk"])
+            .env_remove("SWAYSOCK")
+            .stdin(Stdio::null())
+            .output()
+            .expect("dsplr runs"),
+    );
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("saved profile \"desk\" to "), "{text}");
+    let (code, text) = dsplr(&["profile", "list"]);
+    assert_eq!(code, Some(0), "{text}");
+    let desk = text.lines().next().unwrap_or_default();
+    assert!(
+        desk.starts_with("desk: ")
+            && desk.contains("HEADLESS-1")
+            && desk.contains("HEADLESS-2")
+            && desk.ends_with(" (saved just now)")
+            && text.contains("\nelsewhere: HEADLESS-9 (saved "),
+        "{text}"
+    );
+    // Shown as `dsplr list` shows the displays it was saved from, and as
+    // the JSON `dsplr list --json` and `dsplr apply` use.
+    let (code, listed) = dsplr(&["list"]);
+    assert_eq!(code, Some(0), "{listed}");
+    let (code, shown) = dsplr(&["profile", "show", "desk"]);
+    assert_eq!((code, &shown), (Some(0), &listed));
+    let (_, listed) = dsplr(&["list", "--json"]);
+    let (code, shown) = dsplr(&["profile", "show", "desk", "--json"]);
+    assert_eq!(code, Some(0), "{shown}");
+    assert_eq!(
+        Layout::from_json(&shown).expect("a layout"),
+        Layout::from_json(&listed).expect("a layout")
+    );
+
+    // A profile of that name is replaced only when asked to.
+    let (code, text) = dsplr(&["save", "--profile", "desk"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        text.contains("there is a profile named \"desk\" already") && text.contains("no terminal"),
+        "{text}"
+    );
+    let (code, text) = dsplr(&["save", "--profile", "desk", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+
+    // A link in the store is read, but saving over it is refused before
+    // anything is shown or asked.
+    let target = harness_runtime().join("linked.json");
+    std::fs::write(&target, start.to_json().expect("JSON")).expect("written");
+    let link = store.join("linked.json");
+    std::os::unix::fs::symlink(&target, &link).expect("linked");
+    let (code, text) = dsplr(&["save", "--profile", "linked"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        text.contains("is a link to")
+            && !text.contains("what saving changes")
+            && !text.contains("no terminal"),
+        "{text}"
+    );
+    std::fs::remove_file(&link).expect("unlinked");
+
+    // A file in the store whose name no profile can have is said, and
+    // passed over.
+    let stray = store.join(".stray.json");
+    std::fs::write(&stray, "{}").expect("written");
+    let (code, text) = dsplr(&["profile", "list"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains(".stray.json is passed over: its name is not a profile's"),
+        "{text}"
+    );
+    std::fs::remove_file(&stray).expect("removed");
+
+    // Moved, then put back by the profile picked for these outputs.
+    let two = entry(&start, "HEADLESS-2");
+    let pos = format!("{},{}", two.state.x, two.state.y + 300);
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--pos", &pos, "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let moved = snapshot().await;
+    assert_ne!(moved, start);
+    // Unattended, as from an autostart, it takes --yes to move a screen.
+    let (code, text) = dsplr(&["restore"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(
+        text.contains("no terminal to confirm it on; pass --yes"),
+        "{text}"
+    );
+    assert_eq!(snapshot().await, moved);
+    let (code, text) = dsplr(&["restore", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("restoring profile \"desk\", saved for the outputs connected now"),
+        "{text}"
+    );
+    assert_eq!(snapshot().await, start);
+    // A restore is a change like any other, with a revert point.
+    let (code, text) = dsplr(&["restore", "--revert"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(snapshot().await, moved);
+    let (code, text) = dsplr(&["restore", "desk", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("restoring profile \"desk\"\n"), "{text}");
+    assert_eq!(snapshot().await, start);
+    // Restoring what is on screen moves no screen, so even unattended it
+    // takes no --yes.
+    let (code, text) = dsplr(&["restore"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("restoring profile \"desk\""), "{text}");
+    assert_eq!(snapshot().await, start);
+
+    // A newer profile for only some of the outputs loses to the exact one,
+    // and is picked once that is gone, leaving the others as they are.
+    let one = Profile {
+        name: "one".parse().expect("a name"),
+        layout: edited(&start, |layout| {
+            layout
+                .entries
+                .retain(|entry| entry.connector() == Some("HEADLESS-1"));
+            entry_mut(layout, "HEADLESS-1").state.transform = Transform::Rotate180;
+        }),
+        saved_unix_ms: unix_ms(SystemTime::now()) + 60_000,
+    };
+    profile::save(&store, &one).expect("profile saved");
+    let (code, text) = dsplr(&["restore", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("restoring profile \"desk\""), "{text}");
+    let (code, text) = dsplr(&["profile", "rm", "desk"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["profile", "rm", "desk"]);
+    assert_eq!(code, Some(USAGE), "{text}");
+    let (code, text) = dsplr(&["restore", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("restoring profile \"one\", saved for HEADLESS-1 of the outputs"),
+        "{text}"
+    );
+    let expected = edited(&start, |layout| {
+        entry_mut(layout, "HEADLESS-1").state.transform = Transform::Rotate180;
+    });
+    assert_eq!(snapshot().await, expected);
+    revert_to(backend, &start).await;
+    for name in ["one", "elsewhere"] {
+        let (code, text) = dsplr(&["profile", "rm", name]);
+        assert_eq!(code, Some(0), "{name}: {text}");
+    }
+
+    // A description naming both outputs, listed before a connector naming
+    // one of them, gets the other, picked or named, wherever sway lists
+    // them. Any other output is named by its connector, as it is.
+    let words = |name: &str| {
+        entry(&start, name)
+            .description()
+            .expect("a description")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let shared: Vec<String> = words("HEADLESS-1")
+        .into_iter()
+        .zip(words("HEADLESS-2"))
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a)
+        .collect();
+    let described = OutputId::Description(shared.join(" "));
+    for name in ["HEADLESS-1", "HEADLESS-2"] {
+        assert!(described.matches(entry(&start, name)), "{described} {name}");
+    }
+    let mut entries = vec![OutputEntry {
+        id: described,
+        output: None,
+        state: OutputState {
+            transform: Transform::Rotate180,
+            ..entry(&start, "HEADLESS-1").state.clone()
+        },
+    }];
+    entries.extend(
+        start
+            .entries
+            .iter()
+            .filter(|live| live.connector() != Some("HEADLESS-1"))
+            .map(|live| OutputEntry {
+                id: OutputId::Connector(live.connector().expect("a connector").to_owned()),
+                output: None,
+                state: live.state.clone(),
+            }),
+    );
+    let both = Profile {
+        name: "both".parse().expect("a name"),
+        layout: Layout { entries },
+        saved_unix_ms: unix_ms(SystemTime::now()),
+    };
+    profile::save(&store, &both).expect("profile saved");
+    let rotated = edited(&start, |layout| {
+        entry_mut(layout, "HEADLESS-1").state.transform = Transform::Rotate180;
+    });
+    for args in [&["restore", "--yes"][..], &["restore", "both", "--yes"]] {
+        let (code, text) = dsplr(args);
+        assert_eq!(code, Some(0), "{args:?}: {text}");
+        assert!(text.contains("restoring profile \"both\""), "{text}");
+        assert_eq!(snapshot().await, rotated, "{args:?}");
+        revert_to(backend, &start).await;
+    }
+    let (code, text) = dsplr(&["profile", "rm", "both"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["profile", "list"]);
+    assert_eq!((code, &*text), (Some(0), "no profiles\n"));
+}
+
 async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
     let outputs = no_outputs_file();
     let read = || std::fs::read_to_string(&outputs).expect("outputs");
@@ -403,7 +679,10 @@ async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
         let (code, text) = run("save");
         assert_eq!(code, Some(REFUSED), "{swaysock:?}: {text}");
         assert!(
-            text.contains("cannot save on wlr") && text.contains("does not answer as sway's"),
+            text.contains("cannot save on wlr")
+                && text.contains("does not answer as sway's")
+                && text.contains("`dsplr save --profile NAME`")
+                && text.contains("`dsplr restore --yes` from the compositor's autostart"),
             "{swaysock:?}: {text}"
         );
         assert!(!outputs.exists());

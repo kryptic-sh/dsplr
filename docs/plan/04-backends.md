@@ -121,7 +121,8 @@ on its own rather than one on dsplr's store; to verify in M4. Persistence
 differs per compositor ([05](05-persistence-and-profiles.md)): `Wlr` takes the
 compositor for sway when the socket `SWAYSOCK` names answers sway's IPC, and
 then writes sway's `outputs` ([05](05-persistence-and-profiles.md#sway)); on any
-other it is `Unsupported` for now.
+other it is `Unsupported`, pointing at dsplr's profile store
+([05](05-persistence-and-profiles.md#dsplrs-profile-store)).
 
 Mirroring is not in the protocol; on `Wlr` it is `Unsupported` unless a
 compositor-specific path is added later.

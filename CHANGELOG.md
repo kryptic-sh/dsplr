@@ -63,14 +63,32 @@ and this project adheres to
   mirroring, fractional and per-output scale, and gaps between outputs.
 - `dsplr apply <FILE>` applies a layout from a JSON file (as `dsplr list --json`
   writes it), matching its outputs to the connected ones by identity (a
-  description by whole words, as `dsplr set` names an output). A change that can
-  hide or move a screen asks to be kept and reverts after `confirm.timeout_secs`
-  without a yes; a detached watchdog reverts it even if dsplr dies first,
-  waiting long enough for dsplr's own apply and revert to run to the backend's
-  request timeouts first. `--yes` keeps it without asking, and `--dry-run`
-  checks without applying. Whatever the desktop did not take as asked is listed
-  after the apply.
+  description by whole words, as `dsplr set` names an output), each to its own:
+  a description naming several outputs takes the one the other entries leave,
+  and twins with one make, model and serial keep the connectors they were saved
+  on. A change that can hide or move a screen asks to be kept and reverts after
+  `confirm.timeout_secs` without a yes; a detached watchdog reverts it even if
+  dsplr dies first, waiting long enough for dsplr's own apply and revert to run
+  to the backend's request timeouts first. `--yes` keeps it without asking, and
+  `--dry-run` checks without applying. Whatever the desktop did not take as
+  asked is listed after the apply.
 - `dsplr restore --revert` goes back to the layout from before the last change.
+- Profiles: `dsplr save --profile NAME` saves the current layout as a named
+  profile in `$XDG_CONFIG_HOME/dsplr/profiles/NAME.json` on any desktop (the
+  layout JSON `dsplr list --json` prints, plus its save time, so `dsplr apply`
+  reads it too). `dsplr restore NAME` applies one, and `dsplr restore` alone
+  picks the profile saved for exactly the connected outputs, else the most
+  recently saved one for some of them, matching a monitor with a serial on any
+  port and one without on its connector; both go through the confirm flow, and a
+  profile output that is not connected is refused (exit `3`). With no profile to
+  pick, nothing changes and it exits `7`. From an autostart, where there is no
+  terminal, run `dsplr restore --yes`. Replacing a profile shows what changes
+  and takes `--yes`, `--force` or a yes on the terminal. `dsplr profile list`
+  (with `--json`), `dsplr profile show NAME` (as `dsplr list` prints a layout,
+  or `--json`) and `dsplr profile rm NAME` manage the store. A name is ASCII
+  letters and digits, spaces, `-`, `_` and `.`; anything else, `..`, a leading
+  `.` or `-` or a trailing `.` or space is a usage error (exit `2`). `--revert`
+  now cannot be combined with a profile name or the confirm flow's flags.
 - `dsplr set <OUTPUT>` changes one output and applies the result through the
   same confirm flow as `dsplr apply` (validation, the desktop's test, the revert
   point and watchdog, `--yes`, `--dry-run`): `--mode WxH[@R]`, `--pos X,Y`,
@@ -112,8 +130,9 @@ and this project adheres to
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under
   a hyprlang `hyprland.conf` saving is refused, saying dsplr writes only a Lua
   config's `monitors.lua`; on wlroots compositors other than sway it is not
-  supported yet; both exit `3`; `dsplr backend` now lists native persistence for
-  Hyprland and sway.
+  supported, and the message points at `dsplr save --profile NAME` and
+  `dsplr restore --yes` from the compositor's autostart; both exit `3`;
+  `dsplr backend` now lists native persistence for Hyprland and sway.
 - `dsplr save` makes the current layout last on sway: it writes a dsplr-managed
   `outputs` file beside the config sway reads (`~/.sway/config`,
   `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config` or

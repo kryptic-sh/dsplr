@@ -115,21 +115,31 @@ impl FileError {
 ///
 /// When the file is a link, or cannot be read.
 pub fn read_existing(path: &Path) -> Result<Option<String>, FileError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            let target = fs::read_link(path).map_err(FileError::io(path))?;
-            return Err(FileError::Symlink {
-                link: path.to_owned(),
-                target,
-            });
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(FileError::io(path)(error)),
-    }
+    refuse_symlink(path)?;
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(FileError::io(path)(error)),
+    }
+}
+
+/// [`FileError::Symlink`] when `path` is a symbolic link, which a save
+/// would replace with a file; nothing there, or anything else, is fine.
+///
+/// # Errors
+///
+/// When it is a link, or cannot be looked at.
+pub fn refuse_symlink(path: &Path) -> Result<(), FileError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let target = fs::read_link(path).map_err(FileError::io(path))?;
+            Err(FileError::Symlink {
+                link: path.to_owned(),
+                target,
+            })
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(FileError::io(path)(error)),
     }
 }
