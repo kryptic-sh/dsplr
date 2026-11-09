@@ -50,9 +50,15 @@ mode the monitor rejects, let a confirm time out, kill dsplr mid-confirm and run
 ## Not covered by automated tests (stated as a gap)
 
 - Real monitors' behaviour on a mode they advertise but cannot show.
-- The crcbl rendering of the GUI beyond `DrawList` snapshots. The window was run
-  by hand in `tests/e2e/headless-sway.sh` (Vulkan through Mesa's lavapipe, keys
-  through `wtype`, a screenshot with `grim`); no test does that yet, and no
-  click has been sent to it, so dragging and the panel's widgets are covered by
-  `dsplr-core`'s editor and hit-region tests and a build of the panel's tree,
-  not by a pointer in a window.
+- The crcbl rendering of the GUI beyond `DrawList` snapshots (the canvas, and
+  the confirm dialog's, `dsplr_core::dialog`). `apps/dsplr/tests/gui_e2e.rs`
+  drives the window in `tests/e2e/headless-sway.sh` (Vulkan through Mesa's
+  lavapipe, keys through `wtype` with a held keyboard): an apply kept with
+  Enter, one left to time out, and one whose dsplr is killed mid-confirm, which
+  its watchdog reverts, each read back with `dsplr list --json`. It is ignored
+  and not in CI's matrix: the VM has neither lavapipe nor `wtype` yet. No click
+  is sent to the window (no pointer injector), so dragging and the panel's
+  widgets are covered by `dsplr-core`'s editor and hit-region tests, a build of
+  the panel's tree, and the window's key and request tests against crcbl's
+  headless shell, not by a pointer in a window. The apply flow every front end
+  drives is unit-tested with a fake backend (`dsplr_core::flow`).

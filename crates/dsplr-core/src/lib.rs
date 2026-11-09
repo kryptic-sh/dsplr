@@ -3,13 +3,16 @@
 //! draw list and hit regions the GUI renders (`docs/plan/02-architecture.md`).
 //! Plain data: no platform types, so the canvas is tested without a display.
 //!
-//! Not here yet (`docs/plan/06-gui.md`): the confirm timer.
+//! The apply, confirm and revert flow every front end drives is [`flow`].
 
+pub mod dialog;
 mod draw;
 mod editor;
 mod fit;
 #[cfg(test)]
 mod fixtures;
+pub mod flow;
+pub mod link;
 pub mod panel;
 mod scene;
 mod theme;

@@ -1,18 +1,22 @@
-//! The crcbl windows (`docs/plan/06-gui.md`). So far the main window: the
+//! The crcbl windows (`docs/plan/06-gui.md`): the main window, with the
 //! canvas dsplr-core draws, where outputs are dragged and moved with keys,
-//! and the property panel, crcbl-ui widgets editing the selected output;
-//! every edit pending, with undo and redo, and quitting asks before dropping
-//! them.
+//! and the property panel, crcbl-ui widgets editing the selected output and
+//! the actions (Apply, Save, Revert, profiles), every edit pending with undo
+//! and redo; and the confirm dialogs, one per monitor. The backend is on a
+//! thread of its own ([`Link`]).
 //!
-//! Not here yet: Apply and Save with their confirm dialogs, the identify
-//! overlays, configurable keys, and following the desktop's changes.
+//! Not here yet: the identify overlays, configurable keys, and following
+//! the desktop's changes.
 
+mod confirm;
 mod gpu;
 mod keys;
 mod paint;
 mod panel;
 mod window;
 
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crcbl_app::backend::GpuError;
@@ -21,6 +25,7 @@ use crcbl_frame::graph::GraphError;
 use crcbl_hal::HalError;
 use crcbl_shell::{LogicalSize, Shell, ShellError, ShellEvent, WindowDesc, WindowId, WindowRole};
 use dsplr_core::Editor;
+use dsplr_core::link::{Answer, Reply, Request};
 
 use crate::gpu::Gpu;
 
@@ -54,8 +59,19 @@ pub enum GuiError {
     Graph(#[from] GraphError),
 }
 
-/// Opens the main window on `editor` and runs it until the user quits.
-pub fn run(editor: Editor) -> Result<(), GuiError> {
+/// The window's line to the backend thread (`docs/plan/02-architecture.md`,
+/// "Process").
+pub struct Link {
+    pub requests: Sender<Request>,
+    /// The answers to [`Reply::Confirm`], on their own channel.
+    pub answers: Sender<Answer>,
+    pub replies: Receiver<Reply>,
+}
+
+/// Opens the main window on `editor`, with `link` to the backend thread, and
+/// runs it until the user quits. Dropping `link` on the way out tells the
+/// backend thread to finish.
+pub fn run(editor: Editor, link: Link) -> Result<(), GuiError> {
     let mut shell = crcbl_shell::open()?;
     let window = shell.create_window(&WindowDesc {
         title: "dsplr",
@@ -67,12 +83,48 @@ pub fn run(editor: Editor) -> Result<(), GuiError> {
     })?;
     let (extent, early) = wait_for_size(shell.as_mut(), window)?;
     let mut gpu = Gpu::open(shell.as_ref(), window, extent)?;
-    let outcome =
-        window::MainWindow::new(shell.as_mut(), window, editor, extent).run(&mut gpu, early);
+    let (replies, wakes) = relay(shell.as_mut(), link.replies);
+    let outcome = window::MainWindow::new(
+        shell.as_mut(),
+        window,
+        editor,
+        extent,
+        window::Channels {
+            requests: link.requests,
+            answers: link.answers,
+            replies,
+            wakes,
+        },
+    )
+    .run(&mut gpu, early);
     // The surface goes before the window it was made from.
     gpu.destroy();
     drop(shell);
     outcome
+}
+
+/// Relays `replies` to the loop, waking it as each arrives, as pikr's
+/// `forward` does. The flag says whether it can: without the window system's
+/// waker the loop has to poll.
+fn relay(shell: &mut dyn Shell, replies: Receiver<Reply>) -> (Receiver<Reply>, bool) {
+    let Some(waker) = shell.waker() else {
+        return (replies, false);
+    };
+    let (forward, relayed) = mpsc::channel();
+    thread::spawn(move || {
+        while let Ok(reply) = replies.recv() {
+            // The loop has gone and wants no more.
+            if forward.send(reply).is_err() {
+                return;
+            }
+            waker.wake();
+        }
+        // The backend thread is gone: the loop sees the channel close once
+        // this one drops, and is woken to look.
+        drop(forward);
+        waker.wake();
+    });
+    (relayed, true)
 }
 
 /// Pumps until the window system gives the new window a size. Returns the

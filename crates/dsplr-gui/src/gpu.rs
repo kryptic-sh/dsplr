@@ -36,23 +36,40 @@ impl Gpu {
     pub fn open(shell: &dyn Shell, window: WindowId, extent: (u32, u32)) -> Result<Self, GuiError> {
         let pinned = pin();
         let desc = PresenterDesc {
-            label: "dsplr",
-            // dsplr is Linux-only, where crcbl's backend is Vulkan.
-            backend: Some(GpuBackend::Vulkan),
             adapter_pin: pinned.as_deref(),
             power_preference: PowerPreference::LowPower,
             // No present feedback or timing: the frame request already holds
             // presents back until the window system asks.
             optional_features: Features::empty(),
-            pacing: Pacing::Vsync,
-            frames_in_flight: 1,
-            ..PresenterDesc::default()
+            ..window_desc()
         };
         let presenter =
             Presenter::open(shell, window, extent, &desc).map_err(|error| match error {
                 PresentError::NoBackend(error) => GuiError::NoGpuBackend(error),
                 error => GuiError::NoGpu(error),
             })?;
+        Self::on(presenter)
+    }
+
+    /// Opens a presenter for another `window`, at `extent`, on this one's
+    /// device: what a confirm dialog per monitor draws with, rather than a
+    /// device each (see crcbl-app's `SharedGpu`). The same rule as
+    /// [`Gpu::open`]: [`Gpu::destroy`] before `window` is destroyed.
+    pub fn open_shared(
+        &self,
+        shell: &dyn Shell,
+        window: WindowId,
+        extent: (u32, u32),
+    ) -> Result<Self, GuiError> {
+        let presenter = self
+            .presenter
+            .shared()
+            .open(shell, window, extent, &window_desc())
+            .map_err(GuiError::NoGpu)?;
+        Self::on(presenter)
+    }
+
+    fn on(presenter: Presenter) -> Result<Self, GuiError> {
         let renderer = UiRenderer::new(presenter.device(), presenter.queue(), presenter.format())?;
         Ok(Self {
             presenter,
@@ -149,5 +166,18 @@ impl Gpu {
         if let Err(error) = self.presenter.destroy() {
             eprintln!("dsplr: releasing the GPU at exit: {error}");
         }
+    }
+}
+
+/// What every window's presenter is opened with: dsplr redraws only when
+/// something changed, so one frame in flight, paced by the display. dsplr is
+/// Linux-only, where crcbl's backend is Vulkan.
+fn window_desc() -> PresenterDesc<'static> {
+    PresenterDesc {
+        label: "dsplr",
+        backend: Some(GpuBackend::Vulkan),
+        pacing: Pacing::Vsync,
+        frames_in_flight: 1,
+        ..PresenterDesc::default()
     }
 }

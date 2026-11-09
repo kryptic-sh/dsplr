@@ -4,7 +4,7 @@ Drawn with crcbl: `crcbl-app` for the window and device, `crcbl-shell` for
 windows on Wayland and X11, `crcbl-ui` for widgets and the draw pass. Tokyo
 Night (folke's "Night" variant), as the rest of the suite.
 
-## Built so far (M3, parts 1 and 2, 2026-11-10)
+## Built so far (M3, parts 1 to 3, 2026-11-10)
 
 - `dsplr` with no command reads the displays on a backend thread (a
   current-thread tokio runtime, [02](02-architecture.md#process)), then opens
@@ -71,21 +71,54 @@ Night (folke's "Night" variant), as the rest of the suite.
 - Text is crcbl-ui's committed sans-serif (`Font::sans`, the `parsed-font`
   feature); no system font lookup yet.
 
+- Apply, Save, Revert and profiles (part 3). The backend thread
+  (`apps/dsplr/src/gui.rs`) holds the backend and takes the window's `Request`s
+  (`dsplr_core::link`: apply, save, save as a profile, restore a profile,
+  revert, refresh), one at a time, answering with `Reply`s that a relay thread
+  hands to the window with crcbl-shell's waker (C4). It reads the displays again
+  after each request and on Refresh; it does not follow the desktop's changes.
+- Apply (`a`, or the button) drives the one confirm flow `dsplr apply` drives
+  (`dsplr_core::flow`, a state machine with no I/O, and
+  `apps/dsplr/src/apply.rs`'s `drive`): validate, test, revert point and
+  watchdog, apply, read back, confirm, keep or revert, with the CLI's messages,
+  shown in the bar. The watchdog is the CLI's detached
+  `dsplr restore --revert --after`, so a GUI killed mid-confirm is reverted.
+- The confirm dialog: a crcbl panel per monitor (layer-shell overlay, centred),
+  on the main window's GPU device, counting down to the backend thread's own
+  deadline, which `Reply::Confirm` carries; each names the output at its
+  monitor's logical position (`dsplr_core::dialog::match_screens`, which prefers
+  a connector name once crcbl reports one, C3), and a monitor that matches none
+  shows it unnamed. A panel that cannot be opened is closed and skipped, the bar
+  saying so; with none open, one toplevel dialog; with none at all, the bar
+  asks. The bar asks too while the dialogs are up. Enter or Keep keeps; Esc,
+  Revert, the countdown or closing the main window reverts. The answer goes back
+  on a channel of its own, tagged with the confirm's id, so no request is
+  dropped while the backend thread waits for it. Should the backend thread stop
+  (a panic), the window says so with the watchdog's time left and sends nothing
+  more: the watchdog is then the only way back.
+- Save (`s`, or the button) saves the displays as they are, as `dsplr save`
+  does, so with pending edits it asks for them to be applied first. A file dsplr
+  did not write, or one edited by hand, is a question in the panel: what would
+  be replaced, why, the diff, and Replace (Enter) or Cancel (Esc). An explicit
+  Replace there is the GUI's `--force`.
+- Save as profile (a name and the button) and, when profiles exist, a picker and
+  Restore, which applies the profile through the same flow; Revert goes back to
+  the revert point as `dsplr restore --revert` does. These buttons sit at the
+  foot of the panel, not in the bottom bar the plan drew: the bar is the
+  canvas's draw list, and the buttons are crcbl-ui widgets.
+
 ## Still to build in M3
 
-- The bottom bar's `Identify`, `Revert`, `Apply`, `Save` and how the backend
-  will save; `a` / `s` / `i`.
-- `Request`s to the backend thread (test, apply, revert, persist) and the
-  confirm dialog per output (C2).
-- The identify overlay (C2, C3).
+- The identify overlay and `i` (C2, C3).
 - The backend thread following the desktop's changes, so the window updates on a
-  hotplug (C4); today the thread reads one snapshot and ends.
+  hotplug; today it reads them again after each request and on Refresh.
 - Keys configurable in `config.toml`.
 - System fonts with fallbacks (C7), for descriptions outside the committed
   font's coverage.
 - Reaching the panel's widgets from the keyboard: Tab selects outputs, so today
   the widgets take the pointer only, and the keys only once a field or list is
-  engaged.
+  engaged (the profile name and picker among them).
+- The backend thread's messages beyond the last: the bar shows one line.
 
 ## Main window
 
@@ -157,9 +190,9 @@ raised in the crcbl repo rather than worked around in dsplr:
 | #   | Need                                                         | Seen in crcbl                                                                                             | M3                                                                                                                                                                                                                                                                         |
 | --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C1  | Toplevel window on Wayland and X11                           | `WindowRole::Toplevel`; Wayland and X11 shells                                                            | Confirmed on Wayland: the main window runs in headless sway (2026-11-10). X11 not run                                                                                                                                                                                      |
-| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  | Not built on yet                                                                                                                                                                                                                                                           |
+| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  | Built on 0.18.0: a confirm dialog per monitor, layer-shell overlay, in headless sway; X11 and the identify overlay not run                                                                                                                                                 |
 | C3  | Monitor enumeration matching the backend's outputs by name   | `crcbl-shell` `MonitorInfo`; whether it carries the connector name is to check                            | Not built on yet; the `connector` field is requested of crcbl (backlog)                                                                                                                                                                                                    |
-| C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                  | Not used yet: the one snapshot arrives before the window opens                                                                                                                                                                                                             |
+| C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                  | Used: a relay thread wakes the window for each reply from the backend thread; without a waker the loop polls                                                                                                                                                               |
 | C5  | Widgets: button, select/list, number entry, toggle, tooltip  | `crcbl-ui` `widgets/` (`button`, `select`, `list`, `number_entry`), `tooltip`                             | Built on 0.17.2, still on 0.18.0: `select`, `checkbox`, `drag_value` (typing into it is the number entry), `text_input`, `tooltip`, and `Ui::enabled` for disabled fields; no plain list or toggle needed. Run in headless sway; never clicked there (no pointer injector) |
 | C6  | Free-form drag canvas: draw rects and text, raw pointer drag | `crcbl-ui` `DrawList`, `grid_drag`; whether `grid_drag` fits or the canvas is hand-built is decided at M3 | Hand-built, not `grid_drag`: dsplr-core draws the canvas, its hit regions and the drag (fit frozen, `Layout::snap`); crcbl gives only the raw pointer                                                                                                                      |
 | C7  | System font lookup                                           | `crcbl-ui` `system-fonts` feature (pikr precedent)                                                        | Not used yet: text is `Font::sans`                                                                                                                                                                                                                                         |

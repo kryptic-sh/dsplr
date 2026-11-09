@@ -10,7 +10,9 @@ use std::time::Duration;
 use dsplr_backend::Backend;
 use dsplr_persist::revert::{self, RevertPoint};
 
-use crate::apply::{report, settle, settle_limit};
+use dsplr_core::flow::report;
+
+use crate::apply::{settle, settle_limit};
 use crate::{Exit, find_backend};
 
 /// How long the watchdog waits past the longest the dsplr that started it
@@ -55,14 +57,19 @@ pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
 }
 
 /// Applies `point`'s layout, shows what did not come back as it was, and
-/// removes the revert point. Returns [`Exit::Success`] when the layout was
-/// applied, else the exit code for why not; then the revert point stays for
-/// the watchdog or a revert by hand.
-pub async fn go_back(backend: &Backend, path: &Path, point: &RevertPoint) -> Exit {
+/// removes the revert point, each message handed to `say`. Returns
+/// [`Exit::Success`] when the layout was applied, else the exit code for why
+/// not; then the revert point stays for the watchdog or a revert by hand.
+pub async fn go_back(
+    backend: &Backend,
+    path: &Path,
+    point: &RevertPoint,
+    say: &mut dyn FnMut(String),
+) -> Exit {
     if let Err(error) = backend.apply(&point.layout).await {
-        eprintln!(
-            "dsplr: cannot go back to the revert point: {error}; `dsplr restore --revert` tries again"
-        );
+        say(format!(
+            "cannot go back to the revert point: {error}; `dsplr restore --revert` tries again"
+        ));
         return if error.is_refused_before_sending() {
             Exit::Refused
         } else if error.is_refusal() || error.is_stale() {
@@ -72,11 +79,15 @@ pub async fn go_back(backend: &Backend, path: &Path, point: &RevertPoint) -> Exi
         };
     }
     match settle(backend, &point.layout, &backend.capabilities()).await {
-        Ok(differences) => report(&differences),
-        Err(error) => eprintln!("dsplr: cannot read the displays back: {error}"),
+        Ok(differences) => {
+            if let Some(report) = report(&differences) {
+                say(report);
+            }
+        }
+        Err(error) => say(format!("cannot read the displays back: {error}")),
     }
     if let Err(error) = revert::remove_if(path, &point.token) {
-        eprintln!("dsplr: {error}");
+        say(error.to_string());
     }
     Exit::Success
 }
@@ -89,24 +100,11 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
     if let Some(after) = after {
         tokio::time::sleep(after).await;
     }
-    let path = match revert::default_path() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("dsplr: {error}");
-            return Exit::Failure;
-        }
-    };
-    let point = match revert::load(&path) {
-        Ok(Some(point)) => point,
-        Ok(None) if token.is_some() => return Exit::Success,
-        Ok(None) => {
-            eprintln!("dsplr: no revert point to go back to");
-            return Exit::Failure;
-        }
-        Err(error) => {
-            eprintln!("dsplr: {error}");
-            return Exit::Failure;
-        }
+    let say = &mut |line: String| eprintln!("dsplr: {line}");
+    let (path, point) = match load(token.is_none(), say) {
+        Ok(Some(found)) => found,
+        Ok(None) => return Exit::Success,
+        Err(exit) => return exit,
     };
     if token.is_some_and(|token| token != point.token) {
         return Exit::Success;
@@ -115,7 +113,41 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    go_back(&backend, &path, &point).await
+    go_back(&backend, &path, &point, say).await
+}
+
+/// Goes back to the revert point on `backend` by hand, as
+/// `dsplr restore --revert` does, each message handed to `say`.
+pub async fn revert(backend: &Backend, say: &mut dyn FnMut(String)) -> Exit {
+    match load(true, say) {
+        Ok(Some((path, point))) => go_back(backend, &path, &point, say).await,
+        Ok(None) => Exit::Success,
+        Err(exit) => exit,
+    }
+}
+
+/// The revert point and where it is, or `None` when there is none, which
+/// is an error (said, and [`Exit::Failure`]) when `required`.
+fn load(
+    required: bool,
+    say: &mut dyn FnMut(String),
+) -> Result<Option<(std::path::PathBuf, RevertPoint)>, Exit> {
+    let path = revert::default_path().map_err(|error| {
+        say(error.to_string());
+        Exit::Failure
+    })?;
+    match revert::load(&path) {
+        Ok(Some(point)) => Ok(Some((path, point))),
+        Ok(None) if required => {
+            say("no revert point to go back to".to_owned());
+            Err(Exit::Failure)
+        }
+        Ok(None) => Ok(None),
+        Err(error) => {
+            say(error.to_string());
+            Err(Exit::Failure)
+        }
+    }
 }
 
 #[cfg(test)]

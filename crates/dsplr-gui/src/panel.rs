@@ -6,6 +6,7 @@
 
 use crcbl_ui::tree::{Engagement, Response, Ui};
 use dsplr_core::Theme;
+use dsplr_core::link::Question;
 use dsplr_core::panel::{Choice, Field, Panel};
 use dsplr_model::{AdaptiveSync, Mode, OutputId, Transform};
 
@@ -124,103 +125,249 @@ popup {{ background: {surface}; border-color: {border}; color: {text}; font-fami
 .select-list > .select-option:checked {{ background: {accent}; color: {surface}; }}
 tooltip {{ background: {output}; border-color: {border}; color: {text}; font-family: sans-serif;
   font-size: 13px; }}
+.fields {{ flex-direction: column; gap: 4px; flex-grow: 1; }}
+.actions {{ flex-direction: column; gap: 6px; padding: 10px 0 0 0; border-color: {divider};
+  border-width: 1px 0 0 0; }}
+.buttons {{ flex-direction: row; gap: 6px; align-items: center; }}
+button {{ padding: 3px 8px; background: {output}; border-color: {border}; color: {text}; }}
+button:hover {{ background: {background}; border-color: {accent}; }}
+button:disabled {{ background: {surface}; color: {muted}; }}
+.buttons text-input {{ width: 140px; }}
+.buttons select {{ width: 140px; }}
+.note {{ color: {pending}; }}
+.diff {{ flex-direction: column; flex-grow: 1; overflow: scroll; padding: 6px;
+  background: {background}; color: {text_dim}; font-size: 12px; }}
+.diff-line {{ white-space: pre; flex-shrink: 0; }}
 "
     )
+}
+
+/// What the window can do besides edit, as the panel shows it.
+pub struct Actions<'a> {
+    /// The backend thread is working on a request: nothing else is sent.
+    pub busy: bool,
+    /// The profiles in the store, by name.
+    pub profiles: &'a [String],
+    /// A question waiting on the user, which takes the panel's place.
+    pub question: Option<&'a Question>,
+}
+
+/// What the user asked of the window in the panel, besides edits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    Apply,
+    Save,
+    Revert,
+    Refresh,
+    /// Save the displays as the profile of this name.
+    SaveProfile(String),
+    /// Apply the profile of this name.
+    Restore(String),
+    /// Yes to the question.
+    Approve,
+    /// No to the question.
+    Dismiss,
+}
+
+/// What the actions keep between frames: the profile name being typed, and
+/// the profile chosen in the picker.
+#[derive(Debug, Default)]
+pub struct ActionDrafts {
+    profile_name: String,
+    profile: usize,
+}
+
+/// A frame of the panel: the edits and the commands the user made in it.
+#[derive(Debug, Default, PartialEq)]
+pub struct Built {
+    pub changes: Vec<Change>,
+    pub commands: Vec<Command>,
 }
 
 /// Builds the panel for `panel` (none selected: a line saying so), and
 /// returns what the user changed this frame, to the output `drafts` are for;
 /// the caller keeps that the output `panel` is for
 /// ([`Drafts::reset`] when the selection changes).
-pub fn build(ui: &mut Ui, panel: Option<&Panel>, drafts: &mut Drafts) -> Vec<Change> {
-    let mut changes = Vec::new();
+pub fn build(
+    ui: &mut Ui,
+    panel: Option<&Panel>,
+    drafts: &mut Drafts,
+    actions: &Actions<'_>,
+    action_drafts: &mut ActionDrafts,
+) -> Built {
+    let mut built = Built::default();
     ui.block(".panel", &[], |ui| {
-        let Some(panel) = panel else {
-            ui.span(".empty", "No output selected", &[]);
+        if let Some(question) = actions.question {
+            ask(ui, question, &mut built.commands);
             return;
-        };
-        ui.block(".row", &[], |ui| {
-            ui.span(".title", panel.output.as_str(), &[]);
-        });
-        ui.block(".row", &[], |ui| {
-            ui.span(".value", panel.description.as_str(), &[]);
-        });
-        row(ui, "#enabled", "Enabled", &panel.enabled, |ui| {
-            let mut on = panel.enabled.value;
-            let response = ui.checkbox("#enabled-box", "", &mut on);
-            if response.changed {
-                changes.push(Change::Enabled(on));
-            }
-            response
-        });
-        choice(
-            ui,
-            "#size",
-            "Mode",
-            &panel.size,
-            |&(w, h)| Some(Change::Size(w, h)),
-            &mut changes,
-        );
-        choice(
-            ui,
-            "#refresh",
-            "Refresh",
-            &panel.refresh,
-            |mode| Some(Change::Mode(mode.clone())),
-            &mut changes,
-        );
-        if !drafts.custom_active {
-            drafts.custom_mode.clone_from(&panel.custom_mode.value);
         }
-        row(ui, "#custom", "Custom mode", &panel.custom_mode, |ui| {
-            let response = ui.text_input("#custom-input", &mut drafts.custom_mode);
-            if response.engagement == Engagement::Committed
-                && drafts.custom_mode != panel.custom_mode.value
-            {
-                changes.push(Change::CustomMode(drafts.custom_mode.clone()));
-            }
-            drafts.custom_active = response.engagement.is_engaged();
-            response
+        ui.block(".fields", &[], |ui| {
+            fields(ui, panel, drafts, &mut built.changes)
         });
-        row(ui, "#position", "Position", &panel.position, |ui| {
-            ui.span("#position-value.value", panel.position.value.as_str(), &[])
+        ui.block(".actions", &[], |ui| {
+            buttons(ui, actions, action_drafts, &mut built.commands);
         });
-        scale(ui, panel, drafts, &mut changes);
-        choice(
-            ui,
-            "#transform",
-            "Transform",
-            &panel.transform,
-            |&t| Some(Change::Transform(t)),
-            &mut changes,
-        );
-        // `unknown` stands for the value as the backend reported it, which
-        // nothing can be set back to: choosing it changes nothing.
-        choice(
-            ui,
-            "#vrr",
-            "Adaptive sync",
-            &panel.adaptive_sync,
-            |sync| sync.map(Change::AdaptiveSync),
-            &mut changes,
-        );
-        choice(
-            ui,
-            "#mirror",
-            "Mirror of",
-            &panel.mirror,
-            |id| Some(Change::Mirror(id.clone())),
-            &mut changes,
-        );
-        for (label, value, changed) in &panel.other {
-            ui.block_keyed(label, ".row", &[], |ui| {
-                let class = if *changed { ".label.changed" } else { ".label" };
-                ui.span(class, *label, &[]);
-                ui.span(".value", value.as_str(), &[]);
+    });
+    built
+}
+
+/// The question: what would be replaced, why it is asked, what replacing
+/// it changes, and Replace or Cancel.
+fn ask(ui: &mut Ui, question: &Question, commands: &mut Vec<Command>) {
+    ui.span(
+        ".title",
+        format!("Replace {}?", question.what).as_str(),
+        &[],
+    );
+    for (index, note) in question.notes.iter().enumerate() {
+        ui.block_keyed(index, ".note", &[], |ui| {
+            ui.span("", note.as_str(), &[]);
+        });
+    }
+    ui.block(".diff", &[], |ui| {
+        for (index, line) in question.diff.lines().enumerate() {
+            ui.block_keyed(index, ".diff-line", &[], |ui| {
+                ui.span("", line, &[]);
             });
         }
     });
-    changes
+    ui.block(".buttons", &[], |ui| {
+        if ui.button("#approve", "Replace (Enter)").clicked {
+            commands.push(Command::Approve);
+        }
+        if ui.button("#dismiss", "Cancel (Esc)").clicked {
+            commands.push(Command::Dismiss);
+        }
+    });
+}
+
+/// Apply, Save, Revert and Refresh; saving as a profile; and, when there
+/// are profiles, picking one to restore. Disabled while the backend thread
+/// is busy.
+fn buttons(
+    ui: &mut Ui,
+    actions: &Actions<'_>,
+    drafts: &mut ActionDrafts,
+    commands: &mut Vec<Command>,
+) {
+    ui.enabled(!actions.busy, |ui| {
+        ui.block(".buttons", &[], |ui| {
+            for (id, label, command) in [
+                ("#apply", "Apply (a)", Command::Apply),
+                ("#save", "Save (s)", Command::Save),
+                ("#revert", "Revert", Command::Revert),
+                ("#refresh", "Refresh", Command::Refresh),
+            ] {
+                if ui.button(id, label).clicked {
+                    commands.push(command);
+                }
+            }
+        });
+        ui.block("#profile-save.buttons", &[], |ui| {
+            ui.text_input("#profile-name", &mut drafts.profile_name);
+            if ui.button("#save-profile", "Save as profile").clicked {
+                commands.push(Command::SaveProfile(drafts.profile_name.trim().to_owned()));
+            }
+        });
+        if !actions.profiles.is_empty() {
+            ui.block("#profile-restore.buttons", &[], |ui| {
+                let labels: Vec<&str> = actions.profiles.iter().map(String::as_str).collect();
+                drafts.profile = drafts.profile.min(labels.len() - 1);
+                ui.select("#profile-pick", &labels, &mut drafts.profile);
+                if ui.button("#restore", "Restore").clicked {
+                    commands.push(Command::Restore(actions.profiles[drafts.profile].clone()));
+                }
+            });
+        }
+    });
+}
+
+/// The selected output's fields, or a line saying none is selected.
+fn fields(ui: &mut Ui, panel: Option<&Panel>, drafts: &mut Drafts, changes: &mut Vec<Change>) {
+    let Some(panel) = panel else {
+        ui.span(".empty", "No output selected", &[]);
+        return;
+    };
+    ui.block(".row", &[], |ui| {
+        ui.span(".title", panel.output.as_str(), &[]);
+    });
+    ui.block(".row", &[], |ui| {
+        ui.span(".value", panel.description.as_str(), &[]);
+    });
+    row(ui, "#enabled", "Enabled", &panel.enabled, |ui| {
+        let mut on = panel.enabled.value;
+        let response = ui.checkbox("#enabled-box", "", &mut on);
+        if response.changed {
+            changes.push(Change::Enabled(on));
+        }
+        response
+    });
+    choice(
+        ui,
+        "#size",
+        "Mode",
+        &panel.size,
+        |&(w, h)| Some(Change::Size(w, h)),
+        changes,
+    );
+    choice(
+        ui,
+        "#refresh",
+        "Refresh",
+        &panel.refresh,
+        |mode| Some(Change::Mode(mode.clone())),
+        changes,
+    );
+    if !drafts.custom_active {
+        drafts.custom_mode.clone_from(&panel.custom_mode.value);
+    }
+    row(ui, "#custom", "Custom mode", &panel.custom_mode, |ui| {
+        let response = ui.text_input("#custom-input", &mut drafts.custom_mode);
+        if response.engagement == Engagement::Committed
+            && drafts.custom_mode != panel.custom_mode.value
+        {
+            changes.push(Change::CustomMode(drafts.custom_mode.clone()));
+        }
+        drafts.custom_active = response.engagement.is_engaged();
+        response
+    });
+    row(ui, "#position", "Position", &panel.position, |ui| {
+        ui.span("#position-value.value", panel.position.value.as_str(), &[])
+    });
+    scale(ui, panel, drafts, changes);
+    choice(
+        ui,
+        "#transform",
+        "Transform",
+        &panel.transform,
+        |&t| Some(Change::Transform(t)),
+        changes,
+    );
+    // `unknown` stands for the value as the backend reported it, which
+    // nothing can be set back to: choosing it changes nothing.
+    choice(
+        ui,
+        "#vrr",
+        "Adaptive sync",
+        &panel.adaptive_sync,
+        |sync| sync.map(Change::AdaptiveSync),
+        changes,
+    );
+    choice(
+        ui,
+        "#mirror",
+        "Mirror of",
+        &panel.mirror,
+        |id| Some(Change::Mirror(id.clone())),
+        changes,
+    );
+    for (label, value, changed) in &panel.other {
+        ui.block_keyed(label, ".row", &[], |ui| {
+            let class = if *changed { ".label.changed" } else { ".label" };
+            ui.span(class, *label, &[]);
+            ui.span(".value", value.as_str(), &[]);
+        });
+    }
 }
 
 /// A labelled row holding `widget`, disabled with a tooltip when `field` is
@@ -323,6 +470,7 @@ mod tests {
     use crcbl_ui::text::FontAtlas;
     use crcbl_ui::tree::{AvailableSpace, Ui};
     use crcbl_ui::widget::PointerInput;
+    use dsplr_core::link::{Question, Request};
     use dsplr_core::panel::panel;
     use dsplr_core::{Editor, Snapshot, Theme};
     use dsplr_model::{
@@ -330,7 +478,7 @@ mod tests {
     };
     use glam::Vec2;
 
-    use super::{Drafts, build, stylesheet};
+    use super::{ActionDrafts, Actions, Built, Drafts, build, stylesheet};
 
     fn editor() -> Editor {
         let output = |connector: &str| Output {
@@ -366,28 +514,50 @@ mod tests {
         })
     }
 
-    /// Two frames at rest: every field built once, nothing reported changed.
+    /// Two frames at rest, with the profile picker and with a question:
+    /// every node built once, nothing reported changed or asked for.
     #[test]
-    fn the_panel_builds_with_one_node_per_key_and_changes_nothing_at_rest() {
+    fn the_panel_builds_with_one_node_per_key_and_does_nothing_at_rest() {
         let editor = editor();
         let mut ui = Ui::new();
         ui.add_stylesheet("dsplr", &stylesheet(&Theme::tokyo_night()));
         let atlas = FontAtlas::built_in();
         let mut drafts = Drafts::default();
+        let mut action_drafts = ActionDrafts::default();
         let panel = panel(&editor, 0);
         assert!(panel.is_some());
-        for _ in 0..2 {
-            ui.begin_frame(PointerInput::hovering(Vec2::new(-10.0, -10.0)));
-            let changes = build(&mut ui, panel.as_ref(), &mut drafts);
-            ui.layout(
-                Vec2::new(960.0, 0.0),
-                AvailableSpace::definite(Vec2::new(320.0, 768.0)),
-                &atlas,
-            );
-            assert_eq!(changes, [], "nothing touched");
-            assert_eq!(ui.duplicate_keys(), [], "two nodes shared a key");
+        let profiles = ["home".to_owned(), "work".to_owned()];
+        let question = Question {
+            what: "/h/.config/sway/outputs".into(),
+            notes: vec!["edited by hand".into(), "and more".into()],
+            diff: "--- mine\n+++ new\n-a\n+b\n".into(),
+            approve: Request::Save { approved: None },
+        };
+        for question in [None, Some(&question)] {
+            let actions = Actions {
+                busy: false,
+                profiles: &profiles,
+                question,
+            };
+            for _ in 0..2 {
+                ui.begin_frame(PointerInput::hovering(Vec2::new(-10.0, -10.0)));
+                let built = build(
+                    &mut ui,
+                    panel.as_ref(),
+                    &mut drafts,
+                    &actions,
+                    &mut action_drafts,
+                );
+                ui.layout(
+                    Vec2::new(960.0, 0.0),
+                    AvailableSpace::definite(Vec2::new(320.0, 768.0)),
+                    &atlas,
+                );
+                assert_eq!(built, Built::default(), "nothing touched");
+                assert_eq!(ui.duplicate_keys(), [], "two nodes shared a key");
+            }
+            assert!(ui.len() > 12, "the panel was built: {} nodes", ui.len());
         }
-        assert!(ui.len() > 30, "the fields were built: {} nodes", ui.len());
     }
 
     #[test]

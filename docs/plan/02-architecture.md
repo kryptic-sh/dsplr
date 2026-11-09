@@ -33,6 +33,15 @@ One process. The GUI and the CLI share everything below the front end.
 - The **CLI** uses the same backend and `Request`s synchronously and has no
   window.
 
+As built (M3, 2026-11-10): the requests are `dsplr_core::link`'s (refresh,
+apply, save, save as a profile, restore a profile, revert), and the backend
+thread (`apps/dsplr/src/gui.rs`) reads the displays again after each one rather
+than following the desktop's changes, which is still to come. The CLI does not
+send `Request`s: it and the backend thread drive the one apply flow
+(`dsplr_core::flow`, steps 1 to 6 below as a state machine with no I/O) through
+`apps/dsplr/src/apply.rs`'s `drive`, and differ only in who confirms (the
+terminal, the dialogs) and where the messages go.
+
 ## Apply, confirm, revert
 
 The safety net, shared by every backend and both front ends:

@@ -2,8 +2,8 @@
 //! from the keysym, so a keymap's layout decides what a key is.
 //!
 //! Three readings, by what has the keyboard: the canvas ([`action`]), the
-//! quit prompt ([`answer`]), and the panel while a field takes typing or a
-//! drop-down is open ([`nav`]).
+//! confirm dialogs and the quit prompt ([`answer`]), and the panel while a
+//! field takes typing or a drop-down is open ([`nav`]).
 
 use crcbl_shell::{Keysym, Modifiers};
 use crcbl_ui::tree::{Direction as NavDirection, NavInput};
@@ -28,6 +28,10 @@ pub enum Action {
     ToggleEnabled,
     Undo,
     Redo,
+    /// Apply the pending edits through the confirm flow.
+    Apply,
+    /// Save the displays where the desktop reads them.
+    Save,
     Quit,
 }
 
@@ -70,13 +74,17 @@ pub fn action(keysym: Keysym, modifiers: Modifiers) -> Option<Action> {
         '+' => Action::Scale { up: true },
         '-' => Action::Scale { up: false },
         ' ' => Action::ToggleEnabled,
+        'a' => Action::Apply,
+        's' => Action::Save,
         'u' => Action::Undo,
         'q' => Action::Quit,
         _ => return None,
     })
 }
 
-/// The quit prompt's answer: `y` or Enter to quit, `n` or Escape not to.
+/// The answer to a yes-or-no: the quit prompt (`y` or Enter quits), the
+/// confirm dialogs (Enter keeps, Escape reverts) and a question from the
+/// backend thread (Enter replaces, Escape cancels). `n` and Escape are no.
 pub fn answer(keysym: Keysym) -> Option<bool> {
     match keysym {
         Keysym::RETURN | KP_ENTER => Some(true),
@@ -145,6 +153,8 @@ mod tests {
             (Keysym(0xFFAD), none, Action::Scale { up: false }),
             (key(' '), none, Action::ToggleEnabled),
             (key('u'), none, Action::Undo),
+            (key('a'), none, Action::Apply),
+            (key('s'), none, Action::Save),
             (key('r'), Modifiers::CTRL, Action::Redo),
         ];
         for (keysym, modifiers, expected) in cases {

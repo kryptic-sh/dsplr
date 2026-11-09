@@ -17,10 +17,68 @@ use crate::{Exit, apply, find_backend, print, save};
 /// The store's directory, or, when there is none, the error reported and
 /// the exit code.
 fn store() -> Result<PathBuf, Exit> {
-    profile::default_dir().map_err(|error| {
+    store_dir().map_err(|error| {
         eprintln!("dsplr: {error}");
         Exit::Failure
     })
+}
+
+/// The store's directory, or why there is none.
+pub fn store_dir() -> Result<PathBuf, String> {
+    profile::default_dir().map_err(|error| error.to_string())
+}
+
+/// Why [`store_layout`] saved nothing.
+pub enum Blocked {
+    /// A profile of that name exists: what saving changes in it.
+    Exists { diff: String },
+    /// A profile of that name exists and cannot be read: why.
+    Unreadable(String),
+    /// Saving failed, said as a whole message.
+    Failed(String),
+}
+
+/// Saves `layout` as the profile `name` in the store at `dir`. Unless
+/// `approved`, a profile of that name already there blocks it, so the user
+/// can be asked first. Returns what to tell the user, one message each.
+pub fn store_layout(
+    dir: &std::path::Path,
+    name: &ProfileName,
+    layout: Layout,
+    approved: bool,
+) -> Result<Vec<String>, Blocked> {
+    // A link is refused however the question would be answered, so before
+    // it is asked.
+    refuse_symlink(&profile::path(dir, name))
+        .map_err(|error| Blocked::Failed(format!("cannot save the profile: {error}")))?;
+    if !approved {
+        match profile::load(dir, name) {
+            Ok(None) => {}
+            Ok(Some(old)) => {
+                return Err(Blocked::Exists {
+                    diff: line_diff(
+                        &crate::list::describe(&old.layout),
+                        &crate::list::describe(&layout),
+                    ),
+                });
+            }
+            Err(error) => return Err(Blocked::Unreadable(error.to_string())),
+        }
+    }
+    let profile = Profile {
+        name: name.clone(),
+        layout,
+        saved_unix_ms: unix_ms(SystemTime::now()),
+    };
+    match profile::save(dir, &profile) {
+        Ok(path) => Ok(vec![
+            format!("saved profile \"{name}\" to {}", path.display()),
+            format!(
+                "`dsplr restore \"{name}\"` applies it, and `dsplr restore` picks it while these outputs are connected"
+            ),
+        ]),
+        Err(error) => Err(Blocked::Failed(format!("cannot save the profile: {error}"))),
+    }
 }
 
 /// The profile `name` in the store at `dir`, or, when there is none or it
@@ -59,55 +117,38 @@ pub async fn save(backend: &Backend, name: &ProfileName, options: &save::Options
         Ok(dir) => dir,
         Err(exit) => return exit,
     };
-    // A link is refused however the question would be answered, so before
-    // it is asked.
-    if let Err(error) = refuse_symlink(&profile::path(&dir, name)) {
-        eprintln!("dsplr: cannot save the profile: {error}");
-        return Exit::Failure;
-    }
     let replace = options.yes || options.force;
-    match profile::load(&dir, name) {
-        Ok(None) => {}
-        Ok(Some(old)) => {
-            eprintln!(
-                "dsplr: there is a profile named \"{name}\" already; this is what saving changes in it:"
-            );
-            eprint!(
-                "{}",
-                line_diff(
-                    &crate::list::describe(&old.layout),
-                    &crate::list::describe(&layout)
-                )
-            );
-            if !save::replace_allowed(&format!("profile \"{name}\""), replace) {
+    let mut approved = false;
+    loop {
+        match store_layout(&dir, name, layout.clone(), approved) {
+            Ok(messages) => {
+                for message in messages {
+                    eprintln!("dsplr: {message}");
+                }
+                return Exit::Success;
+            }
+            Err(Blocked::Exists { diff }) => {
+                eprintln!(
+                    "dsplr: there is a profile named \"{name}\" already; this is what saving changes in it:"
+                );
+                eprint!("{diff}");
+                if !save::replace_allowed(&format!("profile \"{name}\""), replace) {
+                    return Exit::Failure;
+                }
+            }
+            Err(Blocked::Unreadable(error)) if options.force => {
+                eprintln!("dsplr: {error}; replacing it, as --force says");
+            }
+            Err(Blocked::Unreadable(error)) => {
+                eprintln!("dsplr: {error}; nothing was saved, and --force replaces it");
+                return Exit::Failure;
+            }
+            Err(Blocked::Failed(message)) => {
+                eprintln!("dsplr: {message}");
                 return Exit::Failure;
             }
         }
-        Err(error) if options.force => {
-            eprintln!("dsplr: {error}; replacing it, as --force says");
-        }
-        Err(error) => {
-            eprintln!("dsplr: {error}; nothing was saved, and --force replaces it");
-            return Exit::Failure;
-        }
-    }
-    let profile = Profile {
-        name: name.clone(),
-        layout,
-        saved_unix_ms: unix_ms(SystemTime::now()),
-    };
-    match profile::save(&dir, &profile) {
-        Ok(path) => {
-            eprintln!("dsplr: saved profile \"{name}\" to {}", path.display());
-            eprintln!(
-                "dsplr: `dsplr restore \"{name}\"` applies it, and `dsplr restore` picks it while these outputs are connected"
-            );
-            Exit::Success
-        }
-        Err(error) => {
-            eprintln!("dsplr: cannot save the profile: {error}");
-            Exit::Failure
-        }
+        approved = true;
     }
 }
 

@@ -1,0 +1,13 @@
+fill 0.0,0.0 440.0x168.0 #16161e
+outline 0.0,0.0 440.0x168.0 2.0 #7aa2f7
+text 20.0,20.0 17 #c0caf5 clip 2.0,2.0 436.0x164.0 "Keep these display settings?"
+text 20.0,46.0 13 #a9b1d6 clip 2.0,2.0 436.0x164.0 "DP-1"
+text 20.0,68.0 13 #ff9e64 clip 2.0,2.0 436.0x164.0 "Reverting in 15 s"
+fill 168.0,116.0 120.0x32.0 #7aa2f7
+outline 168.0,116.0 120.0x32.0 1.0 #414868
+text 182.0,124.0 13 #16161e clip 168.0,116.0 120.0x32.0 "Keep (Enter)"
+fill 300.0,116.0 120.0x32.0 #292e42
+outline 300.0,116.0 120.0x32.0 1.0 #414868
+text 314.0,124.0 13 #c0caf5 clip 300.0,116.0 120.0x32.0 "Revert (Esc)"
+button 168.0,116.0 120.0x32.0 Keep
+button 300.0,116.0 120.0x32.0 Revert

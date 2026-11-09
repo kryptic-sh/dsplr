@@ -49,7 +49,15 @@ and this project adheres to
   or `Escape` quits, asking first when edits are pending. It reads the displays
   on a backend thread before the window opens, so a desktop with no backend
   exits `6` with no window; no window system or no usable GPU exits `1` with the
-  reason. Applying and saving from the window are not in it yet.
+  reason. `a` (or Apply) applies the pending edits through the same confirm flow
+  as `dsplr apply`: tested, guarded by the revert point and its watchdog, read
+  back, and kept only once "Keep these display settings?" is answered on one of
+  the dialogs shown on every monitor (Enter keeps; Esc, the countdown, or dsplr
+  dying reverts). `s` (or Save) saves the displays where the desktop reads them,
+  as `dsplr save` does, asking in the window before replacing a file dsplr did
+  not write or one edited by hand. The panel also saves the displays as a named
+  profile, restores a profile through the same flow, goes back to the revert
+  point, and reads the displays again.
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive
   sync and available modes (a refresh the desktop did not report reads as
   `refresh unknown`, not `0 Hz`); `dsplr list --json` prints the same layout in

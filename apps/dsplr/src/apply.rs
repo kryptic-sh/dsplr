@@ -4,14 +4,14 @@
 //! share.
 
 use std::io::{self, BufRead, IsTerminal};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use dsplr_backend::Backend;
-use dsplr_model::{
-    Capabilities, Difference, Layout, OutputEntry, OutputId, Problem, Setting, assign,
-};
+use dsplr_core::flow::{self, Answer, Change, Failure, Flow, Outcome, Step};
+use dsplr_model::{Capabilities, Difference, Layout, OutputEntry, OutputId, assign};
 use dsplr_persist::revert::{self, RevertPoint};
 
 use crate::{Exit, restore};
@@ -68,174 +68,186 @@ pub async fn onto(backend: &Backend, current: Layout, file: &Layout, options: &O
 }
 
 /// Takes `backend` from `current`, the snapshot just read, to `asked`, a
-/// whole layout naming the live outputs: validate, test, keep a revert
-/// point and start its watchdog, apply, read back, and keep or revert.
+/// whole layout naming the live outputs, through the confirm flow
+/// ([`dsplr_core::flow`]), confirming on the terminal and reporting on
+/// stderr.
 pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &Options) -> Exit {
-    let capabilities = backend.capabilities();
-    let problems = asked.validate(&capabilities);
-    for problem in &problems {
-        let severity = if problem.is_error() {
-            "error"
-        } else {
-            "warning"
-        };
-        eprintln!("dsplr: {severity}: {problem}");
-    }
-    if problems.iter().any(Problem::is_error) {
-        return Exit::Refused;
-    }
-    // Step 2: the desktop's own test, where it has a real one.
-    match backend.test(asked).await {
-        Ok(()) if options.dry_run => {
-            eprintln!(
-                "dsplr: {} tested the layout and would apply it",
-                backend.name()
-            );
-            return Exit::Success;
-        }
-        Ok(()) => {}
-        Err(dsplr_backend::Error::Unsupported { reason, .. }) if options.dry_run => {
-            eprintln!(
-                "dsplr: validated locally only; {} cannot test a layout: {reason}",
-                backend.name()
-            );
-            return Exit::Success;
-        }
-        Err(dsplr_backend::Error::Unsupported { .. }) => {}
-        Err(error) if error.is_refused_before_sending() => {
-            cannot_take(backend, &error);
-            return Exit::Refused;
-        }
-        Err(error) if error.is_refusal() => {
-            eprintln!(
-                "dsplr: {} refused the layout in its test, so nothing was applied: {error}",
-                backend.name()
-            );
-            return Exit::BackendRefused;
-        }
-        Err(error) if error.is_stale() => {
-            eprintln!(
-                "dsplr: the displays changed while {} tested the layout, so nothing was applied: {error}",
-                backend.name()
-            );
-            show_now(backend, asked, &capabilities).await;
-            return Exit::BackendRefused;
-        }
-        Err(error) => {
-            eprintln!(
-                "dsplr: cannot test the layout on {}, so nothing was applied: {error}",
-                backend.name()
-            );
-            return Exit::Failure;
-        }
-    }
-    let ask = !options.yes && needs_confirm(asked, &current, &capabilities);
-    if ask && !io::stdin().is_terminal() {
-        eprintln!(
-            "dsplr: this change can hide or move a screen, and there is no terminal to confirm it on; pass --yes to keep it without asking"
-        );
-        return Exit::Failure;
-    }
-
-    let path = match revert::default_path() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!("dsplr: cannot keep a revert point: {error}");
-            return Exit::Failure;
-        }
+    let change = Change {
+        current,
+        asked: asked.clone(),
+        capabilities: backend.capabilities(),
+        backend: backend.name().into(),
     };
-    let point = RevertPoint::new(current);
-    if let Err(error) = revert::save(&path, &point) {
-        eprintln!("dsplr: cannot keep a revert point: {error}");
-        return Exit::Failure;
+    let flow = flow::Options {
+        yes: options.yes,
+        dry_run: options.dry_run,
+        can_ask: io::stdin().is_terminal(),
+    };
+    let outcome = drive(
+        backend,
+        change,
+        flow,
+        options.confirm_timeout,
+        &mut Terminal,
+        &mut |line| eprintln!("dsplr: {line}"),
+    )
+    .await;
+    exit(outcome)
+}
+
+/// The exit code `dsplr apply` ends a change with (`docs/plan/07-cli.md`).
+pub const fn exit(outcome: Outcome) -> Exit {
+    match outcome {
+        Outcome::Kept | Outcome::Tested => Exit::Success,
+        Outcome::Refused => Exit::Refused,
+        Outcome::BackendRefused => Exit::BackendRefused,
+        Outcome::Reverted => Exit::Reverted,
+        Outcome::Failed => Exit::Failure,
     }
-    if let Err(error) = restore::spawn_watchdog(
-        &point.token,
-        restore::watchdog_delay(options.confirm_timeout, backend.request_timeout()),
-    ) {
-        eprintln!("dsplr: cannot start the revert watchdog: {error}");
+}
+
+/// Whoever is asked whether to keep a change.
+pub trait Confirm {
+    /// Whether to keep the change, asked for at most `timeout`; no answer
+    /// in time is no. Its watchdog reverts it at `watchdog`, should nothing
+    /// else.
+    fn confirm(&mut self, timeout: Duration, watchdog: Instant) -> bool;
+}
+
+/// The terminal: a line on stdin.
+struct Terminal;
+
+impl Confirm for Terminal {
+    fn confirm(&mut self, timeout: Duration, _watchdog: Instant) -> bool {
+        confirm(timeout)
+    }
+}
+
+/// Drives `change` through the confirm flow on `backend`: does each step
+/// the flow asks for, asks `confirmer` when it comes to that, and hands
+/// every message to `say`. The revert point and its watchdog are the ones
+/// `dsplr restore --revert` reads, so a dsplr killed mid-confirm is still
+/// reverted.
+pub async fn drive(
+    backend: &Backend,
+    change: Change,
+    options: flow::Options,
+    confirm_timeout: Duration,
+    confirmer: &mut dyn Confirm,
+    say: &mut dyn FnMut(String),
+) -> Outcome {
+    let (mut flow, mut step) = Flow::start(change, options);
+    let asked = flow.change().asked.clone();
+    let capabilities = flow.change().capabilities.clone();
+    // The revert point once written: where, and the change's own.
+    let mut guard: Option<Guard> = None;
+    loop {
+        for line in flow.messages() {
+            say(line);
+        }
+        let answer = match step {
+            Step::Done(outcome) => return outcome,
+            Step::Test => Answer::Tested(backend.test(&asked).await.map_err(|e| failure(&e))),
+            Step::Prepare => Answer::Prepared(
+                prepare(backend, &flow.change().current, confirm_timeout)
+                    .map(|kept| guard = Some(kept)),
+            ),
+            Step::Apply => Answer::Applied(backend.apply(&asked).await.map_err(|e| failure(&e))),
+            Step::Settle => Answer::Settled(
+                settle(backend, &asked, &capabilities)
+                    .await
+                    .map_err(|error| error.to_string()),
+            ),
+            Step::ShowNow => Answer::Shown(
+                backend
+                    .snapshot()
+                    .await
+                    .map(|now| asked.differences(&now, &capabilities))
+                    .map_err(|error| error.to_string()),
+            ),
+            Step::Discard => Answer::Discarded(match guard.take() {
+                Some(Guard { path, point, .. }) => revert::remove_if(&path, &point.token)
+                    .map(drop)
+                    .map_err(|error| error.to_string()),
+                None => Ok(()),
+            }),
+            Step::Confirm => Answer::Confirmed(match &guard {
+                Some(guard) => confirmer.confirm(confirm_timeout, guard.watchdog),
+                None => false,
+            }),
+            Step::Revert => Answer::Reverted(match &guard {
+                Some(Guard { path, point, .. }) => {
+                    restore::go_back(backend, path, point, say).await == Exit::Success
+                }
+                None => false,
+            }),
+            Step::Keep => Answer::Kept(match &guard {
+                Some(Guard { path, point, .. }) => {
+                    revert::keep(path, &point.token).map_err(|error| error.to_string())
+                }
+                None => Ok(true),
+            }),
+        };
+        step = flow.next(answer);
+    }
+}
+
+/// A change's guard: its revert point, where it is, and when its watchdog
+/// reverts it.
+struct Guard {
+    path: PathBuf,
+    point: RevertPoint,
+    watchdog: Instant,
+}
+
+/// Step 3's guard: writes `current` as the revert point and starts its
+/// watchdog. The error is the lines to show.
+fn prepare(
+    backend: &Backend,
+    current: &Layout,
+    confirm_timeout: Duration,
+) -> Result<Guard, Vec<String>> {
+    let cannot_keep = |error: dsplr_persist::revert::RevertError| {
+        vec![format!("cannot keep a revert point: {error}")]
+    };
+    let path = revert::default_path().map_err(cannot_keep)?;
+    let point = RevertPoint::new(current.clone());
+    revert::save(&path, &point).map_err(cannot_keep)?;
+    let delay = restore::watchdog_delay(confirm_timeout, backend.request_timeout());
+    let started = Instant::now();
+    if let Err(error) = restore::spawn_watchdog(&point.token, delay) {
+        let mut why = vec![format!("cannot start the revert watchdog: {error}")];
         if let Err(error) = revert::remove_if(&path, &point.token) {
-            eprintln!("dsplr: {error}");
+            why.push(error.to_string());
         }
-        return Exit::Failure;
+        return Err(why);
     }
+    Ok(Guard {
+        path,
+        point,
+        watchdog: started + delay,
+    })
+}
 
-    if let Err(error) = backend.apply(asked).await {
-        if error.is_stale() {
-            // Nothing was applied, and the displays changed since the revert
-            // point was read: going back would undo that other change. Show
-            // what they are now instead.
-            eprintln!(
-                "dsplr: the displays changed before {} applied the layout, so nothing was applied: {error}",
-                backend.name()
-            );
-            if let Err(error) = revert::remove_if(&path, &point.token) {
-                eprintln!("dsplr: {error}");
-            }
-            show_now(backend, asked, &capabilities).await;
-            return Exit::BackendRefused;
-        }
-        if error.is_refused_before_sending() {
-            // Nothing was sent, so there is nothing to go back from.
-            cannot_take(backend, &error);
-            if let Err(error) = revert::remove_if(&path, &point.token) {
-                eprintln!("dsplr: {error}");
-            }
-            return Exit::Refused;
-        }
-        // Refused or not, something may have changed (a connection lost
-        // mid-apply), so go back either way.
-        let exit = if error.is_refusal() {
-            eprintln!("dsplr: {} refused the layout: {error}", backend.name());
-            Exit::BackendRefused
-        } else {
-            eprintln!(
-                "dsplr: cannot apply the layout on {}: {error}",
-                backend.name()
-            );
-            Exit::Failure
-        };
-        restore::go_back(backend, &path, &point).await;
-        return exit;
-    }
-    match settle(backend, asked, &capabilities).await {
-        Ok(differences) => report(&differences),
-        Err(error) => {
-            // Without a re-read nothing says what the screens show: go back
-            // rather than keep it unseen.
-            eprintln!("dsplr: cannot read the displays back: {error}");
-            restore::go_back(backend, &path, &point).await;
-            return Exit::Failure;
-        }
-    }
-
-    if ask && !confirm(options.confirm_timeout) {
-        eprintln!("dsplr: reverting");
-        // A revert that failed leaves the declined layout on screen, so
-        // nothing here may read as "nothing was applied" (3 or 4).
-        return match restore::go_back(backend, &path, &point).await {
-            Exit::Success => Exit::Reverted,
-            _ => Exit::Failure,
-        };
-    }
-    match revert::keep(&path, &point.token) {
-        Ok(true) => Exit::Success,
-        Ok(false) => {
-            eprintln!("dsplr: the revert point was replaced by another change; this one is kept");
-            Exit::Success
-        }
-        Err(error) => {
-            eprintln!(
-                "dsplr: cannot mark the change kept, so the watchdog will revert it: {error}"
-            );
-            Exit::Failure
-        }
+/// A backend error as the flow tells them apart.
+pub fn failure(error: &dsplr_backend::Error) -> Failure {
+    let text = error.to_string();
+    if let dsplr_backend::Error::Unsupported { reason, .. } = error {
+        Failure::Unsupported((*reason).to_owned())
+    } else if error.is_refused_before_sending() {
+        Failure::NotTaken(text)
+    } else if error.is_refusal() {
+        Failure::Refused(text)
+    } else if error.is_stale() {
+        Failure::Stale(text)
+    } else {
+        Failure::Failed(text)
     }
 }
 
 /// A layout file's output that has no connected output of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Unbound {
+pub enum Unbound {
     /// It names no connected output.
     NotConnected(OutputId),
     /// Every connected output it names is another entry's.
@@ -260,7 +272,7 @@ impl std::fmt::Display for Unbound {
 /// entry was paired with, or else the first one its identity names. Live
 /// outputs left unpaired keep their current state. The error lists the
 /// file's outputs left without one.
-fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
+pub fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
     let paired = assign(&file.entries, &live.entries).map_err(|unpaired| {
         unpaired
             .into_iter()
@@ -305,26 +317,6 @@ fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
     Ok(Layout { entries })
 }
 
-/// Whether going from `current` to `asked` can hide or move a screen: an
-/// output enabled or disabled, or its mode, position, scale or transform
-/// changed.
-fn needs_confirm(asked: &Layout, current: &Layout, capabilities: &Capabilities) -> bool {
-    asked
-        .differences(current, capabilities)
-        .iter()
-        .any(|difference| match difference {
-            Difference::Setting { setting, .. } => matches!(
-                setting,
-                Setting::Enabled
-                    | Setting::Mode
-                    | Setting::Position
-                    | Setting::Scale
-                    | Setting::Transform
-            ),
-            Difference::Missing(_) | Difference::Added(_) => true,
-        })
-}
-
 /// Reads the layout back until it shows `asked` or [`SETTLE`] has passed,
 /// and returns what still differs.
 ///
@@ -343,35 +335,6 @@ pub async fn settle(
             return Ok(differences);
         }
         tokio::time::sleep(SETTLE_POLL).await;
-    }
-}
-
-/// Reports a layout `backend` refused before sending it
-/// ([`dsplr_backend::Error::is_refused_before_sending`]).
-fn cannot_take(backend: &Backend, error: &dsplr_backend::Error) {
-    eprintln!(
-        "dsplr: {} cannot take the layout, so nothing was applied: {error}",
-        backend.name()
-    );
-}
-
-/// Reads the displays again after the desktop dropped a request because they
-/// changed, and shows how they differ from `asked`.
-async fn show_now(backend: &Backend, asked: &Layout, capabilities: &Capabilities) {
-    match backend.snapshot().await {
-        Ok(now) => report(&asked.differences(&now, capabilities)),
-        Err(error) => eprintln!("dsplr: cannot read the displays again: {error}"),
-    }
-}
-
-/// Shows what the desktop did not take as asked, if anything.
-pub fn report(differences: &[Difference]) {
-    if differences.is_empty() {
-        return;
-    }
-    eprintln!("dsplr: the displays show something other than was asked:");
-    for difference in differences {
-        eprintln!("  {difference}");
     }
 }
 
@@ -412,11 +375,9 @@ pub fn is_yes(answer: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use dsplr_model::{
-        Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
-    };
+    use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState};
 
-    use super::{Unbound, bind, is_yes, needs_confirm};
+    use super::{Unbound, bind, is_yes};
 
     fn live_entry(connector: &str, serial: &str) -> OutputEntry {
         OutputEntry {
@@ -563,37 +524,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_change_that_can_hide_or_move_a_screen_is_confirmed() {
-        let current = live();
-        let caps = Capabilities::default();
-        assert!(!needs_confirm(&current, &current, &caps));
-
-        // A difference, but one that moves nothing.
-        let with_primary = Capabilities {
-            primary: true,
-            ..Capabilities::default()
-        };
-        let mut primary = current.clone();
-        primary.entries[0].state.primary = true;
-        assert!(!primary.differences(&current, &with_primary).is_empty());
-        assert!(!needs_confirm(&primary, &current, &with_primary));
-
-        let mut rotated = current.clone();
-        rotated.entries[0].state.transform = Transform::Rotate90;
-        assert!(needs_confirm(&rotated, &current, &caps));
-
-        let mut disabled = current.clone();
-        disabled.entries[1].state.enabled = false;
-        assert!(needs_confirm(&disabled, &current, &caps));
-    }
-
-    #[test]
     fn only_yes_keeps() {
         for yes in ["y", "Y\n", " yes \r\n", "YES"] {
             assert!(is_yes(yes), "{yes:?}");
         }
         for no in ["", "\n", "n", "no", "yess", "sure"] {
             assert!(!is_yes(no), "{no:?}");
+        }
+    }
+
+    /// `docs/plan/07-cli.md`'s codes for each way a change ends.
+    #[test]
+    fn each_outcome_exits_with_its_documented_code() {
+        use dsplr_core::flow::Outcome;
+
+        use super::exit;
+        use crate::Exit;
+
+        let codes = [
+            (Outcome::Kept, Exit::Success),
+            (Outcome::Tested, Exit::Success),
+            (Outcome::Refused, Exit::Refused),
+            (Outcome::BackendRefused, Exit::BackendRefused),
+            (Outcome::Reverted, Exit::Reverted),
+            (Outcome::Failed, Exit::Failure),
+        ];
+        for (outcome, code) in codes {
+            assert_eq!(exit(outcome), code, "{outcome:?}");
         }
     }
 }

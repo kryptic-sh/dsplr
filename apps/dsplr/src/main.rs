@@ -314,19 +314,25 @@ async fn set(output: &str, changes: &set::Changes, args: &ApplyArgs) -> Exit {
 fn apply_options(args: &ApplyArgs) -> Result<apply::Options, Exit> {
     let confirm_timeout = match args.confirm_timeout {
         Some(secs) => Duration::from_secs(secs.get().into()),
-        None => match Config::load() {
-            Ok((config, _)) => config.confirm.timeout(),
-            Err(error) => {
-                eprintln!("dsplr: {error}");
-                return Err(Exit::Failure);
-            }
-        },
+        None => configured_timeout()?,
     };
     Ok(apply::Options {
         yes: args.yes,
         dry_run: args.dry_run,
         confirm_timeout,
     })
+}
+
+/// The confirm timeout `config.toml` sets, or the default; when the config
+/// cannot be read, the error reported and the exit code.
+fn configured_timeout() -> Result<Duration, Exit> {
+    match Config::load() {
+        Ok((config, _)) => Ok(config.confirm.timeout()),
+        Err(error) => {
+            eprintln!("dsplr: {error}");
+            Err(Exit::Failure)
+        }
+    }
 }
 
 /// The displays' current state, or, when they cannot be read, the error

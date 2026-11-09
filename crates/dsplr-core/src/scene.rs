@@ -292,43 +292,16 @@ fn mode_line(state: &OutputState) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use dsplr_model::{Capabilities, Layout, OutputId};
 
     use super::{Size, draw};
-    use crate::fixtures::{owners_machine, three_monitors};
+    use crate::fixtures::{assert_snapshot, owners_machine, three_monitors};
     use crate::{Editor, Point, Snapshot, Theme};
 
     const WINDOW: Size = Size {
         width: 1280.0,
         height: 800.0,
     };
-
-    /// Compares `list`'s text form with `src/snapshots/<name>.txt`. With
-    /// `DSPLR_BLESS` set it writes the file instead, for a change to the
-    /// canvas that is meant, and fails all the same: a run that rewrote its
-    /// snapshots has checked nothing, so it must be run again without it.
-    /// Read the diff before committing the files.
-    fn assert_snapshot(name: &str, actual: &str) {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src/snapshots")
-            .join(format!("{name}.txt"));
-        if std::env::var_os("DSPLR_BLESS").is_some() {
-            std::fs::write(&path, actual).unwrap();
-            panic!(
-                "{name}: snapshot rewritten at {}; re-run without DSPLR_BLESS",
-                path.display()
-            );
-        }
-        let expected = std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-        assert!(
-            actual == expected,
-            "{name}: the draw list differs from {}\n--- actual\n{actual}",
-            path.display()
-        );
-    }
 
     #[test]
     fn the_owners_machine() {

@@ -56,31 +56,44 @@ fn failed(backend: &Backend, error: &Error) -> Exit {
     }
 }
 
+/// Why saving over the file of `conflict` is asked first, one message
+/// each: a file dsplr cannot keep, or edited by hand, or someone else's, and
+/// the settings of the main config it would stop applying.
+pub fn conflict_notes(conflict: &Conflict) -> Vec<String> {
+    let path = conflict.path.display();
+    let mut notes = Vec::new();
+    match (&conflict.unreadable, conflict.ownership) {
+        (Some(reason), _) => notes.push(format!(
+            "{path} holds what dsplr cannot keep, so saving would lose it: {reason}"
+        )),
+        (None, Ownership::EditedByHand) => {
+            notes.push(format!("{path} was edited by hand since dsplr wrote it"));
+        }
+        (None, Ownership::Foreign) => notes.push(format!(
+            "{path} was not written by dsplr (nwg-displays writes one too); dsplr replaces it with its own"
+        )),
+        (None, Ownership::Managed | Ownership::Absent) => {}
+    }
+    if !conflict.shadowed.is_empty() {
+        let mut note = format!(
+            "once {path} is written, these settings of your config stop applying, since its node for the same output comes first and wins whole:"
+        );
+        for each in &conflict.shadowed {
+            note.push_str("\n  ");
+            note.push_str(&each.to_string());
+        }
+        notes.push(note);
+    }
+    notes
+}
+
 /// Shows what saving would change in the file of `conflict`, and whether
 /// the user allows it: `--force`, or for a readable file someone else
 /// wrote, or one whose writing would stop settings of the main config
 /// applying, `--yes` or a yes on the terminal.
 fn allowed(conflict: &Conflict, options: &Options) -> bool {
-    let path = conflict.path.display();
-    match (&conflict.unreadable, conflict.ownership) {
-        (Some(reason), _) => eprintln!(
-            "dsplr: {path} holds what dsplr cannot keep, so saving would lose it: {reason}"
-        ),
-        (None, Ownership::EditedByHand) => {
-            eprintln!("dsplr: {path} was edited by hand since dsplr wrote it");
-        }
-        (None, Ownership::Foreign) => eprintln!(
-            "dsplr: {path} was not written by dsplr (nwg-displays writes one too); dsplr replaces it with its own"
-        ),
-        (None, Ownership::Managed | Ownership::Absent) => {}
-    }
-    if !conflict.shadowed.is_empty() {
-        eprintln!(
-            "dsplr: once {path} is written, these settings of your config stop applying, since its node for the same output comes first and wins whole:"
-        );
-        for each in &conflict.shadowed {
-            eprintln!("  {each}");
-        }
+    for note in conflict_notes(conflict) {
+        eprintln!("dsplr: {note}");
     }
     eprintln!("This is what saving changes in it:");
     eprint!("{}", line_diff(&conflict.existing, &conflict.new));
@@ -91,7 +104,7 @@ fn allowed(conflict: &Conflict, options: &Options) -> bool {
         eprintln!("dsplr: nothing was saved; --force replaces the file");
         return false;
     }
-    replace_allowed(&path.to_string(), options.yes)
+    replace_allowed(&conflict.path.display().to_string(), options.yes)
 }
 
 /// Whether the user allows replacing `what`: `yes` (`--yes`), or a yes on
@@ -130,13 +143,25 @@ fn ask(question: &str) -> bool {
 
 /// Says where the layout went, and what is left for the user to do.
 fn saved(persisted: &Persisted) -> Exit {
-    let Persisted::File(saved) = persisted;
-    eprintln!("dsplr: saved to {}", saved.path.display());
-    for id in &saved.kept {
-        eprintln!("dsplr: kept the settings for {id}, which is not connected now");
+    for message in saved_messages(persisted) {
+        eprintln!("dsplr: {message}");
     }
-    eprint!("{}", include_note(saved));
     Exit::Success
+}
+
+/// Where the layout went, and what is left for the user to do, one message
+/// each.
+pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
+    let Persisted::File(saved) = persisted;
+    let mut messages = vec![format!("saved to {}", saved.path.display())];
+    messages.extend(
+        saved
+            .kept
+            .iter()
+            .map(|id| format!("kept the settings for {id}, which is not connected now")),
+    );
+    messages.extend(include_note(saved));
+    messages
 }
 
 /// What to tell the user about the line their main config needs, and about
@@ -149,7 +174,7 @@ fn saved(persisted: &Persisted) -> Exit {
 /// identifier win at startup over one naming it by connector, wherever each
 /// is, so moving the line does not help with those
 /// ([`Saved::beaten_at_startup`]).
-fn include_note(saved: &Saved) -> String {
+fn include_note(saved: &Saved) -> Vec<String> {
     let (main, line, rules) = (saved.main_config.display(), saved.include_line, saved.rules);
     let (side, past) = if saved.first_wins {
         ("before", "above")
@@ -158,7 +183,7 @@ fn include_note(saved: &Saved) -> String {
     };
     let include = if !saved.included {
         format!(
-            "dsplr: {main} does not seem to load it: add this line to it, {side} any {rules} there (dsplr never edits it):\n  {line}\n"
+            "{main} does not seem to load it: add this line to it, {side} any {rules} there (dsplr never edits it):\n  {line}"
         )
     } else if saved.overridden {
         let (where_, wins) = if saved.first_wins {
@@ -167,10 +192,10 @@ fn include_note(saved: &Saved) -> String {
             ("after", "override")
         };
         format!(
-            "dsplr: {main} has {rules} {where_} {line}, and they {wins} the saved file; move {line} {past} them\n"
+            "{main} has {rules} {where_} {line}, and they {wins} the saved file; move {line} {past} them"
         )
     } else if saved.created {
-        format!("dsplr: {main} already has {line}\n")
+        format!("{main} already has {line}")
     } else {
         String::new()
     };
@@ -183,11 +208,14 @@ fn include_note(saved: &Saved) -> String {
             .map(|name| format!("\"{name}\""))
             .collect();
         format!(
-            "dsplr: {main} sets {} by sway's identifier, and when sway starts that wins over the saved file, which names the output by its connector, wherever {line} goes; remove those output commands, or name the output by its connector there\n",
+            "{main} sets {} by sway's identifier, and when sway starts that wins over the saved file, which names the output by its connector, wherever {line} goes; remove those output commands, or name the output by its connector there",
             names.join(", ")
         )
     };
-    include + &beaten
+    [include, beaten]
+        .into_iter()
+        .filter(|message| !message.is_empty())
+        .collect()
 }
 
 #[cfg(test)]
@@ -196,7 +224,13 @@ mod tests {
 
     use dsplr_persist::managed::Saved;
 
-    use super::include_note;
+    /// The note as the CLI prints it.
+    fn include_note(saved: &Saved) -> String {
+        super::include_note(saved)
+            .iter()
+            .map(|message| format!("dsplr: {message}\n"))
+            .collect()
+    }
 
     fn saved(created: bool, included: bool) -> Saved {
         Saved {

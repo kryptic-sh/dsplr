@@ -371,13 +371,31 @@ milestone:
   for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
-- **The rest of the GUI (M3)**: Apply / Save / Revert / Identify and their
-  `Request`s to the backend thread, the confirm dialogs, the identify overlay,
-  configurable keys, system fonts, the backend thread following the desktop's
-  changes, and reaching the panel's widgets from the keyboard (Tab selects
-  outputs; the widgets take the pointer, and keys only once a field or list is
-  engaged). Listed with what each needs in `docs/plan/06-gui.md` ("Still to
+- **The rest of the GUI (M3)**: the identify overlay and `i`, configurable keys,
+  system fonts, the backend thread following the desktop's changes (it reads
+  them again after each request and on Refresh), reaching the panel's widgets
+  from the keyboard (Tab selects outputs; the widgets take the pointer, and keys
+  only once a field or list is engaged), and a place for the backend thread's
+  messages beyond the last (the bar shows one line, so `dsplr save`'s include
+  note can hide its "saved to"). Listed in `docs/plan/06-gui.md` ("Still to
   build in M3").
+- **The GUI's Replace is `dsplr save --force`**: the CLI asks a yes for a file
+  someone else wrote and needs `--force` for one edited by hand or holding what
+  dsplr cannot keep; the window shows why and the diff in every case and takes
+  Replace (Enter) for all of them, since the user has seen what is lost. Say if
+  the hand-edited case should take a second, stronger answer.
+- **The confirm dialogs match monitors to outputs by logical position**
+  (`dsplr_core::dialog::match_screens`, within a pixel), since crcbl 0.18.0
+  reports no connector name (C3, below). Read in crcbl-shell 0.18.0's
+  `wayland/mod.rs` (`info`): a monitor's position is its `xdg_output` logical
+  position times its scale where the compositor has `xdg_output`, else
+  `wl_output.geometry`'s logical position as it is, without saying which, so
+  `confirm::screen` offers both (the first divided by the scale), first first;
+  its size is the current mode, untransformed, so a turned output's logical size
+  is not it, and size is not compared. Only the `xdg_output` case has run
+  (headless sway). Two outputs at one place (a mirror) name the first; a monitor
+  matching none still gets its dialog, unnamed. Switching to the connector is
+  `confirm::screen` filling `Screen::connector` once released.
 - **Key moves can leave negative positions**: `h j k l` and `H J K L` move one
   output and nothing else, so a nudge left of x 0 leaves it at -10, which
   wlroots and Hyprland take; only a drag's release lifts the layout off negative
@@ -403,29 +421,29 @@ milestone:
   moved one only its pending one (seen 2026-11-10 in headless sway).
   `Layout::validate`'s rule, not the canvas's; marking every output of a
   disconnected group on both sides would need it to say which group is which.
-- **No automated GUI test**: the window was run by hand in
-  `tests/e2e/headless-sway.sh` with
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` (lavapipe), keys sent
-  with `wtype` and screenshots taken with `grim` (2026-11-10): three outputs
-  (one scaled, one disabled in the tray); `Tab`, `Shift+Tab`, `q` and `Escape`;
-  `l` ten times (100 pixels, then an overlap outlined in red and named in the
-  bar), `r` (turned), `+` (1.5 to 1.75), `space` (off, every field but Enabled
-  disabled), `u` (back on), then `q` asking and `y` quitting with exit `0`; no
-  Vulkan driver or no X display gave a clear error and exit `1`. A test doing
-  the same in CI's sway VM needs `vulkan-swrast`, `wtype` and `grim` in the VM's
-  packages, and a held keyboard (below). A click was never sent: no pointer
-  injector (`wlrctl`, `ydotool`) is installed here, so dragging, the panel's
-  drop-downs, checkbox, number and text field, the tooltips, and the pointer
-  position from a pointer-enter (`ShellEvent::PointerFocus`) were never used in
-  a window; the editor, drag and hit-region tests in `dsplr-core` and a build of
-  the panel's tree in `dsplr-gui` cover them. Not covered by any test: a draft
+- **The GUI e2e test is not in CI** (`apps/dsplr/tests/gui_e2e.rs`, ignored): it
+  needs Mesa's lavapipe (`vulkan-swrast`) and `wtype` in the sway VM's packages,
+  and a CI entry running it with
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Green locally under
+  `tests/e2e/headless-sway.sh` (2026-11-10): kept with Enter, timed out, and
+  killed mid-confirm then reverted by the watchdog, each read back with
+  `dsplr list --json`. Run by hand with `grim` screenshots the same day: the
+  dialog on both outputs, each named for its output; Save replacing a foreign
+  `outputs` file after its question (Enter); and the editing keys of the last
+  slice. Not driven by anything, since each needs a click (no pointer injector,
+  `wlrctl` or `ydotool`, is installed): dragging, the panel's drop-downs,
+  checkbox, number and text fields (custom mode, profile name), the profile
+  picker and Restore, the Revert and Refresh buttons, the dialogs' own Keep and
+  Revert buttons, the tooltips, and the pointer position from a pointer-enter.
+  They are covered by `dsplr-core`'s editor, hit-region, flow and dialog tests,
+  a build of the panel's tree, and the window's key and request tests against
+  crcbl's headless shell; Revert and profile restore run the CLI's own
+  `restore::revert` and `apply::bind`. Not covered by any test: a draft
   committed to the output it was typed for when a canvas click moves the
   selection (`follow_selection` is tested for the reset, `Drafts::commits` on
-  its own; engaging a field needs a click on it), a panel click ignored behind
-  the quit prompt, and two navigation keys in one batch each getting a frame (an
-  open drop-down needs a click). A batch of canvas keys acting once each is
-  tested (`window::tests`, against crcbl's headless shell). Not run on niri,
-  Hyprland or X11.
+  its own), a panel click ignored behind the quit prompt or the dialogs, and two
+  navigation keys in one batch each getting a frame. Not run on niri, Hyprland
+  or X11, and the dialogs' X11 override-redirect panels never.
 - **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
   since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
   call; it is not in 0.18.0, which dsplr now builds on).

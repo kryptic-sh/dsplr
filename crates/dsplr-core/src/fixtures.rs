@@ -4,6 +4,8 @@ use dsplr_model::{
     AdaptiveSync, Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
 };
 
+use std::path::PathBuf;
+
 use crate::Snapshot;
 
 pub fn output(connector: &str, description: &str, modes: Vec<Mode>) -> Output {
@@ -121,4 +123,29 @@ pub fn three_monitors() -> Snapshot {
             ],
         },
     }
+}
+
+/// Compares a draw list's text form with `src/snapshots/<name>.txt`. With
+/// `DSPLR_BLESS` set it writes the file instead, for a change to the
+/// canvas that is meant, and fails all the same: a run that rewrote its
+/// snapshots has checked nothing, so it must be run again without it.
+/// Read the diff before committing the files.
+pub fn assert_snapshot(name: &str, actual: &str) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/snapshots")
+        .join(format!("{name}.txt"));
+    if std::env::var_os("DSPLR_BLESS").is_some() {
+        std::fs::write(&path, actual).unwrap();
+        panic!(
+            "{name}: snapshot rewritten at {}; re-run without DSPLR_BLESS",
+            path.display()
+        );
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert!(
+        actual == expected,
+        "{name}: the draw list differs from {}\n--- actual\n{actual}",
+        path.display()
+    );
 }
