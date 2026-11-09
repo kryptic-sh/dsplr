@@ -3,7 +3,7 @@
 Work raised and not finished, decisions still open, and gaps in what has been
 verified. Delete an entry when it ships; `git log` keeps the history.
 
-## Where the project stands (2026-11-04)
+## Where the project stands (2026-11-09)
 
 M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
@@ -22,15 +22,13 @@ re-read until the layout settles, ask, then keep or revert;
 `dsplr restore --revert` goes back by hand. `apps/dsplr/tests/hyprland_e2e.rs`
 drives `dsplr apply` in the headless harness, locally and in CI's VM: kept with
 `--yes` then reverted by hand, declined, timed out, and dsplr killed at the
-prompt so its watchdog reverts. Not written yet: `dsplr set` and saving. The
-Windows session owns the CLI, model and persist crates; the Linux session the
-backend and their e2e coverage.
+prompt so its watchdog reverts. Not written yet: `dsplr set` and saving.
 
-Two sessions work on it, each owning crates: the Linux session owns
-`dsplr-backend`, `dsplr-gui` and the Linux e2e CI; the Windows session owns
-`dsplr-model`, `dsplr-persist`, `dsplr-core`, `dsplr-config` and the CLI wiring
-in `apps/dsplr`. Changes to shared files (workspace manifest, lockfile, CI, root
-config, `docs/`) are agreed between them first.
+Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
+call; the "Linux-owned" and "Windows-owned" headings below keep the old split
+only as a way to group the work. The Hyprland e2e needs `kwin_wayland` to nest
+Hyprland in; the owner's machine has none installed (2026-11-09), so there it
+runs only in CI's VM.
 
 ## Decisions waiting on the owner
 
@@ -100,12 +98,6 @@ milestone:
   signature, with a Miri test. That is a breaking change to the generated API:
   when the crcbl release lands, bump every crcbl crate and have dsplr's
   dispatcher in `wlr::connection` build the slice (crcbl will send the helper).
-- **Tell crcbl its configuration path works from outside**: dsplr's `wlr`
-  backend ran `zwlr_output_configuration_v1` `test` and `apply` through
-  `crcbl-wayland` 0.17.2 and `crcbl-wl-scanner` output against headless sway
-  1.12 and got `succeeded`, `failed` and `cancelled` each as the protocol says;
-  nothing broke, and valgrind found no memory errors over the e2e (2026-11-09).
-  crcbl's backlog keeps a matching entry that this closes; not sent yet.
 - **e2e for the other desktops**: each backend (M5 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`. niri has no
@@ -214,15 +206,6 @@ several RandR outputs; whether an `eval` of `hl.monitor` survives a protocol
 apply; KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
 backend's milestone.
 
-- **Neither the Hyprland e2e nor CI's new `sway` e2e entry has run yet for the
-  `wlr` slice** (2026-11-09), until CI runs them. The machine that wrote it has
-  no `kwin_wayland`, which the Hyprland harness nests Hyprland in. The slice
-  moved the Hyprland tests' shared helpers into `tests/e2e/support.rs`, gave
-  Hyprland a `test` that returns `Unsupported`, added a `--dry-run` step to
-  `apps/dsplr/tests/hyprland_e2e.rs` ("validated locally only") and lengthened
-  its `WATCHDOG_WAIT` for the longer watchdog delay; all of it compiles, none of
-  it has run. The sway e2e ran locally under `tests/e2e/headless-sway.sh`, not
-  in the CI VM.
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
   before the panic message. The next 27 runs passed, including one that
