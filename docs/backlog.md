@@ -428,28 +428,27 @@ milestone:
   Hyprland or X11.
 - **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
   since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
-  call). `MonitorInfo::connector: Option<String>` is `Some` from
-  `wl_output.name`, else (below `wl_output` v4) `zxdg_output_v1.name`, and on
-  X11 the RandR output name; `None` for crcbl's made-up names (`wl-output-N`,
-  `output-N`, `CRTC-N`, `screen` without RandR) and on Win32, AppKit, web and
-  headless. A late `wl_output.name` republishes with `MonitorsChanged`. Caveats
-  for matching against wlr-output-management's `head.name`: Xvfb's real RandR
-  output is named `screen`, and RandR 1.0 emulation reports `default`, which no
-  head matches. It is a new public field, so `MonitorInfo { .. }` literals need
-  it. Needed for the identify overlay and the per-output confirm dialogs.
-- **crcbl 0.18.0 (tagged 2026-11-10) fixes `crcbl-wl-scanner`'s
-  `decode_event`**, which read past its borrow: the generated
-  `decode_event(opcode, args: &WlArgument)` turned the reference to one slot
-  into a pointer and read `args.add(1..)`, outside that reference's provenance
-  under Stacked Borrows. The new API:
-  `decode_event<'a>(opcode, args: &'a [WlArgument])` (a short slice gives
-  `None`), and `crcbl_wayland::ffi::with_dispatcher_args(message, args, f)`,
-  which sizes the slice from the message signature and takes a closure for every
-  lifetime, so decoded strings must be copied out inside it. Once 0.18.0 is on
-  crates.io: bump every crcbl crate with `cargo add`, and have
-  `wlr::connection`'s dispatcher decode inside `with_dispatcher_args`, as
-  crcbl's `crcbl-wayland-probe` `outputs.rs` `dispatch` does. C3 is not in
-  0.18.0.
+  call; it is not in 0.18.0, which dsplr now builds on).
+  `MonitorInfo::connector: Option<String>` is `Some` from `wl_output.name`, else
+  (below `wl_output` v4) `zxdg_output_v1.name`, and on X11 the RandR output
+  name; `None` for crcbl's made-up names (`wl-output-N`, `output-N`, `CRTC-N`,
+  `screen` without RandR) and on Win32, AppKit, web and headless. A late
+  `wl_output.name` republishes with `MonitorsChanged`. Caveats for matching
+  against wlr-output-management's `head.name`: Xvfb's real RandR output is named
+  `screen`, and RandR 1.0 emulation reports `default`, which no head matches. It
+  is a new public field, so `MonitorInfo { .. }` literals need it. Needed for
+  the identify overlay and the per-output confirm dialogs.
+- **No Miri in dsplr's CI**: the `wlr` dispatcher's decoding
+  (`wlr::connection::tests`, hand-built argument arrays decoded through
+  `crcbl_wayland::ffi::with_dispatcher_args`) passed under Miri locally
+  (`cargo +nightly miri test -p dsplr-backend --lib wlr::connection`,
+  2026-11-10, nightly miri of 2026-09-09), and Miri reported a Stacked Borrows
+  violation when the slice was built from a reference to the first slot, the old
+  bug's shape. `dispatch` itself needs a loaded libwayland, which Miri cannot
+  `dlopen`, so it is covered by the e2e tests only. crcbl runs the same kind of
+  check weekly (`cron.yml`'s `miri` job); a dsplr job for these four tests would
+  take seconds plus a nightly toolchain. Not added: a CI job is the owner's
+  call.
 - **e2e for the other desktops**: each backend (M5 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`, and
@@ -585,7 +584,7 @@ From the plan review (2026-11-04), each checked against its source:
   round.
 
 crcbl's tree was read at source level for the needs in `docs/plan/06-gui.md`;
-the main window is built on crcbl 0.17.2 (C1 on Wayland, the canvas of C6), and
+the main window is built on crcbl 0.18.0 (C1 on Wayland, the canvas of C6), and
 the table there says which needs are confirmed.
 
 ## Not verified (stated as gaps)

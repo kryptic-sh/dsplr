@@ -630,7 +630,7 @@ unsafe extern "C" fn dispatch(
     user_data: *const c_void,
     target: *mut c_void,
     opcode: u32,
-    _message: *const WlMessage,
+    message: *const WlMessage,
     args: *mut WlArgument,
 ) -> c_int {
     // SAFETY: `user_data` is `State::root`, live while any proxy is, and no
@@ -641,13 +641,11 @@ unsafe extern "C" fn dispatch(
     let Some(kind) = state.kind_of(proxy) else {
         return 0;
     };
-    // SAFETY: libwayland passes the closure's argument array, live for this
-    // call.
-    let args = unsafe { &*args.cast_const() };
     // SAFETY (each decoder): `kind` is the interface the proxy was created
     // as, so `args` is that interface's array for `opcode`, and every borrow
-    // is copied out before returning.
-    match kind {
+    // is copied out inside the closure, which is as far as the slice can
+    // reach.
+    let decode = |args: &[WlArgument]| match kind {
         Kind::Registry => {
             if let Some(wl_registry::Event::Global {
                 name,
@@ -732,7 +730,10 @@ unsafe extern "C" fn dispatch(
         }
         // Head configurations have no events.
         Kind::ConfigurationHead => {}
-    }
+    };
+    // SAFETY: `message` and `args` are the descriptor and closure argument
+    // array libwayland passed this dispatcher, unchanged while it runs.
+    unsafe { ffi::with_dispatcher_args(message, args, decode) };
     0
 }
 
@@ -791,5 +792,109 @@ fn head_event(
                 Event::Mode { .. } | Event::CurrentMode { .. } | Event::Finished => {}
             }
         }
+    }
+}
+
+/// The decoding [`dispatch`] does, on argument arrays built by hand as
+/// libwayland hands them over: every event it reads with more than one
+/// argument, and a string. `dispatch` itself needs a loaded libwayland, so
+/// these are what Miri can interpret (`cargo +nightly miri test -p
+/// dsplr-backend --lib wlr::connection`), as crcbl's own job does for its
+/// decoders: a slot read outside the slice's provenance is reported there,
+/// where a native run cannot tell it from a correct one.
+#[cfg(test)]
+mod tests {
+    use core::ffi::CStr;
+    use core::ptr;
+
+    use crcbl_wayland::ffi::{self, WlArgument, WlMessage};
+
+    use super::{wl_registry, zwlr_output_head_v1, zwlr_output_mode_v1};
+
+    /// Runs `f` on `slots` as libwayland hands a dispatcher an event whose
+    /// signature is `signature`.
+    fn dispatched<R>(
+        signature: &'static CStr,
+        slots: &mut [WlArgument],
+        f: impl for<'a> FnOnce(&'a [WlArgument]) -> R,
+    ) -> R {
+        let message = WlMessage::new(c"event", signature, ptr::null());
+        // SAFETY: each caller's `signature` names no more slots than `slots`
+        // holds, all initialised, and nothing touches them while `f` runs.
+        unsafe { ffi::with_dispatcher_args(&raw const message, slots.as_mut_ptr(), f) }
+    }
+
+    #[test]
+    fn a_registry_global_decodes_all_three_arguments() {
+        let mut slots = [
+            WlArgument { u: 7 },
+            WlArgument {
+                s: c"zwlr_output_manager_v1".as_ptr(),
+            },
+            WlArgument { u: 4 },
+        ];
+        let global = dispatched(c"usu", &mut slots, |args| {
+            // SAFETY: `args` is a `wl_registry.global` array.
+            match unsafe { wl_registry::decode_event(0, args) } {
+                Some(wl_registry::Event::Global {
+                    name,
+                    interface,
+                    version,
+                }) => Some((name, interface.to_owned(), version)),
+                _ => None,
+            }
+        });
+        assert_eq!(global, Some((7, c"zwlr_output_manager_v1".to_owned(), 4)));
+    }
+
+    #[test]
+    fn head_and_mode_events_decode_their_second_argument() {
+        let mut slots = [WlArgument { i: -1920 }, WlArgument { i: 360 }];
+        let position = dispatched(c"ii", &mut slots, |args| {
+            // SAFETY: `args` is a `zwlr_output_head_v1.position` array.
+            match unsafe { zwlr_output_head_v1::decode_event(6, args) } {
+                Some(zwlr_output_head_v1::Event::Position { x, y }) => Some((x, y)),
+                _ => None,
+            }
+        });
+        assert_eq!(position, Some((-1920, 360)));
+
+        let mut slots = [WlArgument { i: 2560 }, WlArgument { i: 1440 }];
+        let size = dispatched(c"ii", &mut slots, |args| {
+            // SAFETY: `args` is a `zwlr_output_mode_v1.size` array.
+            match unsafe { zwlr_output_mode_v1::decode_event(0, args) } {
+                Some(zwlr_output_mode_v1::Event::Size { width, height }) => Some((width, height)),
+                _ => None,
+            }
+        });
+        assert_eq!(size, Some((2560, 1440)));
+    }
+
+    #[test]
+    fn a_string_is_copied_out_inside_the_call() {
+        let mut slots = [WlArgument {
+            s: c"HDMI-A-1".as_ptr(),
+        }];
+        let name = dispatched(c"s", &mut slots, |args| {
+            // SAFETY: `args` is a `zwlr_output_head_v1.name` array.
+            match unsafe { zwlr_output_head_v1::decode_event(0, args) } {
+                Some(zwlr_output_head_v1::Event::Name { name }) => {
+                    Some(name.to_string_lossy().into_owned())
+                }
+                _ => None,
+            }
+        });
+        assert_eq!(name.as_deref(), Some("HDMI-A-1"));
+    }
+
+    #[test]
+    fn an_array_shorter_than_the_event_decodes_to_nothing() {
+        let mut slots = [WlArgument { i: 2560 }];
+        let size = dispatched(c"i", &mut slots, |args| {
+            // SAFETY: a one-slot array, which the decoder must decline for
+            // the two-argument `size`.
+            unsafe { zwlr_output_mode_v1::decode_event(0, args) }.is_some()
+        });
+        assert!(!size);
     }
 }
