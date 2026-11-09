@@ -12,8 +12,10 @@ use super::{
     OutputsBlock, SETTINGS, WriteError, identifier, names, output_blocks, output_name,
     read_outputs, words,
 };
+use crate::identity;
 use crate::managed::{
-    Comment, FileError, NO_CONFIG_DIR, Saved, paths, read_existing, replace, with_header,
+    Comment, FileError, NO_CONFIG_DIR, Saved, config_home, home, paths, read_existing, replace,
+    with_header,
 };
 
 /// The file dsplr writes, beside the main config.
@@ -103,6 +105,7 @@ pub fn save(
         new,
         approved,
         Comment::Hash,
+        Vec::new(),
     )?;
     let commands = commands(&main);
     let include = commands
@@ -117,6 +120,7 @@ pub fn save(
         main_config,
         include_line: INCLUDE_LINE,
         rules: "output commands",
+        first_wins: false,
         kept: kept_ids(&kept),
     })
 }
@@ -125,41 +129,24 @@ pub fn save(
 /// the catch-alls `*`, `-` and `--` (every output, the focused one), which
 /// are carried over the same way but are no monitor of their own.
 fn kept_ids(kept: &[OutputsBlock]) -> Vec<OutputId> {
-    let mut ids = Vec::new();
-    for block in kept {
-        if ["*", "-", "--"].contains(&block.name.as_str()) {
-            continue;
-        }
-        let id = if block.name.contains(char::is_whitespace) {
-            OutputId::Description(block.name.clone())
-        } else {
-            OutputId::Connector(block.name.clone())
-        };
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    ids
+    identity::kept_ids(
+        kept.iter()
+            .map(|block| block.name.as_str())
+            .filter(|name| !["*", "-", "--"].contains(name)),
+    )
 }
 
 /// The config sway reads, found as sway(1) (sway 1.12) says sway finds it:
 /// `~/.sway/config`, `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config`,
 /// `$XDG_CONFIG_HOME/i3/config`, the first that exists, with
-/// `XDG_CONFIG_HOME` defaulting to `~/.config`. A relative `HOME` or
-/// `XDG_CONFIG_HOME` is not used (the XDG base directory spec ignores a
-/// relative one).
+/// `XDG_CONFIG_HOME` defaulting to `~/.config` ([`config_home`]).
 ///
 /// Not followed: `sway --config`, which nothing outside sway can see, and
 /// `/etc/sway/config` and `/etc/i3/config`, which are not the user's to
 /// write beside.
 fn find_config(var: &impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, SaveError> {
-    let home = var("HOME")
-        .map(PathBuf::from)
-        .filter(|home| home.is_absolute());
-    let config_home = var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .or_else(|| home.as_ref().map(|home| home.join(".config")));
+    let home = home(var);
+    let config_home = config_home(var);
     let looked: Vec<PathBuf> = [
         home.as_ref().map(|home| home.join(".sway/config")),
         config_home.as_ref().map(|dir| dir.join("sway/config")),

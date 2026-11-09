@@ -4,8 +4,7 @@
 //! (`systemctl --user import-environment`) can hand a stale one to a later
 //! session under another compositor.
 
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
@@ -29,13 +28,10 @@ pub fn answers(socket: &Path, timeout: Duration) -> bool {
 /// sway's and of that type. Lengths and types are in the host's byte order
 /// (sway-ipc(7)).
 fn get_version(socket: &Path, timeout: Duration) -> std::io::Result<bool> {
-    let mut stream = UnixStream::connect(socket)?;
-    stream.set_write_timeout(Some(timeout))?;
-    stream.set_read_timeout(Some(timeout))?;
     let mut request = MAGIC.to_vec();
     request.extend(0_u32.to_ne_bytes());
     request.extend(GET_VERSION.to_ne_bytes());
-    stream.write_all(&request)?;
+    let mut stream = super::ipc::send(socket, timeout, &request)?;
     let mut header = [0_u8; 14];
     stream.read_exact(&mut header)?;
     let (magic, rest) = header.split_at(MAGIC.len());
@@ -43,7 +39,7 @@ fn get_version(socket: &Path, timeout: Duration) -> std::io::Result<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
     use std::path::Path;
@@ -55,20 +51,27 @@ mod tests {
     /// that a stalled one does not slow the suite.
     const TIMEOUT: Duration = Duration::from_millis(200);
 
-    /// A socket at `path` that reads one request and answers `reply`.
-    fn serve(path: &Path, reply: Vec<u8>) {
+    /// A socket at `path` that answers `reply` to the first connection
+    /// sending a request, passing over any that hang up first (as one
+    /// asking only which process serves the socket does).
+    pub(in crate::wlr) fn serve(path: &Path, reply: Vec<u8>) {
         let listener = UnixListener::bind(path).expect("bind");
         std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut request = [0_u8; 14];
-            stream.read_exact(&mut request).expect("request");
-            assert_eq!(&request[..6], MAGIC);
-            assert_eq!(request[10..], GET_VERSION.to_ne_bytes());
-            stream.write_all(&reply).expect("reply");
+            loop {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = [0_u8; 14];
+                if stream.read_exact(&mut request).is_err() {
+                    continue;
+                }
+                assert_eq!(&request[..6], MAGIC);
+                assert_eq!(request[10..], GET_VERSION.to_ne_bytes());
+                stream.write_all(&reply).expect("reply");
+                break;
+            }
         });
     }
 
-    fn message(magic: &[u8], kind: u32, payload: &[u8]) -> Vec<u8> {
+    pub(in crate::wlr) fn message(magic: &[u8], kind: u32, payload: &[u8]) -> Vec<u8> {
         let mut message = magic.to_vec();
         message.extend(u32::try_from(payload.len()).unwrap().to_ne_bytes());
         message.extend(kind.to_ne_bytes());

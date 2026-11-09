@@ -37,6 +37,11 @@ both in one harness in either order. dsplr's profile store
 `dsplr profile list|show|rm`) is written, and `apps/dsplr/tests/sway_e2e.rs`
 saves, moves, restores (picked and by name) and removes profiles on headless
 sway 1.12 (2026-11-10). Saving under a hyprlang config is declined (below).
+`wlr` works on niri 26.04, and `dsplr save` on niri writes `outputs.kdl` beside
+niri's config (`dsplr_persist::niri::save`); both niri e2e tests
+(`tests/e2e/headless-niri.sh`, niri nested in a headless sway) are green locally
+(2026-11-10), each alone and both in one harness in either order. The CI job is
+added and has not run yet.
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -72,9 +77,9 @@ milestone:
   - `--force` also replaces another tool's file without asking, as it overwrites
     anything; `--yes` replaces only a readable file another tool wrote.
   - Exit codes: `3` when the backend cannot save at all (`Unsupported`: a
-    hyprlang config, a wlroots compositor other than sway, a layout with a
-    mirror on sway), as dsplr declining before writing (changed from `4` on
-    2026-11-09, when `4` became the desktop's refusal only); `1` when nothing
+    hyprlang config, a wlroots compositor other than sway and niri, a layout
+    with a mirror on sway), as dsplr declining before writing (changed from `4`
+    on 2026-11-09, when `4` became the desktop's refusal only); `1` when nothing
     was saved because a file needs `--force`, the user said no, there was no
     terminal to ask on, or a file could not be read or written.
   - Saving prints its messages, the diff and the `require` line on stderr, as
@@ -91,15 +96,18 @@ milestone:
     cost: with `~/.sway/config` or `~/.i3/config` the file lands in `~/.sway/`
     or `~/.i3/`.
   - It is sway when the socket `SWAYSOCK` names answers sway's IPC `GET_VERSION`
-    (`Wlr::is_sway`, asked by `persist` and `dsplr backend` only, not at
+    (`Wlr::compositor`, asked by `persist` and `dsplr backend` only, not at
     detection; `wlr::sway::answers`), so a stale `SWAYSOCK` that a session
     manager imported does not count. `Capabilities::native_persistence` on `wlr`
     is only "`SWAYSOCK` is set", since every command reads capabilities;
     `Backend::native_persistence` is the checked answer, and the GUI will want
-    that one. Still taken for sway: another compositor whose environment holds
-    the `SWAYSOCK` of a sway that is still running (one nested inside sway, or a
-    sway on another seat). Comparing sway's `get_outputs` with the
-    wlr-output-management heads would tell them apart; not done.
+    that one. Since 2026-11-10 the socket also has to be served by the process
+    serving the Wayland socket (`Wlr::compositor`, `SO_PEERCRED` pids through
+    tokio's `UnixStream::peer_cred`), so a compositor nested in sway, or one
+    whose environment holds a running sway's `SWAYSOCK`, is not taken for sway.
+    A compositor behind a Wayland proxy (waypipe, a sandbox's security context)
+    shows the proxy's pid, so there saving is refused, not misdirected. Not seen
+    behind a proxy.
   - Two connected monitors with the same identifier, and a monitor whose
     identifier holds a quote, a backslash or a `$`, are written by connector.
   - A monitor without a serial is named by connector, as `OutputId` keeps it,
@@ -116,6 +124,42 @@ milestone:
     need `--force`. nwg-displays writes a sway `outputs` too, and if it writes
     settings dsplr does not (`scale_filter`, `power`; not checked against
     nwg-displays itself), replacing its file takes `--force`.
+
+- **`dsplr save` on niri, decided while building it (2026-11-10); confirm or
+  change**:
+  - `outputs.kdl` goes beside the config niri reads, and the line to add is
+    `include "outputs.kdl"`, **before** the config's own `output` nodes, since
+    niri uses the first node naming an output (the opposite of sway and
+    Hyprland; `Saved::first_wins` tells the CLI which). The plain form is the
+    one printed, not `include optional=true "outputs.kdl"`: after a save the
+    file exists, and an older niri may not take `optional`. Either is recognised
+    as including it.
+  - It is niri when `NIRI_SOCKET`'s socket answers `Version` and is served by
+    the process serving the Wayland socket, as for sway above.
+  - On niri, `Backend::persist` refuses a layout other than the one on screen
+    (exit `3`), since writing the file applies it; it became `async` to read the
+    outputs again (`Backend::native_persistence` and `Wlr::compositor` too, for
+    the pid check).
+  - The main config's own `output` nodes after the include, for a connected
+    output, that set what dsplr does not write make the save a `Conflict`
+    (`Conflict::shadowed`, with `Ownership::Absent` when there is no file yet)
+    that takes a yes, not `--force`: nothing in a file is lost, the settings
+    stop applying. It asks on every save while those nodes are there; moving
+    those settings into a node before the include (and the rest into dsplr's
+    file) is the way out, and dsplr does not say that yet.
+  - `AdaptiveSync::Automatic` is written as
+    `variable-refresh-rate on-demand=true` (niri turns VRR on for windows that
+    ask for it), the nearest niri has to "the desktop decides". No snapshot
+    reads it (wlr-output-management has only on and off), so today only a layout
+    file reaches it, and `dsplr save` writes snapshots. The other choice was
+    refusing it, as sway does.
+  - `wlr` still claims `test_before_apply` on niri, whose `test` checks only
+    that one output stays on (`docs/plan/04-backends.md`); a layout niri cannot
+    take is then caught by the apply and the re-read, not the test. Treating
+    niri's test as Hyprland's (`Unsupported`, step skipped) would say so
+    honestly, at the cost of the protocol-level checks it does make (an unlisted
+    mode, a scale of 0) moving to the apply.
+  - A `NoConfig` on niri exits `1`, as on sway and Hyprland.
 
 - **The profile store, decided while building it (2026-11-10); confirm or
   change**:
@@ -196,10 +240,10 @@ milestone:
   round the asked scale to what the backend can hold before applying, or let the
   backend give the comparison its own tolerance; the model is the Windows
   session's, so agree which.
-- **`wlr` on other compositors**: only sway 1.12 (headless) has been run. niri,
-  river, labwc and Wayfire are expected to work through the same protocol and
-  are not checked; COSMIC's own extension and whether it saves outputs itself
-  are still M4's to check (`docs/plan/04-backends.md`).
+- **`wlr` on other compositors**: sway 1.12 (headless) and niri 26.04 (nested)
+  have been run. river, labwc and Wayfire are expected to work through the same
+  protocol and are not checked; COSMIC's own extension and whether it saves
+  outputs itself are still M4's to check (`docs/plan/04-backends.md`).
 - **The save e2e has not run.**
   `a_saved_layout_is_what_hyprland_reads_back_after_a_reload`
   (`crates/dsplr-backend/tests/hyprland_e2e.rs`) and
@@ -262,6 +306,44 @@ milestone:
   `mode --custom` for an unlisted mode on a DRM output, `adaptive_sync` taking
   effect, and a quoted identifier holding punctuation such as a comma
   (`"Dell, Inc. …"`) are unchecked.
+- **niri not seen on real hardware**: the nested `winit` output takes only a
+  scale and a position, so a saved `mode` (niri picks a DRM mode by exact
+  millihertz after rounding the written refresh, by a reading of v26.04's
+  source, not observed), `mode custom=true`, `transform` (names taken from
+  niri's source, not read back), `variable-refresh-rate` and `off` have been
+  checked only by `niri validate` and golden tests. A monitor with a serial
+  named by its identifier, and nodes kept for outputs not connected, ran in unit
+  tests only: the nested niri has one output and no serial.
+- **What `dsplr save` cannot see on niri**: `niri --config`, and
+  `/etc/niri/config.kdl`. It reads its own environment, not niri's (a
+  `NIRI_CONFIG` niri was started with and dsplr's shell lacks). Whether the
+  config includes `outputs.kdl`, and whether its own `output` nodes come first,
+  is read line by line (`niri::save::top_level`): a `/* */` comment, a string
+  spanning lines, a node continued with `\`, or an include inside an included
+  file is misjudged: the message after the save, and which of the config's
+  `output` nodes the save asks about hiding.
+- **niri's on-demand VRR is kept only while it reads as on**:
+  `variable-refresh-rate on-demand=true` reads through wlr-output-management as
+  whatever VRR is doing at that moment, and niri's IPC shows only `vrr_enabled`.
+  A save keeps `on-demand=true` from the old saved node when the output reads as
+  on; when it reads as off (no window asking for VRR), it is written off and
+  lost, since dsplr cannot tell that from VRR turned off with
+  `dsplr set --vrr off`. And one turned always-on with `dsplr set --vrr on`
+  after an on-demand save is written on demand again. Which is what niri's
+  wlr-output-management reports for an on-demand output was not seen: the nested
+  `winit` output has no VRR. The main config's own on-demand nodes are asked
+  about instead (above).
+- **niri facts are niri 26.04's**: the KDL form (KDL 1, quoted names), the first
+  node winning whole, writing the file applying it, and `succeeded` followed by
+  `cancelled` were all seen on niri 26.04 only. CI installs whatever Arch ships,
+  so a niri update can break them; the harness prints `niri --version` first, so
+  a CI failure after an update shows which niri it was.
+- **A saved niri scale is the 256th the protocol carried**: the scale arrives as
+  a `wl_fixed` (steps of 1/256), so one niri holds as `1.333333` reads back
+  rounded to a 256th, and `dsplr save` writes that, which niri then applies on
+  its reload (the same rounding as the `wlr` apply entry above). Reading the
+  scale from niri's IPC (`logical.scale`, a float) would keep it exact; not
+  done, and the rounding was not observed on niri.
 - **Hyprland has no fallback for two monitors with one description**: the sway
   writer names them by connector, but `monitors.lua` would get two `desc:` rules
   with the same text, and Hyprland would apply the last to both. Not fixed; the
@@ -301,9 +383,8 @@ milestone:
   `outputs.rs` `dispatch` does.
 - **e2e for the other desktops**: each backend (M5 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry, as
-  `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`. niri has no
-  headless mode of its own; nest it (winit) in a headless sway, which was
-  verified for the lyr project.
+  `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`, and
+  `headless-niri.sh` and the `niri` entry for `wlr` on niri.
 
 ## Open work in the Windows-owned crates
 
@@ -438,12 +519,11 @@ crcbl's tree was read at source level only for the needs in
 
 Reported correct by the plan review but not rechecked by hand: the
 `ApplyMonitorsConfig` method values and `layout-mode` semantics (Mutter's
-DisplayConfig XML), niri `include` support and its `zwlr_output_manager_v1`
-offer (niri 26.04 binary strings), sway's `adaptive_sync` taking effect (a
-headless output accepts it and stays off), and the `hl.monitor` field names
-(Hyprland wiki). sway's `include` was checked on headless sway 1.12
-(2026-11-10): a relative path, `~`, `$HOME`, `$XDG_CONFIG_HOME` and an absolute
-path load; a quoted absolute path with a space in it does not.
+DisplayConfig XML), sway's `adaptive_sync` taking effect (a headless output
+accepts it and stays off), and the `hl.monitor` field names (Hyprland wiki).
+sway's `include` was checked on headless sway 1.12 (2026-11-10): a relative
+path, `~`, `$HOME`, `$XDG_CONFIG_HOME` and an absolute path load; a quoted
+absolute path with a space in it does not.
 
 Not verified by anyone: that KWin saves on every protocol apply; that Mutter
 reports `vendor` as a PNP code (why `OutputId` normalises make from the EDID);

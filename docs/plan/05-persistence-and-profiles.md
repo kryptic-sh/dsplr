@@ -49,11 +49,11 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
 
 ## wlroots compositors
 
-| Compositor                    | Native persistence                                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------- |
-| sway                          | `outputs` beside the sway config, with `output … { … }` blocks, `include outputs` from that config  |
-| niri                          | a managed `outputs.kdl`, if the niri version supports `include`; else dsplr's store (checked at M4) |
-| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore --yes` from the compositor's autostart                            |
+| Compositor                    | Native persistence                                                                                                                        |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| sway                          | `outputs` beside the sway config, with `output … { … }` blocks, `include outputs` from that config                                        |
+| niri                          | `outputs.kdl` beside niri's config, with `output "…" { … }` nodes, `include "outputs.kdl"` from that config before its own `output` nodes |
+| river, labwc, Wayfire, others | dsplr's store plus `dsplr restore --yes` from the compositor's autostart                                                                  |
 
 ### sway
 
@@ -69,8 +69,10 @@ the saved file.
   `output DP-1 scale 2` starts at 1.5 and reloads to 2). Everything below is
   arranged so the saved block wins both ways.
 - The `wlr` backend saves only when the socket `SWAYSOCK` names answers sway's
-  IPC (`GET_VERSION`), so a stale `SWAYSOCK` left in a session manager's
-  environment does not count; on any other wlroots compositor `persist` is
+  IPC (`GET_VERSION`) from the process serving the Wayland socket (their
+  `SO_PEERCRED` pids), so a stale `SWAYSOCK` left in a session manager's
+  environment, or one a compositor nested in sway inherited, does not count; on
+  any wlroots compositor other than sway and niri ([below](#niri)) `persist` is
   `Unsupported` (exit `3`), and its message points at `dsplr save --profile` and
   `dsplr restore --yes` from the compositor's autostart. The socket is asked
   only by `persist` and `dsplr backend`, not at detection, so a socket that
@@ -117,6 +119,94 @@ the saved file.
   wherever the `include` is, so the fix is to remove it or name the output by
   connector there. The second is looked for even when the config does not
   include the file yet.
+
+### niri
+
+Written (`dsplr_persist::niri`), and checked on niri 26.04 nested (winit) in a
+headless sway 1.12 (2026-11-10, `tests/e2e/headless-niri.sh`): by saving and
+watching niri apply the file, changing the output at runtime and starting a
+second niri on the saved file, and by `niri validate` on what was written.
+
+- **`include` works** in niri 26.04: `niri validate -c` accepts a config with
+  `include "outputs.kdl"` and reads the included `output` nodes, rejects a
+  missing file unless the include has `optional=true`, and rejects an invalid
+  node in the included file as an error of the whole config. A relative path is
+  read from the including file's directory. niri watches included files too: an
+  `outputs.kdl` written after niri started, behind an `optional=true` include,
+  was applied within two seconds.
+- **How niri 26.04 picks an output's settings** (nested, 2026-11-10): the
+  **first** `output` node naming an output wins, whole; a later node for it, in
+  the same file or the main config, is not merged in (a later `position` did not
+  apply on top of an earlier `scale`). So the line to add is
+  `include "outputs.kdl"` **before** the config's own `output` nodes, and dsplr
+  says when one of those for a connected output comes before the include
+  (`Saved::overridden`, `Saved::first_wins`). A node after it is hidden whole,
+  so its other settings stop applying for that output: when such a node, for a
+  connected output, sets anything dsplr does not write (`focus-at-startup`,
+  `backdrop-color`, `variable-refresh-rate on-demand=true`), the save is a
+  `Conflict` listing them (`Conflict::shadowed`) that takes a yes, file or no
+  file (`Ownership::Absent`). With no include yet every such node counts, since
+  the include goes before them. Seen nested: with the saved node present, a
+  scale written there showed over the config's own node's.
+- A setting a node leaves out takes niri's default, not its runtime value: with
+  no node an output went back to scale 1 at the origin. Every setting is stated:
+  `off` alone, or `mode`, `scale`, `transform`, `position`, and
+  `variable-refresh-rate` when on (`on-demand=true` when automatic); off is
+  niri's default and writes nothing. wlr-output-management reads adaptive sync
+  only as on or off, so an output whose old saved node had `on-demand=true`
+  keeps it when it reads as on.
+- **Writing the file applies it**: niri reloads its config whenever a file of it
+  changes, a rename over it included. A runtime change made through
+  wlr-output-management (`dsplr apply`, `dsplr set`) survives a reload that
+  leaves its output's node as it was, and is replaced when the node changes. So
+  `dsplr save`, which writes the layout on screen, moves nothing; its runtime
+  changes become the config's. With the confirm flow: `dsplr save` run while
+  another `dsplr apply` waits for its confirm saves the unconfirmed layout, and
+  its revert then goes back at runtime only, the file keeping the unconfirmed
+  layout until it is saved again, as on sway; on niri the file is also what any
+  later change to that output's node reloads.
+- Names: niri matches a node by connector or by `"Make Model Serial"` (`Unknown`
+  for a part not reported, none at all when all three are missing), each whole
+  and ignoring ASCII case (`"smithay winit unknown"` named the nested `winit`
+  output; `"Smithay Winit"` did not). A monitor with a serial is written by
+  identifier, others, and monitors whose identifiers differ only in case, by
+  connector. Names are KDL 1 strings, always quoted (`output winit {` is
+  refused), with `"` and `\` escaped.
+- Transforms keep wl_output's names, which are dsplr's: niri's `90` is
+  `WL_OUTPUT_TRANSFORM_90` (`src/utils/mod.rs` maps each config name to the
+  smithay transform of the same name, v26.04 source). The nested `winit` output
+  ignores a transform, so this was not read back.
+- Values niri rejects are never written, since an included file that does not
+  parse makes niri drop the whole config: a nested niri started on a config
+  including one with `scale 11` came up at its defaults, ignoring a valid
+  include beside it. So: no scale above 10, no mode side over 65535, and no
+  custom mode without its refresh (niri requires one).
+- The config is found as niri finds it: `NIRI_CONFIG` when set and not empty
+  (absolute only, else the save is refused), else `niri/config.kdl` in
+  `$XDG_CONFIG_HOME` or `~/.config`. Not `niri --config`, nor
+  `/etc/niri/config.kdl` (niri creates the user's config at startup when there
+  is none, so a running niri normally has one).
+- It is niri when the socket `NIRI_SOCKET` names answers niri's `Version`
+  request (one JSON line each way), asked only by `persist` and `dsplr backend`.
+  niri sets `NIRI_SOCKET` and `WAYLAND_DISPLAY` for what it starts (seen with a
+  startup command, `niri -- sh -c …`, printing them; the harness learns niri's
+  sockets that way). It counts only when the process listening on `NIRI_SOCKET`
+  also listens on the Wayland socket (`SO_PEERCRED`), so a compositor nested in
+  niri, which inherits `NIRI_SOCKET`, is not taken for it; checked in the nested
+  harness both ways round (sway's socket named under niri, niri's under sway).
+- **Saving applies, so only the layout on screen is saved**: `Backend::persist`
+  on niri reads the outputs again and refuses (`Unsupported`, exit `3`) a layout
+  that differs from them (`Layout::differences`, the apply flow's tolerance), so
+  a save never changes the screen past `dsplr apply`'s test, revert point and
+  confirm.
+- The old file is read in dsplr's form (`output` nodes holding only those
+  settings, each node starting and ending its line, `//` comments); its nodes
+  for outputs not connected are kept, written first so a monitor saved by its
+  identifier keeps its settings when later plugged into a port the file names,
+  and its nodes naming a connected output by connector or identifier, in any
+  case, are dropped. Anything else needs `--force`.
+- A mirror, a primary output and colour settings are refused (exit `3`): niri's
+  output config has none (`mirror` is refused by `niri validate`).
 
 ## KDE and GNOME
 

@@ -242,7 +242,10 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
 /// transform, since sway's names for the quarter turns are not wl_output's.
 async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend, start: &Layout) {
     assert!(backend.capabilities().native_persistence, "SWAYSOCK is set");
-    assert!(backend.native_persistence(), "and it answers as sway's");
+    assert!(
+        backend.native_persistence().await,
+        "and it answers as sway's"
+    );
     let outputs = no_outputs_file();
     let transforms = [
         Transform::Normal,
@@ -269,7 +272,7 @@ async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend
             .expect("sway applies it");
         saved = snapshot(backend).await;
         assert_eq!(entry(&saved, "HEADLESS-2").state.transform, transform);
-        let Persisted::File(file) = backend.persist(&saved, None).expect("saved");
+        let Persisted::File(file) = backend.persist(&saved, None).await.expect("saved");
         assert_eq!(file.path, outputs);
         assert_eq!(file.main_config, sway_config());
         assert_eq!(file.created, round == 0, "{transform}");
@@ -302,7 +305,7 @@ async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend
     let mirrored = edited(&saved, |layout| {
         entry_mut(layout, "HEADLESS-2").state.mirror_of = Some(one);
     });
-    let result = backend.persist(&mirrored, None);
+    let result = backend.persist(&mirrored, None).await;
     assert!(
         matches!(
             result,
@@ -318,7 +321,7 @@ async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend
     // Edited by hand, it is replaced only once its text is approved.
     let edited_text = format!("{text}# mine\n");
     std::fs::write(&outputs, &edited_text).expect("edited");
-    let conflict = match backend.persist(&saved, None) {
+    let conflict = match backend.persist(&saved, None).await {
         Err(Error::Conflict(conflict)) => conflict,
         other => panic!("not a conflict: {other:?}"),
     };
@@ -329,6 +332,7 @@ async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend
     );
     backend
         .persist(&saved, Some(&conflict.existing))
+        .await
         .expect("saved once approved");
     assert_eq!(std::fs::read_to_string(&outputs).expect("written"), text);
 }

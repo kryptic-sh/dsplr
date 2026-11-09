@@ -5,7 +5,7 @@ use dsplr_backend::{Check, Detection};
 use dsplr_model::Capabilities;
 
 /// The text `dsplr backend` prints.
-pub fn describe(detection: &Detection) -> String {
+pub async fn describe(detection: &Detection) -> String {
     let found = match &detection.backend {
         Some(backend) => format!(
             "backend: {}\ncapabilities: {}\n",
@@ -13,7 +13,7 @@ pub fn describe(detection: &Detection) -> String {
             capability_names(&Capabilities {
                 // Checked, where `capabilities` only says what the
                 // environment claims (a `SWAYSOCK` that may be stale).
-                native_persistence: backend.native_persistence(),
+                native_persistence: backend.native_persistence().await,
                 ..backend.capabilities()
             })
             .join(", ")
@@ -86,8 +86,8 @@ mod tests {
 
     use super::{capability_names, describe};
 
-    #[test]
-    fn no_backend_lists_the_checks_and_says_so() {
+    #[tokio::test]
+    async fn no_backend_lists_the_checks_and_says_so() {
         let detection = Detection {
             checks: vec![Check {
                 what: "platform",
@@ -96,7 +96,7 @@ mod tests {
             backend: None,
         };
         assert_eq!(
-            describe(&detection),
+            describe(&detection).await,
             "platform: not Linux: dsplr supports Linux only\nbackend: none found\n"
         );
     }

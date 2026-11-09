@@ -662,7 +662,7 @@ async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
     let outputs = no_outputs_file();
     let read = || std::fs::read_to_string(&outputs).expect("outputs");
 
-    // On a wlroots compositor that is not sway, dsplr declines before
+    // On a wlroots compositor that is neither sway nor niri, dsplr declines before
     // writing anything: with no SWAYSOCK, and with one left over from a sway
     // that is gone.
     let stale = harness_runtime().join("sway-ipc.gone.sock");
@@ -680,7 +680,7 @@ async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
         assert_eq!(code, Some(REFUSED), "{swaysock:?}: {text}");
         assert!(
             text.contains("cannot save on wlr")
-                && text.contains("does not answer as sway's")
+                && text.contains("answers as sway's or niri's")
                 && text.contains("`dsplr save --profile NAME`")
                 && text.contains("`dsplr restore --yes` from the compositor's autostart"),
             "{swaysock:?}: {text}"

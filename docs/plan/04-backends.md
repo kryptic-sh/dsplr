@@ -120,9 +120,28 @@ and probably saves outputs itself, which would make it a desktop that persists
 on its own rather than one on dsplr's store; to verify in M4. Persistence
 differs per compositor ([05](05-persistence-and-profiles.md)): `Wlr` takes the
 compositor for sway when the socket `SWAYSOCK` names answers sway's IPC, and
-then writes sway's `outputs` ([05](05-persistence-and-profiles.md#sway)); on any
-other it is `Unsupported`, pointing at dsplr's profile store
+then writes sway's `outputs` ([05](05-persistence-and-profiles.md#sway)); for
+niri when the socket `NIRI_SOCKET` names answers niri's, and then writes niri's
+`outputs.kdl` ([05](05-persistence-and-profiles.md#niri)). Each IPC socket
+counts only when the process listening on it also listens on the Wayland socket
+(their `SO_PEERCRED` pids, through tokio's `UnixStream::peer_cred`), so a
+compositor nested in sway or niri, which inherits `SWAYSOCK` or `NIRI_SOCKET`,
+is not taken for it. On any other compositor it is `Unsupported`, pointing at
+dsplr's profile store
 ([05](05-persistence-and-profiles.md#dsplrs-profile-store)).
+
+**niri 26.04** (nested in a headless sway, 2026-11-10) reads, tests and applies
+through the protocol (version 4), with two differences from sway:
+
+- An `apply` that changes the outputs is answered `succeeded` and then
+  `cancelled` on the same configuration (seen with `WAYLAND_DEBUG=1`): niri's
+  change notice cancels every configuration the client still holds. The first
+  answer is the configuration's, so dsplr takes the first and ignores the rest.
+- Its `test` checks only that the serial is current and that some output stays
+  on (`FIXME: actually test the configuration with TTY` in
+  `src/protocols/output_management.rs`, v26.04 source); a listed mode, a
+  positive scale and a custom mode's refresh are checked as each request
+  arrives. A nested niri's test passed a 99999x99999 custom mode.
 
 Mirroring is not in the protocol; on `Wlr` it is `Unsupported` unless a
 compositor-specific path is added later.

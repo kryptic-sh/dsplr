@@ -113,6 +113,7 @@ pub fn save(
         new,
         approved,
         Comment::Lua,
+        Vec::new(),
     )?;
     let require = require_line(&main);
     Ok(Saved {
@@ -124,6 +125,7 @@ pub fn save(
         main_config,
         include_line: REQUIRE_LINE,
         rules: "hl.monitor calls",
+        first_wins: false,
         kept: kept.into_iter().map(|entry| entry.id).collect(),
     })
 }

@@ -12,6 +12,8 @@
 
 mod connection;
 mod heads;
+mod ipc;
+mod niri;
 mod plan;
 mod sway;
 
@@ -73,6 +75,8 @@ pub enum Error {
     Cancelled,
     #[error("cannot save the layout: {0}")]
     Save(#[source] dsplr_persist::sway::SaveError),
+    #[error("cannot save the layout: {0}")]
+    NiriSave(#[source] dsplr_persist::niri::SaveError),
 }
 
 /// The longest one read, test or apply takes, connecting included: each
@@ -90,12 +94,30 @@ async fn bounded<T>(
 }
 
 /// A wlroots compositor with an output manager: where its socket is, the
-/// manager version it offers, and the sway IPC socket its environment names.
+/// manager version it offers, and the sway and niri IPC sockets its
+/// environment names.
 #[derive(Clone, Debug)]
 pub struct Wlr {
     socket: PathBuf,
     version: u32,
     swaysock: Option<PathBuf>,
+    niri_socket: Option<PathBuf>,
+}
+
+/// Which compositor a [`Wlr`] is, as far as saving to its own config goes,
+/// by the IPC sockets its environment names that answer as their
+/// compositor's and belong to the process serving its Wayland socket
+/// ([`Wlr::compositor`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compositor {
+    /// `SWAYSOCK`'s socket answers sway's IPC.
+    Sway,
+    /// `NIRI_SOCKET`'s socket answers niri's IPC.
+    Niri,
+    /// Neither does, as the Wayland socket's own: another wlroots compositor,
+    /// whose config dsplr does not write, or one nested in sway or niri,
+    /// which inherited that compositor's variable.
+    Other,
 }
 
 impl Wlr {
@@ -107,11 +129,15 @@ impl Wlr {
     /// [`Wlr::from_env`], reading the variables through `var`: connects to
     /// the socket `WAYLAND_DISPLAY` names and reads its heads, which is how
     /// detection checks that the output manager is there and answers. The
-    /// socket `SWAYSOCK` names is kept, not asked: [`Wlr::is_sway`] asks it.
+    /// sockets `SWAYSOCK` and `NIRI_SOCKET` name are kept, not asked:
+    /// [`Wlr::compositor`] asks them.
     pub async fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, Error> {
-        let swaysock = var("SWAYSOCK")
-            .filter(|socket| !socket.is_empty())
-            .map(PathBuf::from);
+        let named = |name| {
+            var(name)
+                .filter(|socket| !socket.is_empty())
+                .map(PathBuf::from)
+        };
+        let (swaysock, niri_socket) = (named("SWAYSOCK"), named("NIRI_SOCKET"));
         let socket = socket_path(var)?;
         let version = bounded("describe its outputs", Connection::open(&socket))
             .await?
@@ -120,6 +146,7 @@ impl Wlr {
             socket,
             version,
             swaysock,
+            niri_socket,
         })
     }
 
@@ -134,21 +161,41 @@ impl Wlr {
         self.version
     }
 
-    /// Whether `SWAYSOCK` named a socket, which sway sets for what it starts
-    /// (sway(1)): a claim that this is sway, not yet checked.
-    pub const fn names_sway(&self) -> bool {
-        self.swaysock.is_some()
+    /// Whether `SWAYSOCK` or `NIRI_SOCKET` named a socket, which sway and
+    /// niri set for what they start (sway(1), niri's wiki): a claim that
+    /// this is one of the compositors whose config dsplr writes, not yet
+    /// checked.
+    pub const fn names_compositor(&self) -> bool {
+        self.swaysock.is_some() || self.niri_socket.is_some()
     }
 
-    /// Whether the compositor is sway, the one wlroots compositor whose
-    /// config dsplr writes: the socket `SWAYSOCK` names answers sway's IPC
-    /// within [`REQUEST_TIMEOUT`]. It asks that socket each time, blocking
-    /// the calling thread meanwhile, so it is asked only where it decides
-    /// something: saving, and `dsplr backend`.
-    pub fn is_sway(&self) -> bool {
-        self.swaysock
-            .as_deref()
-            .is_some_and(|socket| sway::answers(socket, REQUEST_TIMEOUT))
+    /// Which of the wlroots compositors whose config dsplr writes this is:
+    /// the one whose IPC socket, as its environment names it, answers as
+    /// its own within [`REQUEST_TIMEOUT`] and is served by the same process
+    /// as the Wayland socket (their `SO_PEERCRED` pids). A compositor nested
+    /// in sway or niri inherits `SWAYSOCK` or `NIRI_SOCKET`, which answers,
+    /// but from the outer compositor's process, so it is not taken for it.
+    /// It asks those sockets each time, blocking the calling thread for the
+    /// IPC request, so it is asked only where it decides something: saving,
+    /// and `dsplr backend`.
+    pub async fn compositor(&self) -> Compositor {
+        let Some(display) = ipc::peer_pid(&self.socket, REQUEST_TIMEOUT).await else {
+            return Compositor::Other;
+        };
+        let serves = async |socket: &Option<PathBuf>, answers: fn(&Path, Duration) -> bool| {
+            let Some(socket) = socket.as_deref() else {
+                return false;
+            };
+            ipc::peer_pid(socket, REQUEST_TIMEOUT).await == Some(display)
+                && answers(socket, REQUEST_TIMEOUT)
+        };
+        if serves(&self.swaysock, sway::answers).await {
+            Compositor::Sway
+        } else if serves(&self.niri_socket, niri::answers).await {
+            Compositor::Niri
+        } else {
+            Compositor::Other
+        }
     }
 
     /// A new connection, with its heads read.
@@ -203,9 +250,9 @@ fn socket_path(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error>
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
-    use super::{Error, Wlr, socket_path};
+    use super::{Compositor, Error, Wlr, socket_path};
 
     fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |name| {
@@ -267,6 +314,59 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// Each IPC socket is asked, and one answering as its own compositor's,
+    /// from the process serving the Wayland socket (here this test's own),
+    /// names that compositor. A socket served by another process (a nested
+    /// compositor's inherited one) is checked by the niri e2e test, which
+    /// has two compositors to ask.
+    #[tokio::test]
+    async fn the_compositor_is_the_one_whose_socket_answers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _wayland =
+            std::os::unix::net::UnixListener::bind(dir.path().join("wayland-0")).expect("bind");
+        let sway = |name: &str| {
+            let path = dir.path().join(name);
+            super::sway::tests::serve(
+                &path,
+                super::sway::tests::message(b"i3-ipc", 7, br#"{"major": 1}"#),
+            );
+            path
+        };
+        let niri = |name: &str| {
+            let path = dir.path().join(name);
+            super::niri::tests::serve(&path, b"{\"Ok\":{\"Version\":\"26.04\"}}\n");
+            path
+        };
+        let gone = dir.path().join("gone.sock");
+        let wlr = |swaysock: Option<PathBuf>, niri_socket: Option<PathBuf>| Wlr {
+            socket: dir.path().join("wayland-0"),
+            version: 4,
+            swaysock,
+            niri_socket,
+        };
+        for (each, expected) in [
+            (wlr(Some(sway("s1")), None), Compositor::Sway),
+            (wlr(None, Some(niri("n1"))), Compositor::Niri),
+            (wlr(Some(gone.clone()), Some(niri("n2"))), Compositor::Niri),
+            (wlr(Some(sway("s2")), Some(gone.clone())), Compositor::Sway),
+            (wlr(Some(sway("s3")), Some(niri("n3"))), Compositor::Sway),
+            (
+                wlr(Some(gone.clone()), Some(gone.clone())),
+                Compositor::Other,
+            ),
+            (wlr(None, None), Compositor::Other),
+        ] {
+            assert!(each.names_compositor() || expected == Compositor::Other);
+            assert_eq!(each.compositor().await, expected, "{each:?}");
+        }
+        // With no Wayland socket to compare with, nothing is taken.
+        let without = Wlr {
+            socket: dir.path().join("wayland-9"),
+            ..wlr(Some(sway("s5")), Some(niri("n5")))
+        };
+        assert_eq!(without.compositor().await, Compositor::Other);
     }
 
     #[tokio::test]

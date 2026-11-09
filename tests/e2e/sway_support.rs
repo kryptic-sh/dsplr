@@ -225,7 +225,7 @@ impl FreshSway {
         })
         .await
         .expect("the fresh sway's output manager");
-        assert!(wlr.is_sway());
+        assert_eq!(wlr.compositor().await, dsplr_backend::wlr::Compositor::Sway);
         Self { wlr, _sway: sway }
     }
 

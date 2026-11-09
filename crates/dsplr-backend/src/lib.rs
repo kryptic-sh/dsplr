@@ -3,12 +3,12 @@
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
 //! looked at. So far Hyprland and wlroots compositors exist; both read and
-//! apply, wlroots tests, Hyprland persists to its Lua config and sway to its
-//! `outputs` file; other wlroots compositors have no native persistence and
-//! use dsplr's profile store (`dsplr save --profile`), and the other
-//! desktops are not written yet. Every
-//! backend is Linux-only; on other targets [`Backend`] has no variants and
-//! detection says why.
+//! apply, wlroots tests, Hyprland persists to its Lua config, sway to its
+//! `outputs` file and niri to its `outputs.kdl`; other wlroots compositors
+//! have no native persistence and use dsplr's profile store
+//! (`dsplr save --profile`), and the other desktops are not written yet.
+//! Every backend is Linux-only; on other targets [`Backend`] has no variants
+//! and detection says why.
 
 use std::time::Duration;
 
@@ -151,10 +151,11 @@ impl Backend {
     ///
     /// wlroots compositors take custom modes, since the protocol has them and
     /// `test` lets the compositor refuse one first; adaptive sync needs the
-    /// manager's version 4; mirroring is not in the protocol. Only sway has
-    /// native persistence, its `outputs` file; here that is whether
-    /// `SWAYSOCK` names a socket, asking nothing, since every command reads
-    /// capabilities. [`Backend::native_persistence`] asks the socket.
+    /// manager's version 4; mirroring is not in the protocol. Only sway and
+    /// niri have native persistence, sway's `outputs` file and niri's
+    /// `outputs.kdl`; here that is whether `SWAYSOCK` or `NIRI_SOCKET` names
+    /// a socket, asking nothing, since every command reads capabilities.
+    /// [`Backend::native_persistence`] asks the sockets.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         match *self {
@@ -182,7 +183,7 @@ impl Backend {
                 per_output_scale: true,
                 test_before_apply: true,
                 gaps_allowed: true,
-                native_persistence: wlr.names_sway(),
+                native_persistence: wlr.names_compositor(),
                 ..Capabilities::default()
             },
         }
@@ -190,16 +191,18 @@ impl Backend {
 
     /// Whether [`persist`](Self::persist) can save natively here, checked:
     /// [`Capabilities::native_persistence`] as [`capabilities`](Self::capabilities)
-    /// says, except that on a wlroots compositor sway's IPC socket is asked
-    /// whether it is sway ([`wlr::Wlr::is_sway`]), which can take up to its
-    /// request timeout.
-    #[must_use]
-    pub fn native_persistence(&self) -> bool {
+    /// says, except that on a wlroots compositor sway's and niri's IPC
+    /// sockets are asked which it is ([`wlr::Wlr::compositor`]), which can
+    /// take up to their request timeout.
+    pub async fn native_persistence(&self) -> bool {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => self.capabilities().native_persistence,
             #[cfg(target_os = "linux")]
-            Self::Wlr(ref wlr) => wlr.is_sway(),
+            Self::Wlr(ref wlr) => matches!(
+                wlr.compositor().await,
+                wlr::Compositor::Sway | wlr::Compositor::Niri
+            ),
         }
     }
 
@@ -258,19 +261,33 @@ impl Backend {
     /// Makes `layout` last past a restart of the desktop, where the desktop
     /// itself reads it: on Hyprland, the `monitors.lua` beside its Lua
     /// config ([`dsplr_persist::hyprland::save`]); on sway, the `outputs`
-    /// file beside its config ([`dsplr_persist::sway::save`]).
+    /// file beside its config ([`dsplr_persist::sway::save`]); on niri, the
+    /// `outputs.kdl` beside its config ([`dsplr_persist::niri::save`]),
+    /// which niri reloads, and so applies, as soon as it is written.
+    ///
+    /// Because writing it applies it, on niri `layout` must be the outputs as
+    /// they are now: they are read again and compared
+    /// ([`Layout::differences`], within the tolerance the apply flow reads
+    /// back with), and any other layout is [`Error::Unsupported`], nothing
+    /// written, so a save never changes the screen past the apply flow's
+    /// test, revert point and confirm. Apply a layout first, then save it.
     ///
     /// A file there that dsplr may not overwrite unasked is
     /// [`Error::Conflict`], and nothing is written; once the user has seen it
     /// and agreed, persist again with `approved` set to the conflict's
     /// `existing` text. [`Error::Unsupported`], with nothing written, under a
-    /// hyprlang config, on a wlroots compositor other than sway, and on sway
-    /// for a layout its output config cannot hold (a mirror, say).
+    /// hyprlang config, on a wlroots compositor other than sway and niri (one
+    /// nested in them included, [`wlr::Wlr::compositor`]), and on sway or
+    /// niri for a layout its output config cannot hold (a mirror, say).
     #[cfg_attr(
         not(target_os = "linux"),
         expect(unused_variables, reason = "no backend exists off Linux")
     )]
-    pub fn persist(&self, layout: &Layout, approved: Option<&str>) -> Result<Persisted, Error> {
+    pub async fn persist(
+        &self,
+        layout: &Layout,
+        approved: Option<&str>,
+    ) -> Result<Persisted, Error> {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => {
@@ -291,25 +308,49 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => {
                 use dsplr_persist::managed::FileError;
-                use dsplr_persist::sway::{SaveError, WriteError, save};
-                if !wlr.is_sway() {
-                    return Err(Error::Unsupported {
-                        what: "saving the layout",
-                        reason: "SWAYSOCK is not set, or its socket does not answer as sway's, so this is not sway, the one wlroots compositor whose config dsplr writes; on another, save a profile with `dsplr save --profile NAME` and run `dsplr restore --yes` from the compositor's autostart",
-                    });
-                }
-                match save(|name| std::env::var_os(name), layout, approved) {
-                    Ok(saved) => Ok(Persisted::File(saved)),
-                    Err(SaveError::File(FileError::Conflict(conflict))) => {
-                        Err(Error::Conflict(conflict))
-                    }
-                    Err(SaveError::Write(WriteError::Unsupported { what, .. })) => {
-                        Err(Error::Unsupported {
+                use dsplr_persist::{niri, sway};
+                let var = |name: &str| std::env::var_os(name);
+                match wlr.compositor().await {
+                    wlr::Compositor::Sway => match sway::save(var, layout, approved) {
+                        Ok(saved) => Ok(Persisted::File(saved)),
+                        Err(sway::SaveError::File(FileError::Conflict(conflict))) => {
+                            Err(Error::Conflict(conflict))
+                        }
+                        Err(sway::SaveError::Write(sway::WriteError::Unsupported {
+                            what, ..
+                        })) => Err(Error::Unsupported {
                             what,
                             reason: "sway's output config cannot hold it, so the layout cannot be saved there",
-                        })
+                        }),
+                        Err(error) => Err(Error::Wlr(wlr::Error::Save(error))),
+                    },
+                    wlr::Compositor::Niri => {
+                        let now = wlr.snapshot().await?;
+                        if !layout.differences(&now, &self.capabilities()).is_empty() {
+                            return Err(Error::Unsupported {
+                                what: "saving a layout other than the one on screen",
+                                reason: "niri applies its outputs.kdl as soon as it is written, so dsplr saves only the outputs as they are now; apply the layout first (dsplr apply tests it and asks to keep it), then save",
+                            });
+                        }
+                        match niri::save(var, layout, approved) {
+                            Ok(saved) => Ok(Persisted::File(saved)),
+                            Err(niri::SaveError::File(FileError::Conflict(conflict))) => {
+                                Err(Error::Conflict(conflict))
+                            }
+                            Err(niri::SaveError::Write(niri::WriteError::Unsupported {
+                                what,
+                                ..
+                            })) => Err(Error::Unsupported {
+                                what,
+                                reason: "niri's output config cannot hold it, so the layout cannot be saved there",
+                            }),
+                            Err(error) => Err(Error::Wlr(wlr::Error::NiriSave(error))),
+                        }
                     }
-                    Err(error) => Err(Error::Wlr(wlr::Error::Save(error))),
+                    wlr::Compositor::Other => Err(Error::Unsupported {
+                        what: "saving the layout",
+                        reason: "neither SWAYSOCK nor NIRI_SOCKET names a socket that answers as sway's or niri's from the process serving WAYLAND_DISPLAY, so this is neither sway nor niri (a compositor nested in one inherits its variable), the wlroots compositors whose config dsplr writes; on another, save a profile with `dsplr save --profile NAME` and run `dsplr restore --yes` from the compositor's autostart",
+                    }),
                 }
             }
         }

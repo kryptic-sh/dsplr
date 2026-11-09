@@ -25,7 +25,7 @@ pub async fn run(backend: &Backend, options: &Options) -> Exit {
         Ok(layout) => layout,
         Err(exit) => return exit,
     };
-    let conflict = match backend.persist(&layout, None) {
+    let conflict = match backend.persist(&layout, None).await {
         Ok(persisted) => return saved(&persisted),
         Err(Error::Conflict(conflict)) => conflict,
         Err(error) => return failed(backend, &error),
@@ -33,7 +33,7 @@ pub async fn run(backend: &Backend, options: &Options) -> Exit {
     if !allowed(&conflict, options) {
         return Exit::Failure;
     }
-    match backend.persist(&layout, Some(&conflict.existing)) {
+    match backend.persist(&layout, Some(&conflict.existing)).await {
         Ok(persisted) => saved(&persisted),
         Err(Error::Conflict(changed)) => {
             eprintln!(
@@ -58,7 +58,8 @@ fn failed(backend: &Backend, error: &Error) -> Exit {
 
 /// Shows what saving would change in the file of `conflict`, and whether
 /// the user allows it: `--force`, or for a readable file someone else
-/// wrote, `--yes` or a yes on the terminal.
+/// wrote, or one whose writing would stop settings of the main config
+/// applying, `--yes` or a yes on the terminal.
 fn allowed(conflict: &Conflict, options: &Options) -> bool {
     let path = conflict.path.display();
     match (&conflict.unreadable, conflict.ownership) {
@@ -71,7 +72,15 @@ fn allowed(conflict: &Conflict, options: &Options) -> bool {
         (None, Ownership::Foreign) => eprintln!(
             "dsplr: {path} was not written by dsplr (nwg-displays writes one too); dsplr replaces it with its own"
         ),
-        (None, Ownership::Managed) => {}
+        (None, Ownership::Managed | Ownership::Absent) => {}
+    }
+    if !conflict.shadowed.is_empty() {
+        eprintln!(
+            "dsplr: once {path} is written, these settings of your config stop applying, since its node for the same output comes first and wins whole:"
+        );
+        for each in &conflict.shadowed {
+            eprintln!("  {each}");
+        }
     }
     eprintln!("This is what saving changes in it:");
     eprint!("{}", line_diff(&conflict.existing, &conflict.new));
@@ -131,21 +140,34 @@ fn saved(persisted: &Persisted) -> Exit {
 }
 
 /// What to tell the user about the line their main config needs, and about
-/// the config's own rules that win over the saved file. The line goes after
-/// those rules: Hyprland uses the last rule for a monitor, and sway the last
-/// setting on a reload, so a rule after it wins ([`Saved::overridden`]).
-/// sway also lets a rule naming an output by its identifier win at startup
-/// over one naming it by connector, wherever each is, so moving the line
-/// does not help with those ([`Saved::beaten_at_startup`]).
+/// the config's own rules that win over the saved file. The line goes where
+/// the file's rules win: after the config's own on Hyprland, which uses the
+/// last rule for a monitor, and on sway, which uses the last setting on a
+/// reload; before them on niri, which uses the first output node naming an
+/// output ([`Saved::first_wins`]). A rule on the other side wins
+/// ([`Saved::overridden`]). sway also lets a rule naming an output by its
+/// identifier win at startup over one naming it by connector, wherever each
+/// is, so moving the line does not help with those
+/// ([`Saved::beaten_at_startup`]).
 fn include_note(saved: &Saved) -> String {
     let (main, line, rules) = (saved.main_config.display(), saved.include_line, saved.rules);
+    let (side, past) = if saved.first_wins {
+        ("before", "above")
+    } else {
+        ("after", "below")
+    };
     let include = if !saved.included {
         format!(
-            "dsplr: {main} does not seem to load it: add this line to it, after any {rules} there (dsplr never edits it):\n  {line}\n"
+            "dsplr: {main} does not seem to load it: add this line to it, {side} any {rules} there (dsplr never edits it):\n  {line}\n"
         )
     } else if saved.overridden {
+        let (where_, wins) = if saved.first_wins {
+            ("before", "win over")
+        } else {
+            ("after", "override")
+        };
         format!(
-            "dsplr: {main} has {rules} after {line}, and they override the saved file; move {line} below them\n"
+            "dsplr: {main} has {rules} {where_} {line}, and they {wins} the saved file; move {line} {past} them\n"
         )
     } else if saved.created {
         format!("dsplr: {main} already has {line}\n")
@@ -185,6 +207,7 @@ mod tests {
             main_config: PathBuf::from("/h/.config/hypr/hyprland.lua"),
             include_line: r#"require("monitors")"#,
             rules: "hl.monitor calls",
+            first_wins: false,
             included,
             kept: Vec::new(),
         }
@@ -240,6 +263,35 @@ mod tests {
             "{note}"
         );
         assert!(!note.contains("identifier"), "{note}");
+    }
+
+    /// niri uses the first output node naming an output, so the include
+    /// goes before the config's own, and one of those before it wins.
+    #[test]
+    fn where_the_first_rule_wins_the_include_goes_before_the_rules() {
+        let niri = Saved {
+            main_config: PathBuf::from("/h/.config/niri/config.kdl"),
+            include_line: r#"include "outputs.kdl""#,
+            rules: "output nodes",
+            first_wins: true,
+            ..saved(true, false)
+        };
+        let note = include_note(&niri);
+        assert!(
+            note.contains(
+                "add this line to it, before any output nodes there (dsplr never edits it):\n  include \"outputs.kdl\"\n"
+            ),
+            "{note}"
+        );
+        let note = include_note(&Saved {
+            included: true,
+            overridden: true,
+            ..niri
+        });
+        assert_eq!(
+            note,
+            "dsplr: /h/.config/niri/config.kdl has output nodes before include \"outputs.kdl\", and they win over the saved file; move include \"outputs.kdl\" above them\n"
+        );
     }
 
     /// An identifier rule before the include is not fixed by moving the

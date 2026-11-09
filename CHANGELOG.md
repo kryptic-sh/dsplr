@@ -40,15 +40,17 @@ and this project adheres to
   backend found, both commands exit with code 6; on targets other than Linux,
   detection says dsplr supports Linux only.
 - The `wlr` backend reads, tests and applies layouts over
-  `zwlr_output_manager_v1`: tested against sway, and meant for any compositor
-  offering it (niri, river, labwc, Wayfire). Detection picks it after Hyprland,
-  when `WAYLAND_DISPLAY` names a compositor that offers the protocol. It applies
-  a whole layout in one configuration and supports custom modes, fractional
-  per-output scale and, from protocol version 4, adaptive sync on or off.
-  Mirroring, a primary output and colour settings are not in the protocol, and a
-  layout asking for them is refused rather than applied without them. A
+  `zwlr_output_manager_v1`: tested against sway and niri, and meant for any
+  compositor offering it (river, labwc, Wayfire). Detection picks it after
+  Hyprland, when `WAYLAND_DISPLAY` names a compositor that offers the protocol.
+  It applies a whole layout in one configuration and supports custom modes,
+  fractional per-output scale and, from protocol version 4, adaptive sync on or
+  off. Mirroring, a primary output and colour settings are not in the protocol,
+  and a layout asking for them is refused rather than applied without them. A
   configuration the compositor cancels because the outputs changed meanwhile is
-  reported, not retried.
+  reported, not retried. Only a configuration's first answer counts: niri 26.04
+  follows `succeeded` with `cancelled` when the apply changed the outputs, and
+  that change was applied.
 - `dsplr apply` has the desktop test a layout before applying it where the
   backend has a real test (`wlr`), and says when it was the test that refused;
   `--dry-run` then reports the desktop's verdict, exiting `4` when it refuses.
@@ -129,10 +131,10 @@ and this project adheres to
   `disabled = true` instead of reading them as `vrr = 2` and dropping the
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under
   a hyprlang `hyprland.conf` saving is refused, saying dsplr writes only a Lua
-  config's `monitors.lua`; on wlroots compositors other than sway it is not
-  supported, and the message points at `dsplr save --profile NAME` and
+  config's `monitors.lua`; on wlroots compositors other than sway and niri it is
+  not supported, and the message points at `dsplr save --profile NAME` and
   `dsplr restore --yes` from the compositor's autostart; both exit `3`;
-  `dsplr backend` now lists native persistence for Hyprland and sway.
+  `dsplr backend` now lists native persistence for Hyprland, sway and niri.
 - `dsplr save` makes the current layout last on sway: it writes a dsplr-managed
   `outputs` file beside the config sway reads (`~/.sway/config`,
   `$XDG_CONFIG_HOME/sway/config`, `~/.i3/config` or
@@ -161,9 +163,40 @@ and this project adheres to
   needs `--force`. A layout with a mirror, which sway has not, and saving on a
   wlroots compositor other than sway are refused with exit `3` before anything
   is written; it counts as sway only when the socket `SWAYSOCK` names answers
-  sway's IPC, so a stale `SWAYSOCK` under another compositor does not. That
-  socket is asked only by `dsplr save` and `dsplr backend`, so one that hangs
-  delays no other command.
+  sway's IPC and is served by the same process as the Wayland socket, so a stale
+  `SWAYSOCK` under another compositor, or one a compositor nested in sway
+  inherited, does not. That socket is asked only by `dsplr save` and
+  `dsplr backend`, so one that hangs delays no other command.
+- `dsplr save` makes the current layout last on niri: it writes a dsplr-managed
+  `outputs.kdl` beside the `config.kdl` niri reads (`NIRI_CONFIG`, else
+  `$XDG_CONFIG_HOME/niri` or `~/.config/niri`, as niri looks), one
+  `output "<name>" { … }` node per output with `off`, or `mode` (`custom=true`
+  for a mode the output does not list), `scale`, `transform`, `position` and,
+  when on, `variable-refresh-rate`, and prints the `include "outputs.kdl"` line
+  the config needs when it does not seem to have it (an `optional=true` include
+  counts). niri uses the first node naming an output, so that line goes before
+  the config's own `output` nodes, and dsplr says when one before it for a
+  connected output wins over the saved file. niri reloads the file as soon as it
+  is written, so saving also applies it; dsplr saves only the layout on screen
+  (`dsplr save` saves what it reads), so nothing moves, and refuses any other
+  (exit `3`). The config's own `output` nodes after the include, for a connected
+  output, are hidden whole by the saved node once it is written: when they set
+  anything dsplr does not write (`backdrop-color`, `focus-at-startup`, on-demand
+  adaptive sync), saving lists them and asks first (a yes or `--yes`), even when
+  there is no file yet; with no include yet, every such node counts, since the
+  include goes before them. An output whose old saved node had
+  `variable-refresh-rate on-demand=true` keeps it when adaptive sync reads as
+  on, since wlr-output-management cannot say on demand. Transforms keep their
+  names, which niri shares with `dsplr list`. A monitor with a serial is named
+  by its identifier (`"Make Model Serial"`), others by connector; niri matches
+  both ignoring case, and so does dsplr when it drops the old file's nodes for
+  connected outputs and keeps the rest. As on sway, a file edited by hand needs
+  `--force`, another tool's needs a yes or `--yes`, one with settings dsplr does
+  not write (`backdrop-color`, `focus-at-startup`) needs `--force`, a link is
+  refused, and a mirror is refused (exit `3`). It counts as niri only when the
+  socket `NIRI_SOCKET` names answers niri's IPC and is served by the same
+  process as the Wayland socket, so a compositor nested in niri, which inherits
+  `NIRI_SOCKET`, does not write niri's config.
 - `dsplr list --json` (and the revert point) now carry each output's `make`,
   `model` and `serial` as the desktop reported them, empty when it reported
   none; a layout file without them still reads.

@@ -8,6 +8,8 @@ mod write;
 
 use dsplr_model::{Layout, OutputEntry, OutputId, Transform};
 
+use crate::identity::identifier;
+
 pub use read::{OutputsBlock, ReadError, read_outputs};
 pub use save::{INCLUDE_LINE, SaveError, save};
 pub use write::{WriteError, output_block, output_blocks};
@@ -52,33 +54,6 @@ const SETTINGS: [&str; 10] = [
     "transform",
     "adaptive_sync",
 ];
-
-/// sway's identifier for a monitor, `make model serial`, with `Unknown` for
-/// a part it does not report (`swaymsg -t get_outputs` on headless sway 1.12
-/// shows all three as `Unknown`, and a config naming
-/// `"Unknown Unknown Unknown"` applies to those outputs). Taken from an
-/// EDID identity, else from the make, model and serial its output reported,
-/// so a monitor without a serial has one too (`Make Model Unknown`). `None`
-/// for an entry with neither: a connector or a name read from a file.
-fn identifier(entry: &OutputEntry) -> Option<String> {
-    let (make, model, serial) = match (&entry.id, &entry.output) {
-        (
-            OutputId::Edid {
-                make,
-                model,
-                serial,
-            },
-            _,
-        ) => (make, model, serial),
-        (_, Some(output)) => (&output.make, &output.model, &output.serial),
-        _ => return None,
-    };
-    let part = |text: &str| {
-        let text = text.trim();
-        if text.is_empty() { "Unknown" } else { text }.to_owned()
-    };
-    Some(format!("{} {} {}", part(make), part(model), part(serial)))
-}
 
 /// The name `entry`'s block is written under: sway's identifier when the
 /// monitor has a serial, no other entry of `layout` has that identifier, and

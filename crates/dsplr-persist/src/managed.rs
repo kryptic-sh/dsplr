@@ -6,6 +6,7 @@
 //! overwrite unasked ([`Conflict`]). [`read_existing`] and [`replace`] are
 //! the steps every save shares around its own format.
 
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,8 @@ pub enum Comment {
     Lua,
     /// `#`: hyprlang, sway and most other config formats.
     Hash,
+    /// `//`: KDL (niri's `outputs.kdl`).
+    Slashes,
 }
 
 impl Comment {
@@ -27,6 +30,7 @@ impl Comment {
         match self {
             Self::Lua => "--",
             Self::Hash => "#",
+            Self::Slashes => "//",
         }
     }
 }
@@ -40,11 +44,16 @@ pub enum Ownership {
     EditedByHand,
     /// Not dsplr's (no header): someone else's file, such as nwg-displays'.
     Foreign,
+    /// There is no file yet: the save asks for another reason
+    /// ([`Conflict::shadowed`]).
+    Absent,
 }
 
 /// A save that was not written, because the file already there is not one
-/// dsplr may simply overwrite. Saving again with `existing` approved
-/// replaces it, as long as the file still holds exactly that text.
+/// dsplr may simply overwrite, or because writing it would stop settings of
+/// the main config applying ([`Conflict::shadowed`]). Saving again with
+/// `existing` approved replaces it, as long as the file still holds exactly
+/// that text (empty: there is still no file).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{}: {}", path.display(), self.why())]
 pub struct Conflict {
@@ -53,10 +62,15 @@ pub struct Conflict {
     /// Why dsplr could not read the file, when it could not: what it holds
     /// beyond that point would be lost, not carried into the new file.
     pub unreadable: Option<String>,
-    /// The file as it is now.
+    /// The file as it is now; empty when there is none.
     pub existing: String,
     /// What saving would write instead.
     pub new: String,
+    /// Settings the main config gives connected outputs that would stop
+    /// applying once the file is written, each as `<where>: <settings>`. On
+    /// niri, the config's own `output` nodes after the include, which the
+    /// saved node for the same output hides whole. A yes approves it.
+    pub shadowed: Vec<String>,
 }
 
 impl Conflict {
@@ -73,11 +87,17 @@ impl Conflict {
             Ownership::Managed => "dsplr wrote it",
             Ownership::EditedByHand => "it was edited by hand since dsplr wrote it",
             Ownership::Foreign => "dsplr did not write it",
+            Ownership::Absent => "there is no such file yet",
         };
-        match &self.unreadable {
+        let mut why = match &self.unreadable {
             Some(reason) => format!("{whose}, and dsplr cannot read all of it: {reason}"),
             None => whose.to_owned(),
+        };
+        if !self.shadowed.is_empty() {
+            why.push_str("; saving would stop these settings of the main config applying: ");
+            why.push_str(&self.shadowed.join("; "));
         }
+        why
     }
 }
 
@@ -146,12 +166,12 @@ pub fn refuse_symlink(path: &Path) -> Result<(), FileError> {
 
 /// Writes `new` over the file at `path`, which held `existing` when it was
 /// read (`None`: there was none), if dsplr may:
-/// - no file: it is created;
-/// - a file dsplr wrote and nobody changed, which dsplr could read
-///   (`unreadable` is `None`): it is overwritten;
+/// - nothing `shadowed`, and no file: it is created;
+/// - nothing `shadowed`, and a file dsplr wrote and nobody changed, which
+///   dsplr could read (`unreadable` is `None`): it is overwritten;
 /// - anything else: [`FileError::Conflict`], and nothing is written, unless
-///   `approved` is exactly `existing`, which is how the user's answer to
-///   that conflict comes back.
+///   `approved` is exactly `existing` (empty when there is no file), which
+///   is how the user's answer to that conflict comes back.
 ///
 /// # Errors
 ///
@@ -163,19 +183,22 @@ pub fn replace(
     new: String,
     approved: Option<&str>,
     comment: Comment,
+    shadowed: Vec<String>,
 ) -> Result<(), FileError> {
-    if let Some(existing) = existing {
-        let ownership = ownership(existing, comment);
-        let simple = ownership == Ownership::Managed && unreadable.is_none();
-        if !simple && approved != Some(existing) {
-            return Err(FileError::Conflict(Box::new(Conflict {
-                path: path.to_owned(),
-                ownership,
-                unreadable,
-                existing: existing.to_owned(),
-                new,
-            })));
-        }
+    let ownership = existing.map_or(Ownership::Absent, |text| ownership(text, comment));
+    let simple = matches!(ownership, Ownership::Managed | Ownership::Absent)
+        && unreadable.is_none()
+        && shadowed.is_empty();
+    let existing = existing.unwrap_or_default();
+    if !simple && approved != Some(existing) {
+        return Err(FileError::Conflict(Box::new(Conflict {
+            path: path.to_owned(),
+            ownership,
+            unreadable,
+            existing: existing.to_owned(),
+            new,
+            shadowed,
+        })));
     }
     write_atomic(path, &new).map_err(FileError::io(path))
 }
@@ -183,6 +206,24 @@ pub fn replace(
 /// Why a save found no config to look in: what both desktops' lookups need
 /// is unusable.
 pub(crate) const NO_CONFIG_DIR: &str = "neither XDG_CONFIG_HOME nor HOME is set to an absolute path, so there is no config directory to look in";
+
+/// `$HOME`, when it is absolute.
+pub(crate) fn home(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    var("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
+/// The user's config directory as the XDG base directory spec defines it,
+/// which sway and niri both follow: `$XDG_CONFIG_HOME`, else `~/.config`.
+/// A relative `XDG_CONFIG_HOME` or `HOME` is not used, as the spec ignores a
+/// relative one.
+pub(crate) fn config_home(var: &impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| home(var).map(|home| home.join(".config")))
+}
 
 /// `paths`, comma-separated, for an error listing where a lookup looked.
 pub(crate) fn paths(paths: &[PathBuf]) -> String {
@@ -205,14 +246,19 @@ pub struct Saved {
     /// The line that includes it there.
     pub include_line: &'static str,
     /// What the main config's own output settings are called
-    /// (`hl.monitor calls`): the include line goes after them, since they
-    /// override the file's when they come after it.
+    /// (`hl.monitor calls`): the include line goes where the file's
+    /// settings win over them ([`Saved::first_wins`]).
     pub rules: &'static str,
+    /// Whether the desktop takes the first settings it reads for an output
+    /// (niri) rather than the last (Hyprland, sway). The include line then
+    /// goes before the main config's own rules, not after them.
+    pub first_wins: bool,
     /// Whether the main config was seen to include it already.
     pub included: bool,
-    /// Whether the main config sets monitor rules after including it,
-    /// which override the file's (on sway, on a reload). Moving the include
-    /// below them fixes it.
+    /// Whether the main config's own rules for a connected output win over
+    /// the file's: set after including it where the last wins (on sway, on
+    /// a reload), before it where the first wins. Moving the include past
+    /// them fixes it.
     pub overridden: bool,
     /// The names under which the main config sets an output that the file
     /// names by its connector, each once, by sway's identifier: sway applies

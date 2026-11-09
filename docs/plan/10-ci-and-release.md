@@ -24,10 +24,10 @@ jobs at the first release. dsplr is Linux-only, so the matrix is ubuntu only.
 `e2e` is a matrix with one entry per desktop, each running that desktop's
 `tests/e2e/headless-<desktop>.sh` harness and `<desktop>_e2e` test inside a KVM
 VM (an Arch cloud image with a virtio GPU): a runner has no GPU render node, and
-Hyprland cannot allocate buffers without one. Hyprland is in it now; sway (M4),
-KWin (M5), GNOME (M6), X11 (M7) and niri join with their backends. Test
-compositors never run on or against a desktop session: private runtime
-directory, no shared sockets, no seat.
+Hyprland cannot allocate buffers without one. Hyprland, sway and niri (nested in
+a headless sway) are in it now; KWin (M5), GNOME (M6) and X11 (M7) join with
+their backends. Test compositors never run on or against a desktop session:
+private runtime directory, no shared sockets, no seat.
 
 Conventions as lyr: `RUSTFLAGS=-D warnings`, a concurrency group cancelling
 superseded non-tag runs, `fail-fast: false`, `Swatinem/rust-cache`,

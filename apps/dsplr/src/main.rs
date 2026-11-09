@@ -68,8 +68,10 @@ enum Command {
     },
     /// Save the displays as they are now where the desktop reads them when
     /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua; on
-    /// sway, the outputs file beside its config. With --profile, as a named
-    /// profile in dsplr's own store instead, on any desktop.
+    /// sway, the outputs file beside its config; on niri, the outputs.kdl
+    /// beside its config.kdl, which niri also reloads at once. With
+    /// --profile, as a named profile in dsplr's own store instead, on any
+    /// desktop.
     Save {
         /// Overwrite the file even when it was edited by hand, or holds
         /// settings dsplr cannot keep (they are lost); replace a profile, or
@@ -219,7 +221,7 @@ async fn run(cli: Cli) -> Exit {
             } else {
                 Exit::NoBackend
             };
-            print(&backend::describe(&detection)).unwrap_or(code)
+            print(&backend::describe(&detection).await).unwrap_or(code)
         }
         Some(Command::List { json }) => list(json).await,
         Some(Command::Apply { file, apply }) => apply_file(&file, &apply).await,

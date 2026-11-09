@@ -718,14 +718,17 @@ unsafe extern "C" fn dispatch(
             }
         }
         Kind::Configuration => {
-            state.outcome = match unsafe {
-                zwlr_output_configuration_v1::decode_event(opcode, args)
-            } {
+            let answer = match unsafe { zwlr_output_configuration_v1::decode_event(opcode, args) } {
                 Some(zwlr_output_configuration_v1::Event::Succeeded) => Some(Outcome::Succeeded),
                 Some(zwlr_output_configuration_v1::Event::Failed) => Some(Outcome::Failed),
                 Some(zwlr_output_configuration_v1::Event::Cancelled) => Some(Outcome::Cancelled),
-                None => state.outcome,
+                None => None,
             };
+            // The first answer is the configuration's. niri 26.04 sends
+            // `cancelled` right after `succeeded` to a configuration whose
+            // apply changed the outputs (its change notice cancels every
+            // configuration the client still holds), so a later one is not.
+            state.outcome = state.outcome.or(answer);
         }
         // Head configurations have no events.
         Kind::ConfigurationHead => {}

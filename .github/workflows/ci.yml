@@ -134,7 +134,7 @@ jobs:
           for d in config data state cache .config .local .cache; do
             if [ -e "$sentinel/$d" ]; then leaked+=$(find "$sentinel/$d"); fi
           done
-          for d in .config/dsplr .local/share/dsplr .local/state/dsplr .cache/dsplr .config/hypr; do
+          for d in .config/dsplr .local/share/dsplr .local/state/dsplr .cache/dsplr .config/hypr .config/niri; do
             if [ -e "$real_home/$d" ]; then leaked+=$(find "$real_home/$d" -newer "$marker"); fi
           done
           if [ -n "$leaked" ]; then
@@ -166,7 +166,8 @@ jobs:
   # runs in a KVM VM with a virtio GPU, as Hyprland's own CI does. The VM is
   # an Arch cloud image: Ubuntu's Hyprland predates the Lua config. sway
   # needs no GPU (pixman), but runs in the same VM so it is the current sway,
-  # through the same steps.
+  # through the same steps. niri has no headless backend, so it runs nested
+  # (winit) in a headless sway, rendering through Mesa's software EGL.
   e2e:
     name: e2e ${{ matrix.desktop }}
     runs-on: ubuntu-latest
@@ -180,6 +181,9 @@ jobs:
             tests: dsplr-backend dsplr
           - desktop: sway
             packages: sway
+            tests: dsplr-backend dsplr
+          - desktop: niri
+            packages: sway niri mesa
             tests: dsplr-backend dsplr
     env:
       IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2

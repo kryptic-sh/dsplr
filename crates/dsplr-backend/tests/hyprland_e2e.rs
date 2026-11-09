@@ -186,7 +186,7 @@ async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
     let hypr = config_home().join("hypr");
     let monitors = hypr.join("monitors.lua");
     assert!(!monitors.exists(), "the harness starts without one");
-    let Persisted::File(file) = backend.persist(&saved, None).expect("saved");
+    let Persisted::File(file) = backend.persist(&saved, None).await.expect("saved");
     assert_eq!(file.path, monitors);
     assert_eq!(file.main_config, hypr.join("hyprland.lua"));
     assert!(file.created);
@@ -219,7 +219,7 @@ async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
 
     // Saved again, it is dsplr's own file and is overwritten, and the config
     // is seen to require it.
-    let Persisted::File(again) = backend.persist(&saved, None).expect("saved again");
+    let Persisted::File(again) = backend.persist(&saved, None).await.expect("saved again");
     assert!(!again.created);
     assert!(again.included);
     assert_eq!(std::fs::read_to_string(&monitors).expect("written"), text);
