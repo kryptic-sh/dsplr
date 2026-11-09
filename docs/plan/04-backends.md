@@ -12,6 +12,12 @@ At start `dsplr-backend` picks one backend, first match wins:
 | 4     | `WAYLAND_DISPLAY` set and the registry offers `zwlr_output_manager_v1`   | `Wlr`      |
 | 5     | `DISPLAY` set and the server has RandR 1.5 or later                      | `Randr`    |
 
+When `HYPRLAND_INSTANCE_SIGNATURE` is set but its socket cannot be found or does
+not answer, detection stops at row 1 with no backend rather than going on: the
+session is Hyprland, which offers `zwlr_output_manager_v1` too, and driving it
+as `Wlr` would test with its stub and leave protocol-applied state overriding
+its monitor rules until restart.
+
 Detection never trusts `XDG_CURRENT_DESKTOP` alone: a variable says what the
 session claims to be, the registry and the bus say what is there.
 `dsplr --backend <name>` overrides it, for testing and for desktops that offer

@@ -7,8 +7,10 @@ verified. Delete an entry when it ships; `git log` keeps the history.
 
 M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
-field with `hyprctl -j monitors all` and matched. Detection knows only Hyprland.
-Build order is `docs/plan/11-milestones.md`.
+field with `hyprctl -j monitors all` and matched. Detection knows Hyprland and
+wlroots compositors (`wlr`, over `zwlr_output_manager_v1`, which reads, tests
+and applies; its e2e runs on headless sway). Build order is
+`docs/plan/11-milestones.md`.
 
 M2 is under way. `Backend::apply` sets a whole layout on Hyprland in one `eval`
 (`Hyprland::apply`, built on `dsplr_persist::hyprland::monitor_calls`), and the
@@ -50,15 +52,30 @@ milestone:
   `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
   headless output that can only check Hyprland accepts the rule (see the
   Hyprland facts below), not that VRR changed.
-- **`wlr-output-management` apply and test** (shared with M4's `Wlr`): no longer
-  blocked. `crcbl-wayland` 0.17.2, crcbl-shell's libwayland-client binding with
-  a raw connection API so `crcbl-wl-scanner` output works outside crcbl, is on
-  crates.io (seen 2026-11-04); pin it with `cargo add`.
-  `crates/crcbl-wayland-probe/src/outputs.rs` in crcbl is a worked example.
-  `zwlr_output_configuration_v1` apply and test have not been exercised from
-  outside crcbl. Hyprland needs it only for a real change stream; applying
-  already works through `eval`. Whether an `eval` mirror survives a protocol
-  apply is unchecked.
+- **Hyprland on `wlr-output-management`**: the `wlr` backend
+  (`dsplr_backend::wlr`) is written and tested on sway, but Hyprland still
+  applies through `eval` and reads `j/monitors`; it needs the protocol only for
+  a real change stream. Moving any field onto it is a decision, since
+  wlr-applied state overrides Hyprland's rules until restart (Hyprland facts
+  below). Whether an `eval` mirror survives a protocol apply is unchecked.
+- **No change stream yet**: every `wlr` read, test and apply opens its own
+  connection (`Wlr::connect`) and closes it, so the serial guards only the
+  instant between reading the heads and sending the configuration, and a change
+  made after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
+  The backend thread of `docs/plan/02-architecture.md`, holding one
+  `wlr::Connection` and following its `done` events, is M3's. `Connection` reads
+  nothing between calls today; it would need a dispatch loop for that.
+- **A scale that is not a 256th is reported as changed after every `wlr`
+  apply**: `set_scale` takes a `wl_fixed`, so 1.3 arrives as 1.30078125, and
+  `Layout::differences` compares within `SCALE_EPSILON`. `dsplr apply` then
+  waits out the whole `SETTLE` and lists the scale as not taken as asked. Either
+  round the asked scale to what the backend can hold before applying, or let the
+  backend give the comparison its own tolerance; the model is the Windows
+  session's, so agree which.
+- **`wlr` on other compositors**: only sway 1.12 (headless) has been run. niri,
+  river, labwc and Wayfire are expected to work through the same protocol and
+  are not checked; COSMIC's own extension and whether it saves outputs itself
+  are still M4's to check (`docs/plan/04-backends.md`).
 - **`Backend::persist`**: not written. Agree with the Windows session where the
   `monitors.lua` save is composed (their entry "Saving `monitors.lua`").
 - **Testing on the owner's desktop**: only after the headless suite passes, and
@@ -73,14 +90,27 @@ milestone:
   tests. On Wayland the name can arrive after the output first appears, so match
   on hotplug and change events too. On wlroots and Hyprland it equals
   wlr-output-management's `head.name`.
-- **First outside use of `crcbl-wayland`'s configuration apply**: crcbl has
-  never run `zwlr_output_configuration_v1` `apply`/`test` or their replies;
-  dsplr's M2 is the first user. Report anything that breaks to the crcbl session
-  (crcbl's backlog keeps a matching entry).
-- **e2e for the other desktops**: each backend (M4 to M7) adds a
-  `headless-<desktop>.sh` harness and a CI matrix entry. niri has no headless
-  mode of its own; nest it (winit) in a headless sway, which was verified for
-  the lyr project.
+- **`crcbl-wl-scanner`'s `decode_event` reads past its borrow; crcbl is fixing
+  it.** The generated `decode_event(opcode, args: &WlArgument)` turns the
+  reference to one slot into a pointer and reads `args.add(1..)` for events with
+  more than one argument, which is outside that reference's provenance under
+  Stacked Borrows (undefined behaviour by Rust's rules, though it works in
+  practice). Reported 2026-11-09; crcbl confirmed it and is changing the
+  generated signature to a slice `&[WlArgument]` sized from the message
+  signature, with a Miri test. That is a breaking change to the generated API:
+  when the crcbl release lands, bump every crcbl crate and have dsplr's
+  dispatcher in `wlr::connection` build the slice (crcbl will send the helper).
+- **Tell crcbl its configuration path works from outside**: dsplr's `wlr`
+  backend ran `zwlr_output_configuration_v1` `test` and `apply` through
+  `crcbl-wayland` 0.17.2 and `crcbl-wl-scanner` output against headless sway
+  1.12 and got `succeeded`, `failed` and `cancelled` each as the protocol says;
+  nothing broke, and valgrind found no memory errors over the e2e (2026-11-09).
+  crcbl's backlog keeps a matching entry that this closes; not sent yet.
+- **e2e for the other desktops**: each backend (M5 to M7) adds a
+  `headless-<desktop>.sh` harness and a CI matrix entry, as
+  `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`. niri has no
+  headless mode of its own; nest it (winit) in a headless sway, which was
+  verified for the lyr project.
 
 ## Open work in the Windows-owned crates
 
@@ -111,8 +141,22 @@ milestone:
   tell fullscreen-only from fullscreen-video-and-games.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files, which wait for the profile store's format.
-- **`dsplr apply --dry-run` validates locally only** on every backend, since no
-  backend has a test request wired up; Hyprland's is a stub anyway.
+- **`Transform`'s text uses wl_output's quarter turns, not sway's**: its
+  `Display` says it writes sway's names, but `Rotate90` (wl_output 1) writes
+  `90`, while sway calls that turn `270`: `swaymsg output X transform 90` sets
+  wl_output transform 3, and sway's IPC reports wl_output 1 as `"270"` (sway
+  1.12, 2026-11-09). The flipped quarter turns presumably swap the same way; not
+  checked. It decides what M4's sway `outputs` writer writes.
+- **`dsplr list` prints `@ 0 Hz` for a mode with no refresh**: headless sway's
+  outputs report refresh 0, which the protocol means as "not said".
+- **Some error paths of `dsplr apply` have no test**: a test or apply the
+  desktop dropped because the displays changed (`Error::is_stale`; dsplr shows
+  the current state, and after an apply removes the revert point instead of
+  going back, which would undo whatever changed them), and a test or apply that
+  could not reach the desktop (a timeout or lost connection, exit 1). The
+  backend's `cancelled` is tested in `sway_e2e`; provoking it through the CLI
+  means winning a race inside one `dsplr apply`, and the transport failures need
+  a compositor that stalls.
 - **The watchdog's output goes nowhere**: its stdin, stdout and stderr are
   closed, since the terminal may be gone when it fires, so a watchdog that fails
   to revert says so to no one. A log file in the state directory would fix that.
@@ -170,6 +214,15 @@ several RandR outputs; whether an `eval` of `hl.monitor` survives a protocol
 apply; KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
 backend's milestone.
 
+- **Neither the Hyprland e2e nor CI's new `sway` e2e entry has run yet for the
+  `wlr` slice** (2026-11-09), until CI runs them. The machine that wrote it has
+  no `kwin_wayland`, which the Hyprland harness nests Hyprland in. The slice
+  moved the Hyprland tests' shared helpers into `tests/e2e/support.rs`, gave
+  Hyprland a `test` that returns `Unsupported`, added a `--dry-run` step to
+  `apps/dsplr/tests/hyprland_e2e.rs` ("validated locally only") and lengthened
+  its `WATCHDOG_WAIT` for the longer watchdog delay; all of it compiles, none of
+  it has run. The sway e2e ran locally under `tests/e2e/headless-sway.sh`, not
+  in the CI VM.
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
   before the panic message. The next 27 runs passed, including one that
@@ -220,6 +273,14 @@ and the `monitors.lua` writer:
 
 ## Behaviour that surprised us but is not a bug
 
+- **Headless sway's `test` passes nearly anything**: a 100000x100000 custom
+  mode, overlapping outputs and every output disabled all pass; what it refuses
+  is a mode whose buffer it cannot allocate (2000000000x1: `mmap failed`), which
+  is what the e2e uses. Asking for adaptive sync on a headless output succeeds
+  and it stays off, so, as on Hyprland, an e2e test can show the request is
+  accepted, not that VRR changed.
+- **Headless sway lists one made-up mode per output**: its current size, refresh
+  0, not preferred; any other size is a custom mode.
 - **Hyprland lists some modes twice.** Its `j/monitors all` reply on the owner's
   AOC Q27G4 has `1920x1080@60.00Hz`, `720x576@50.00Hz`,
   `720x480@60.00Hz`/`59.94Hz` and `640x480@59.94Hz` each twice, likely
@@ -227,7 +288,13 @@ and the `monitors.lua` writer:
   dsplr shows both rather than drop a real mode. It matters for M2's mode
   matching: applying through `wlr-output-management` gives each its own mode
   object, so the two must be told apart there (by the protocol's own mode
-  objects), not by size and refresh.
+  objects), not by size and refresh. The `wlr` backend does it by ordinal: a
+  mode it read carries its index among its head's modes (`Mode::handle`), and
+  each apply, on a connection of its own, re-resolves it on the head with the
+  same connector at the same index, if that object still has the same size and
+  refresh; otherwise it matches by size and refresh alone. A compositor that
+  reorders a head's modes between the read and the apply can still swap two
+  identical ones.
 - **CI runs on `main` cancel each other.** The concurrency group cancels a run
   when a newer push lands, so with two sessions pushing, most commits get no
   finished run of their own; the run on the newest commit covers them all. Hold

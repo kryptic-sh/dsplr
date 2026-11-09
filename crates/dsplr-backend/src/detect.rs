@@ -29,11 +29,14 @@ impl Check {
 
 /// What detection says about the desktops whose backends do not exist yet.
 #[cfg(target_os = "linux")]
-const NOT_WRITTEN: &str = "not written yet (planned for M4 to M7)";
+const NOT_WRITTEN: &str = "not written yet (planned for M5 to M7)";
 
-/// Finds the backend for the running desktop. Hyprland is tried first; the
-/// wlroots, KDE, GNOME and X11 backends are not written yet. On other
-/// targets than Linux nothing is found.
+/// Finds the backend for the running desktop, in the plan's order: Hyprland,
+/// then KDE and GNOME (not written yet), then a wlroots compositor's output
+/// manager, then X11 (not written yet). When Hyprland's variable is set but
+/// its socket does not answer, detection stops there: this is Hyprland, and
+/// its own `wlr-output-management` would pass for a wlroots compositor. On
+/// other targets than Linux nothing is found.
 pub async fn detect() -> Detection {
     #[cfg(target_os = "linux")]
     {
@@ -54,39 +57,119 @@ pub async fn detect() -> Detection {
 /// [`detect`] on Linux, reading the environment through `var`.
 #[cfg(target_os = "linux")]
 async fn detect_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Detection {
-    use crate::hyprland::{Error, Hyprland};
-
     let mut checks = Vec::new();
-    match Hyprland::from_vars(var) {
-        Err(error @ (Error::NotRunning | Error::NoRuntimeDir)) => {
-            checks.push(Check::new("Hyprland", error.to_string()));
+    match hyprland(&var, &mut checks).await {
+        Hyprland::Found(backend) => {
+            return Detection {
+                checks,
+                backend: Some(backend),
+            };
         }
-        Err(error) => checks.push(Check::new("Hyprland", error.to_string())),
-        Ok(hyprland) => match hyprland.version().await {
-            Ok(version) => {
-                checks.push(Check::new(
-                    "Hyprland",
-                    format!("socket answered: Hyprland {version}"),
-                ));
-                return Detection {
-                    checks,
-                    backend: Some(Backend::Hyprland(hyprland)),
-                };
-            }
-            Err(error) => {
-                checks.push(Check::new(
-                    "Hyprland",
-                    format!("socket did not answer: {error}"),
-                ));
-            }
-        },
+        Hyprland::Unreachable => {
+            checks.push(Check::new("other backends", HYPRLAND_UNREACHABLE));
+            return Detection {
+                checks,
+                backend: None,
+            };
+        }
+        Hyprland::NotRunning => {}
     }
-    checks.push(Check::new("wlroots, KDE, GNOME, X11", NOT_WRITTEN));
+    checks.push(Check::new("KDE, GNOME", NOT_WRITTEN));
+    if let Some(backend) = wlr(&var, &mut checks).await {
+        return Detection {
+            checks,
+            backend: Some(backend),
+        };
+    }
+    checks.push(Check::new("X11", NOT_WRITTEN));
     Detection {
         checks,
         backend: None,
     }
 }
+
+/// Why detection stops at a Hyprland that does not answer.
+#[cfg(target_os = "linux")]
+const HYPRLAND_UNREACHABLE: &str = "not tried: HYPRLAND_INSTANCE_SIGNATURE is set, so this is Hyprland, \
+     whose wlr-output-management has no real test and whose state applied through it \
+     overrides its monitor rules until restart";
+
+/// What the Hyprland check found.
+#[cfg(target_os = "linux")]
+enum Hyprland {
+    Found(Backend),
+    /// `HYPRLAND_INSTANCE_SIGNATURE` is not set.
+    NotRunning,
+    /// It is set, but the socket cannot be found or does not answer.
+    Unreachable,
+}
+
+/// Hyprland, when its variable is set and its socket answers.
+#[cfg(target_os = "linux")]
+async fn hyprland(
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    checks: &mut Vec<Check>,
+) -> Hyprland {
+    use crate::hyprland::{Error, Hyprland as Ipc};
+
+    let hyprland = match Ipc::from_vars(var) {
+        Ok(hyprland) => hyprland,
+        Err(error) => {
+            checks.push(Check::new("Hyprland", error.to_string()));
+            return if matches!(error, Error::NotRunning) {
+                Hyprland::NotRunning
+            } else {
+                Hyprland::Unreachable
+            };
+        }
+    };
+    match hyprland.version().await {
+        Ok(version) => {
+            checks.push(Check::new(
+                "Hyprland",
+                format!("socket answered: Hyprland {version}"),
+            ));
+            Hyprland::Found(Backend::Hyprland(hyprland))
+        }
+        Err(error) => {
+            checks.push(Check::new(
+                "Hyprland",
+                format!("socket did not answer: {error}"),
+            ));
+            Hyprland::Unreachable
+        }
+    }
+}
+
+/// A wlroots compositor, when `WAYLAND_DISPLAY` names a compositor that
+/// offers `zwlr_output_manager_v1` and describes its heads.
+#[cfg(target_os = "linux")]
+async fn wlr(
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    checks: &mut Vec<Check>,
+) -> Option<Backend> {
+    match crate::wlr::Wlr::from_vars(var).await {
+        Ok(wlr) => {
+            checks.push(Check::new(
+                WLR_CHECK,
+                format!(
+                    "zwlr_output_manager_v1 version {} at {}",
+                    wlr.version(),
+                    wlr.socket().display()
+                ),
+            ));
+            Some(Backend::Wlr(wlr))
+        }
+        Err(error) => {
+            checks.push(Check::new(WLR_CHECK, error.to_string()));
+            None
+        }
+    }
+}
+
+/// What the wlroots check is called in [`Detection::checks`].
+#[cfg(target_os = "linux")]
+const WLR_CHECK: &str = "wlroots";
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
@@ -142,10 +225,66 @@ mod tests {
                 .found
                 .starts_with("socket did not answer")
         );
-        assert_eq!(
-            detection.checks.last().map(|c| c.what),
-            Some("wlroots, KDE, GNOME, X11")
+        let order: Vec<_> = detection.checks.iter().map(|c| c.what).collect();
+        assert_eq!(order, ["Hyprland", "other backends"], "stops at Hyprland");
+        assert!(detection.checks[1].found.starts_with("not tried"));
+    }
+
+    #[tokio::test]
+    async fn a_hyprland_that_does_not_answer_is_not_driven_as_a_wlroots_compositor() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        // A Wayland socket that would answer as wlroots if it were tried:
+        // anything listening counts, since trying it is what must not happen.
+        let _wayland = UnixListener::bind(runtime.path().join("wayland-1")).expect("bind");
+        let detection = detect_with(|name| match name {
+            "HYPRLAND_INSTANCE_SIGNATURE" => Some("sig".into()),
+            "WAYLAND_DISPLAY" => Some("wayland-1".into()),
+            "XDG_RUNTIME_DIR" => Some(runtime.path().as_os_str().to_owned()),
+            _ => None,
+        })
+        .await;
+        assert!(detection.backend.is_none());
+        assert!(
+            detection.checks.iter().all(|check| check.what != "wlroots"),
+            "{:?}",
+            detection.checks
         );
+    }
+
+    #[tokio::test]
+    async fn a_hyprland_signature_without_a_runtime_dir_stops_detection_too() {
+        let detection = detect_with(|name| match name {
+            "HYPRLAND_INSTANCE_SIGNATURE" => Some("sig".into()),
+            "WAYLAND_DISPLAY" => Some("/tmp/nowhere/wayland-1".into()),
+            _ => None,
+        })
+        .await;
+        assert!(detection.backend.is_none());
+        let order: Vec<_> = detection.checks.iter().map(|c| c.what).collect();
+        assert_eq!(order, ["Hyprland", "other backends"]);
+    }
+
+    #[tokio::test]
+    async fn no_wayland_compositor_in_the_environment_is_reported() {
+        let detection = detect_with(|_| None).await;
+        assert!(detection.backend.is_none());
+        let wlr = &detection.checks[2];
+        assert_eq!(wlr.what, "wlroots");
+        assert!(wlr.found.contains("WAYLAND_DISPLAY"), "{}", wlr.found);
+    }
+
+    #[tokio::test]
+    async fn a_wayland_socket_that_is_not_there_is_reported() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let detection = detect_with(|name| match name {
+            "WAYLAND_DISPLAY" => Some("wayland-7".into()),
+            "XDG_RUNTIME_DIR" => Some(runtime.path().as_os_str().to_owned()),
+            _ => None,
+        })
+        .await;
+        assert!(detection.backend.is_none());
+        let wlr = &detection.checks[2];
+        assert!(wlr.found.contains("wayland-7"), "{}", wlr.found);
     }
 
     #[tokio::test]

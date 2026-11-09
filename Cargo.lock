@@ -160,6 +160,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crcbl-wayland"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a843bf5bd11d8490ed6a4455c1ce1420a14d593b2f609ea84ce8dd3b3204275"
+
+[[package]]
+name = "crcbl-wl-scanner"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "573400901873bb6a3e52c1a936bfaef8bc2704d3f682590a06ab4d89d394705e"
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -241,6 +253,8 @@ dependencies = [
 name = "dsplr-backend"
 version = "0.1.0"
 dependencies = [
+ "crcbl-wayland",
+ "crcbl-wl-scanner",
  "dsplr-model",
  "dsplr-persist",
  "serde",

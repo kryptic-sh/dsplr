@@ -16,9 +16,12 @@ use dsplr_backend::hyprland::Hyprland;
 use dsplr_model::{Layout, Mode, OutputId, Transform};
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
+mod hyprland_support;
+#[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use support::{edited, entry, entry_mut, harness_runtime, hyprctl, snapshot_until};
+use hyprland_support::{harness_runtime, hyprctl, snapshot_until};
+use support::{edited, entry, entry_mut};
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]

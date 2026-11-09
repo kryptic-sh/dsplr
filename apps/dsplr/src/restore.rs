@@ -10,7 +10,7 @@ use std::time::Duration;
 use dsplr_backend::Backend;
 use dsplr_persist::revert::{self, RevertPoint};
 
-use crate::apply::{SETTLE, report, settle};
+use crate::apply::{report, settle, settle_limit};
 use crate::{Exit, find_backend};
 
 /// How long the watchdog waits past the longest the dsplr that started it
@@ -19,11 +19,14 @@ use crate::{Exit, find_backend};
 const WATCHDOG_GRACE: Duration = Duration::from_secs(5);
 
 /// How long the watchdog for a change confirmed within `confirm_timeout`
-/// waits before it reverts. Counted from before the apply, it covers the
-/// apply's settle, the prompt, and the settle of dsplr's own revert after a
-/// no, so the two never go back at once.
-pub fn watchdog_delay(confirm_timeout: Duration) -> Duration {
-    SETTLE + confirm_timeout + SETTLE + WATCHDOG_GRACE
+/// waits before it reverts, on a backend whose requests take at most
+/// `request_timeout` ([`dsplr_backend::Backend::request_timeout`]). Counted
+/// from before the apply, it covers the apply and its settle, the prompt,
+/// and the apply and settle of dsplr's own revert after a no, so the two
+/// never go back at once even when every request runs to its timeout.
+pub fn watchdog_delay(confirm_timeout: Duration, request_timeout: Duration) -> Duration {
+    let change = request_timeout + settle_limit(request_timeout);
+    change + confirm_timeout + change + WATCHDOG_GRACE
 }
 
 /// Starts the watchdog for the change `token` names: a detached
@@ -116,11 +119,22 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
 mod tests {
     use std::time::Duration;
 
-    use super::{SETTLE, watchdog_delay};
+    use super::{settle_limit, watchdog_delay};
+    use crate::apply::SETTLE;
 
     #[test]
-    fn the_watchdog_waits_past_both_settles_and_the_prompt() {
-        let timeout = Duration::from_secs(20);
-        assert!(watchdog_delay(timeout) > SETTLE + timeout + SETTLE);
+    fn the_watchdog_waits_past_two_slow_changes_and_the_prompt() {
+        let confirm = Duration::from_secs(20);
+        for request in [
+            Duration::ZERO,
+            Duration::from_secs(5),
+            Duration::from_secs(10),
+        ] {
+            // An apply and its settle, each request running to its timeout,
+            // before and after the prompt.
+            let change = request + settle_limit(request);
+            assert!(settle_limit(request) > SETTLE + request);
+            assert!(watchdog_delay(confirm, request) > 2 * change + confirm);
+        }
     }
 }

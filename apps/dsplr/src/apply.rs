@@ -20,11 +20,18 @@ pub const SETTLE: Duration = Duration::from_secs(5);
 /// How often a re-read looks again while the desktop settles.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
 
+/// The longest [`settle`] can take on a backend whose requests take at most
+/// `request_timeout`: it checks its deadline only once a snapshot returns,
+/// after a poll's sleep.
+pub fn settle_limit(request_timeout: Duration) -> Duration {
+    SETTLE + SETTLE_POLL + request_timeout
+}
+
 /// How `dsplr apply` was asked to run.
 pub struct Options {
     /// Keep the change without asking.
     pub yes: bool,
-    /// Validate only.
+    /// Validate and test only.
     pub dry_run: bool,
     /// How long the confirm prompt waits before reverting.
     pub confirm_timeout: Duration,
@@ -64,12 +71,46 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
     if problems.iter().any(Problem::is_error) {
         return Exit::Refused;
     }
-    if options.dry_run {
-        eprintln!(
-            "dsplr: validated locally only; testing a layout before applying it is not written for {}",
-            backend.name()
-        );
-        return Exit::Success;
+    // Step 2: the desktop's own test, where it has a real one.
+    match backend.test(&asked).await {
+        Ok(()) if options.dry_run => {
+            eprintln!(
+                "dsplr: {} tested the layout and would apply it",
+                backend.name()
+            );
+            return Exit::Success;
+        }
+        Ok(()) => {}
+        Err(dsplr_backend::Error::Unsupported { reason, .. }) if options.dry_run => {
+            eprintln!(
+                "dsplr: validated locally only; {} cannot test a layout: {reason}",
+                backend.name()
+            );
+            return Exit::Success;
+        }
+        Err(dsplr_backend::Error::Unsupported { .. }) => {}
+        Err(error) if error.is_refusal() => {
+            eprintln!(
+                "dsplr: {} refused the layout in its test, so nothing was applied: {error}",
+                backend.name()
+            );
+            return Exit::BackendRefused;
+        }
+        Err(error) if error.is_stale() => {
+            eprintln!(
+                "dsplr: the displays changed while {} tested the layout, so nothing was applied: {error}",
+                backend.name()
+            );
+            show_now(backend, &asked, &capabilities).await;
+            return Exit::BackendRefused;
+        }
+        Err(error) => {
+            eprintln!(
+                "dsplr: cannot test the layout on {}, so nothing was applied: {error}",
+                backend.name()
+            );
+            return Exit::Failure;
+        }
     }
     let ask = !options.yes && needs_confirm(&asked, &current, &capabilities);
     if ask && !io::stdin().is_terminal() {
@@ -93,7 +134,7 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
     }
     if let Err(error) = restore::spawn_watchdog(
         &point.token,
-        restore::watchdog_delay(options.confirm_timeout),
+        restore::watchdog_delay(options.confirm_timeout, backend.request_timeout()),
     ) {
         eprintln!("dsplr: cannot start the revert watchdog: {error}");
         if let Err(error) = revert::remove_if(&path, &point.token) {
@@ -103,9 +144,34 @@ pub async fn run(backend: &Backend, file: &Layout, options: &Options) -> Exit {
     }
 
     if let Err(error) = backend.apply(&asked).await {
-        eprintln!("dsplr: {} refused the layout: {error}", backend.name());
+        if error.is_stale() {
+            // Nothing was applied, and the displays changed since the revert
+            // point was read: going back would undo that other change. Show
+            // what they are now instead.
+            eprintln!(
+                "dsplr: the displays changed before {} applied the layout, so nothing was applied: {error}",
+                backend.name()
+            );
+            if let Err(error) = revert::remove_if(&path, &point.token) {
+                eprintln!("dsplr: {error}");
+            }
+            show_now(backend, &asked, &capabilities).await;
+            return Exit::BackendRefused;
+        }
+        // Refused or not, something may have changed (a connection lost
+        // mid-apply), so go back either way.
+        let exit = if error.is_refusal() {
+            eprintln!("dsplr: {} refused the layout: {error}", backend.name());
+            Exit::BackendRefused
+        } else {
+            eprintln!(
+                "dsplr: cannot apply the layout on {}: {error}",
+                backend.name()
+            );
+            Exit::Failure
+        };
         restore::go_back(backend, &path, &point).await;
-        return Exit::BackendRefused;
+        return exit;
     }
     match settle(backend, &asked, &capabilities).await {
         Ok(differences) => report(&differences),
@@ -216,6 +282,15 @@ pub async fn settle(
             return Ok(differences);
         }
         tokio::time::sleep(SETTLE_POLL).await;
+    }
+}
+
+/// Reads the displays again after the desktop dropped a request because they
+/// changed, and shows how they differ from `asked`.
+async fn show_now(backend: &Backend, asked: &Layout, capabilities: &Capabilities) {
+    match backend.snapshot().await {
+        Ok(now) => report(&asked.differences(&now, capabilities)),
+        Err(error) => eprintln!("dsplr: cannot read the displays again: {error}"),
     }
 }
 

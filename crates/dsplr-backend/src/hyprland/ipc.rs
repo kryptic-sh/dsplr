@@ -13,9 +13,9 @@ use dsplr_persist::hyprland::{MonitorNaming, MonitorsLua, WriteError, monitor_ca
 
 use super::{Monitor, SnapshotError, layout};
 
-/// How long a request may take before dsplr gives up on it. `hyprctl` uses
-/// the same receive timeout.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a request may take before dsplr gives up on it, connecting
+/// included. `hyprctl` uses the same receive timeout.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The request for every monitor, disabled ones included.
 const MONITORS_REQUEST: &str = "j/monitors all";

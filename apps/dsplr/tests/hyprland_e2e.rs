@@ -25,21 +25,25 @@ use dsplr_model::{Layout, Transform};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
+mod hyprland_support;
+#[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use support::{edited, entry, entry_mut, harness_runtime, hyprctl, snapshot_until};
+use hyprland_support::{harness_runtime, hyprctl, snapshot_until};
+use support::{edited, entry, entry_mut};
 
 /// The confirm timeout the declined and timed-out runs use.
 const CONFIRM_SECS: u32 = 2;
 
 /// How long the watchdog may take to revert after dsplr is killed: its whole
-/// delay (settle, prompt and grace, `restore::watchdog_delay`) and the
-/// revert's own settle, with room to spare.
-const WATCHDOG_WAIT: Duration = Duration::from_secs(30);
+/// delay (`restore::watchdog_delay` for this confirm timeout and Hyprland's
+/// request timeout: two changes, each a request and a settle, the prompt and
+/// a grace) and the revert's own settle, with room to spare.
+const WATCHDOG_WAIT: Duration = Duration::from_secs(60);
 
 /// How long after the kill the change must still show. The watchdog's delay
-/// is longer: `restore::watchdog_delay` adds the settle and a grace to the
-/// confirm timeout.
+/// is longer: `restore::watchdog_delay` adds the requests, the settles and a
+/// grace to the confirm timeout.
 const STILL_CHANGED: Duration = Duration::from_secs(3);
 
 /// What `dsplr` prints when it asks.
@@ -146,6 +150,20 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
     let rotated = |layout: &Layout| entry(layout, "DSPLR-1").state.transform == Transform::Rotate90;
     let revert_file = revert_path();
 
+    // Hyprland's test is a stub, so a dry run says it validated locally
+    // only, and changes nothing.
+    let output = Command::new(dsplr_bin())
+        .args(["apply", "--dry-run"])
+        .arg(&file)
+        .stdin(Stdio::null())
+        .output()
+        .expect("dsplr runs");
+    let (code, text) = exit_and_output(&output);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("validated locally only"), "{text}");
+    assert_eq!(backend.snapshot().await.expect("snapshot"), start);
+    assert!(!revert_file.exists(), "a dry run starts no change");
+
     // --yes keeps it without asking, and leaves the revert point for a
     // revert by hand, which puts the old layout back and removes it.
     let output = Command::new(dsplr_bin())
@@ -169,7 +187,13 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
         .expect("dsplr runs");
     let (code, text) = exit_and_output(&output);
     assert_eq!(code, Some(0), "{text}");
-    back_to(&backend, &start, "restore --revert", support::SETTLE).await;
+    back_to(
+        &backend,
+        &start,
+        "restore --revert",
+        hyprland_support::SETTLE,
+    )
+    .await;
     assert!(!revert_file.exists(), "a revert removes the revert point");
 
     // "n" on the prompt reverts, and so does no answer.
@@ -185,7 +209,13 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
         let (code, text) = exit_and_output(&output);
         assert_eq!(code, Some(REVERTED), "answer {answer:?}: {text}");
         assert!(text.contains(PROMPT), "answer {answer:?} was asked: {text}");
-        back_to(&backend, &start, "after the prompt", support::SETTLE).await;
+        back_to(
+            &backend,
+            &start,
+            "after the prompt",
+            hyprland_support::SETTLE,
+        )
+        .await;
         assert!(!revert_file.exists(), "a revert removes the revert point");
     }
 
@@ -226,7 +256,7 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
     assert!(rotated(&layout), "nothing reverts before the watchdog does");
     back_to(&backend, &start, "the watchdog", WATCHDOG_WAIT).await;
     // The watchdog removes the revert point after its own settle.
-    let deadline = Instant::now() + support::SETTLE;
+    let deadline = Instant::now() + hyprland_support::SETTLE;
     while revert_file.exists() {
         assert!(
             Instant::now() < deadline,

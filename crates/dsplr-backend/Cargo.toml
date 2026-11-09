@@ -24,3 +24,9 @@ workspace = true
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "macros", "sync"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+crcbl-wayland = "0.17.2"
+
+[build-dependencies]
+crcbl-wl-scanner = "0.17.2"

@@ -49,7 +49,8 @@ enum Command {
         /// written, for `dsplr restore --revert`.
         #[arg(long)]
         yes: bool,
-        /// Check the layout without applying it.
+        /// Check the layout without applying it: validate it, then have the
+        /// desktop test it where it has a real test.
         #[arg(long)]
         dry_run: bool,
         /// Seconds to wait for an answer before reverting, in place of the
