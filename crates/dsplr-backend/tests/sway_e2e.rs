@@ -133,6 +133,10 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
             ),
             "{result:?}"
         );
+        assert!(
+            result.as_ref().is_err_and(Error::is_refused_before_sending),
+            "dsplr's refusal, not sway's: {result:?}"
+        );
     }
     assert_eq!(snapshot(&backend).await, start);
 

@@ -124,12 +124,22 @@ pub fn monitor_calls(file: &MonitorsLua, naming: MonitorNaming) -> Result<String
 /// live output), else `source`'s own connector, or its description as
 /// `desc:` when that is all it is (a mirror read from a file, of a monitor
 /// not connected now). `None` when it has no usable name.
+///
+/// A `desc:` source is resolved by Hyprland's prefix rule
+/// ([`OutputId::matches_as_hyprland`]), not dsplr's whole words: written
+/// back as `desc:`, it is Hyprland that will match it, so the connector
+/// written in its place must be the monitor Hyprland would pick.
 fn mirror_name(layout: &Layout, source: &OutputId) -> Option<String> {
     let in_layout = layout
         .entries
         .iter()
         .find(|other| other.id == *source)
-        .or_else(|| layout.entries.iter().find(|other| source.matches(other)));
+        .or_else(|| {
+            layout
+                .entries
+                .iter()
+                .find(|other| source.matches_as_hyprland(other))
+        });
     if let Some(connector) = in_layout.and_then(OutputEntry::connector) {
         return Some(connector.to_owned());
     }

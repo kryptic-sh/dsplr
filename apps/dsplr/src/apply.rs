@@ -91,6 +91,10 @@ pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &O
             return Exit::Success;
         }
         Err(dsplr_backend::Error::Unsupported { .. }) => {}
+        Err(error) if error.is_refused_before_sending() => {
+            cannot_take(backend, &error);
+            return Exit::Refused;
+        }
         Err(error) if error.is_refusal() => {
             eprintln!(
                 "dsplr: {} refused the layout in its test, so nothing was applied: {error}",
@@ -160,6 +164,14 @@ pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &O
             show_now(backend, asked, &capabilities).await;
             return Exit::BackendRefused;
         }
+        if error.is_refused_before_sending() {
+            // Nothing was sent, so there is nothing to go back from.
+            cannot_take(backend, &error);
+            if let Err(error) = revert::remove_if(&path, &point.token) {
+                eprintln!("dsplr: {error}");
+            }
+            return Exit::Refused;
+        }
         // Refused or not, something may have changed (a connection lost
         // mid-apply), so go back either way.
         let exit = if error.is_refusal() {
@@ -188,10 +200,11 @@ pub async fn run(backend: &Backend, current: Layout, asked: &Layout, options: &O
 
     if ask && !confirm(options.confirm_timeout) {
         eprintln!("dsplr: reverting");
-        return if restore::go_back(backend, &path, &point).await {
-            Exit::Reverted
-        } else {
-            Exit::BackendRefused
+        // A revert that failed leaves the declined layout on screen, so
+        // nothing here may read as "nothing was applied" (3 or 4).
+        return match restore::go_back(backend, &path, &point).await {
+            Exit::Success => Exit::Reverted,
+            _ => Exit::Failure,
         };
     }
     match revert::keep(&path, &point.token) {
@@ -285,6 +298,15 @@ pub async fn settle(
         }
         tokio::time::sleep(SETTLE_POLL).await;
     }
+}
+
+/// Reports a layout `backend` refused before sending it
+/// ([`dsplr_backend::Error::is_refused_before_sending`]).
+fn cannot_take(backend: &Backend, error: &dsplr_backend::Error) {
+    eprintln!(
+        "dsplr: {} cannot take the layout, so nothing was applied: {error}",
+        backend.name()
+    );
 }
 
 /// Reads the displays again after the desktop dropped a request because they
@@ -401,17 +423,20 @@ mod tests {
 
     #[test]
     fn a_file_naming_an_output_not_connected_is_refused() {
-        let file = Layout {
-            entries: vec![OutputEntry {
-                id: OutputId::Connector("DP-9".into()),
-                output: None,
-                state: OutputState::default(),
-            }],
-        };
-        assert_eq!(
-            bind(&file, &live()),
-            Err(vec![OutputId::Connector("DP-9".into())])
-        );
+        // BB is not BBB: a description names whole words.
+        for id in [
+            OutputId::Connector("DP-9".into()),
+            OutputId::Description("AOC Q27G4 BB".into()),
+        ] {
+            let file = Layout {
+                entries: vec![OutputEntry {
+                    id: id.clone(),
+                    output: None,
+                    state: OutputState::default(),
+                }],
+            };
+            assert_eq!(bind(&file, &live()), Err(vec![id]));
+        }
     }
 
     #[test]

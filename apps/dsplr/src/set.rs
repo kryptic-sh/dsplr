@@ -54,6 +54,12 @@ pub struct Changes {
     /// Show the same picture as this output, named as the output is.
     #[arg(long, value_name = "OUT")]
     pub mirror: Option<String>,
+    /// Stop mirroring another output; nothing changes for one that is not
+    /// mirroring. The output keeps the position the desktop reports for it,
+    /// and Hyprland reports a mirror at its source's position, so there it
+    /// needs `--pos` to stay clear of the source.
+    #[arg(long, conflicts_with = "mirror")]
+    pub no_mirror: bool,
 }
 
 impl Changes {
@@ -67,6 +73,7 @@ impl Changes {
             ("--transform", self.transform.is_some()),
             ("--vrr", self.vrr.is_some()),
             ("--mirror", self.mirror.is_some()),
+            ("--no-mirror", self.no_mirror),
         ]
         .into_iter()
         .filter_map(|(flag, given)| given.then_some(flag))
@@ -99,8 +106,8 @@ enum NotFound {
 
 /// The index of the output `name` names in `layout`: the one on that
 /// connector, else the one with exactly that description, else the one
-/// whose description starts with it, as [`OutputId::matches`] reads a
-/// description.
+/// whose description starts with its words, as [`OutputId::matches`] reads
+/// a description.
 fn find(layout: &Layout, name: &str) -> Result<usize, NotFound> {
     let named = |by: &dyn Fn(&OutputEntry) -> bool| -> Vec<usize> {
         (0..layout.entries.len())
@@ -199,7 +206,8 @@ pub async fn run(
         eprintln!("dsplr: {named}: {refusal}");
         return Exit::Refused;
     }
-    // A description names an output by its start, so say which one this is.
+    // A description names an output by its first words, so say which one
+    // this is.
     eprintln!("dsplr: setting {named}");
     apply::run(backend, current, &asked, options).await
 }
@@ -248,7 +256,9 @@ fn edit(
         }
         entry.state.adaptive_sync = Some(vrr);
     }
-    if mirror_of.is_some() {
+    if changes.no_mirror {
+        entry.state.mirror_of = None;
+    } else if mirror_of.is_some() {
         entry.state.mirror_of = mirror_of;
     }
     Ok(())
@@ -440,9 +450,21 @@ mod tests {
             find(&layout, "AOC Q27G4"),
             Err(NotFound::Ambiguous(vec![0, 1]))
         );
-        for name in ["DP-9", "dp-1", "Q27G4", "", "  "] {
+        for name in [
+            "DP-9",
+            "dp-1",
+            "Q27G4",
+            "AOC Q27",
+            "AOC Q27G4 SER",
+            "",
+            "  ",
+        ] {
             assert_eq!(find(&layout, name), Err(NotFound::Unknown), "{name:?}");
         }
+        // With SER1 unplugged, its name does not find SER12.
+        let mut unplugged = outputs();
+        unplugged.entries.remove(0);
+        assert_eq!(find(&unplugged, "AOC Q27G4 SER1"), Err(NotFound::Unknown));
         let mut twins = outputs();
         twins.entries[1].output.as_mut().unwrap().description = "AOC Q27G4 SER1".into();
         assert_eq!(
@@ -574,6 +596,7 @@ mod tests {
             enable: false,
             disable: false,
             mirror: None,
+            no_mirror: false,
         }
     }
 
@@ -664,6 +687,42 @@ mod tests {
             };
             assert_eq!(off_refusal(enabled, &alone), None);
         }
+    }
+
+    #[test]
+    fn no_mirror_ends_a_mirror_and_changes_nothing_on_an_output_not_mirroring() {
+        let caps = Capabilities::default();
+        let no_mirror = Changes {
+            no_mirror: true,
+            ..changes()
+        };
+        let mut entry = output("DP-1", "AOC", modes());
+        entry.state.mirror_of = Some(OutputId::Connector("DP-2".into()));
+        let mirroring = entry.clone();
+        edit(&mut entry, &no_mirror, None, &caps).unwrap();
+        assert_eq!(entry.state.mirror_of, None);
+        assert_eq!(
+            entry,
+            OutputEntry {
+                state: OutputState {
+                    mirror_of: None,
+                    ..mirroring.state.clone()
+                },
+                ..mirroring
+            }
+        );
+
+        // Not mirroring, it is left as it is, on a desktop without
+        // mirroring too: like any setting asked for at its current value.
+        let before = entry.clone();
+        edit(&mut entry, &no_mirror, None, &caps).unwrap();
+        assert_eq!(entry, before);
+
+        // It is a setting, so an output left off refuses it.
+        assert_eq!(
+            off_refusal(false, &no_mirror).as_deref(),
+            Some("it is off; add --enable to change --no-mirror")
+        );
     }
 
     #[test]

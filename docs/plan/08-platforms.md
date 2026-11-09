@@ -16,7 +16,7 @@ milestone; the table is corrected then and the "?" removed.
 | Adaptive sync       | yes                        | v4 only                                                                   | yes (policy)                      | ?                                           | read-only               |
 | Mirroring           | via `eval` (M2 exit check) | no                                                                        | in KWin 6.8, needs newer bindings | yes                                         | yes                     |
 | Test before apply   | no (stub always succeeds)  | yes                                                                       | no (no test request)              | yes (`verify`)                              | no                      |
-| Persistence         | `monitors.lua`/`.conf`     | per compositor ([05](05-persistence-and-profiles.md#wlroots-compositors)) | by KWin, likely on every apply    | `monitors.xml`, after GNOME Shell's confirm | dsplr store + autostart |
+| Persistence         | `monitors.lua`             | per compositor ([05](05-persistence-and-profiles.md#wlroots-compositors)) | by KWin, likely on every apply    | `monitors.xml`, after GNOME Shell's confirm | dsplr store + autostart |
 | Extra fields        | colour preset, bit depth   | —                                                                         | overscan, RGB range, priority     | primary monitor                             | primary output          |
 | Per-monitor dialogs | panels                     | panels                                                                    | panels                            | no (toplevel; Shell confirm on save)        | panels                  |
 

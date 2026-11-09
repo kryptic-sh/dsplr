@@ -1,9 +1,9 @@
 //! `dsplr apply` and `dsplr restore --revert` against a real, headless
 //! Hyprland: keeping a change, declining it, letting the prompt time out, and
 //! the watchdog reverting for a dsplr that died; `dsplr set` mirroring one
-//! output, through the same flow. And `dsplr save`: creating
-//! monitors.lua, and asking before it replaces one it may not simply
-//! overwrite.
+//! output and ending the mirror, through the same flow. And `dsplr save`:
+//! creating monitors.lua, and asking before it replaces one it may not
+//! simply overwrite.
 //!
 //! Run through the harness, which starts that Hyprland where it cannot reach
 //! the desktop session and gives dsplr a private state directory:
@@ -219,14 +219,25 @@ async fn dsplr_apply_keeps_declines_times_out_and_is_reverted_by_its_watchdog() 
         entry(layout, "DSPLR-1").state.mirror_of.as_ref() == Some(&wayland_1)
     })
     .await;
+    // And --no-mirror ends it. Hyprland moves a mirror onto its source
+    // (`CMonitor::setMirror`), so --pos puts it back where it was. The
+    // revert point left behind holds the mirror; the next change replaces it.
+    let one = &entry(&start, "DSPLR-1").state;
+    let pos = format!("{},{}", one.x, one.y);
     let output = Command::new(dsplr_bin())
-        .args(["restore", "--revert"])
+        .args(["set", "DSPLR-1", "--no-mirror", "--pos", &pos, "--yes"])
         .stdin(Stdio::null())
         .output()
         .expect("dsplr runs");
     let (code, text) = exit_and_output(&output);
     assert_eq!(code, Some(0), "{text}");
-    back_to(&backend, &start, "set reverted", hyprland_support::SETTLE).await;
+    back_to(
+        &backend,
+        &start,
+        "set --no-mirror",
+        hyprland_support::SETTLE,
+    )
+    .await;
 
     // "n" on the prompt reverts, and so does no answer.
     let pid_file = runtime.join("dsplr.pid");

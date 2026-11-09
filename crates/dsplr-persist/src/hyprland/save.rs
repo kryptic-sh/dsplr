@@ -8,11 +8,16 @@ use std::{fs, io};
 
 use dsplr_model::{Layout, OutputEntry};
 
-use super::{MonitorNaming, MonitorsLua, WriteError, monitor_calls, read_monitors_lua};
+use super::{
+    MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name, read_monitors_lua,
+};
 use crate::managed::{Comment, Conflict, Ownership, Saved, ownership, with_header, write_atomic};
 
 /// The file dsplr writes, beside the main config.
 const MONITORS_FILE: &str = "monitors.lua";
+
+/// How the saved rules name their monitors.
+const NAMING: MonitorNaming = MonitorNaming::Description;
 
 /// The module name `monitors.lua` is required by: Hyprland puts the main
 /// config's directory on Lua's `package.path`
@@ -46,9 +51,9 @@ pub enum SaveError {
     )]
     Symlink { link: PathBuf, target: PathBuf },
     /// Hyprland reads a hyprlang config here; dsplr writes only the Lua
-    /// config's `monitors.lua` so far.
+    /// config's `monitors.lua` (Hyprland 0.57 reads no hyprlang config).
     #[error(
-        "{} is a hyprlang config, and dsplr cannot write its monitors.conf yet",
+        "{} is a hyprlang config, and dsplr writes only a Lua config's monitors.lua",
         .0.display()
     )]
     Hyprlang(PathBuf),
@@ -134,10 +139,7 @@ pub fn save(
             Some(error.to_string()),
         ),
     };
-    let new = with_header(
-        &monitor_calls(&file, MonitorNaming::Description)?,
-        Comment::Lua,
-    );
+    let new = with_header(&monitor_calls(&file, NAMING)?, Comment::Lua);
     if let Some(existing) = &existing {
         let ownership = ownership(existing, Comment::Lua);
         let simple = ownership == Ownership::Managed && unreadable.is_none();
@@ -166,9 +168,41 @@ pub fn save(
 
 fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
     MonitorsLua {
-        layout: layout.clone(),
+        layout: Layout {
+            entries: in_hyprland_order(layout.entries.clone()),
+        },
         catch_all: None,
     }
+}
+
+/// `entries` in an order Hyprland reads as meant: a rule whose `desc:` is
+/// the start of another's goes before it. Hyprland uses the last rule that
+/// matches and reads `desc:` as a plain prefix, so `desc:AOC Q27G4 SER1`
+/// written after `desc:AOC Q27G4 SER12` would win on the SER12 too. Every
+/// other pair keeps its order.
+///
+/// Each entry goes in just before the first one already placed that its
+/// `desc:` is a strict prefix of, else last. An entry placed earlier whose
+/// `desc:` is a prefix of this one's is also a prefix of that one's, so it
+/// is already before it and stays so.
+fn in_hyprland_order(entries: Vec<OutputEntry>) -> Vec<OutputEntry> {
+    let mut ordered: Vec<(Option<String>, OutputEntry)> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let desc = output_name(&entry, NAMING)
+            .and_then(|name| name.strip_prefix("desc:").map(str::to_owned));
+        let at = desc
+            .as_deref()
+            .and_then(|desc| {
+                ordered.iter().position(|(other, _)| {
+                    other
+                        .as_deref()
+                        .is_some_and(|other| other != desc && other.starts_with(desc))
+                })
+            })
+            .unwrap_or(ordered.len());
+        ordered.insert(at, (desc, entry));
+    }
+    ordered.into_iter().map(|(_, entry)| entry).collect()
 }
 
 /// `layout`, with what `old` says that `layout` does not, and the entries of
@@ -176,20 +210,22 @@ fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
 ///
 /// The kept entries come first: Hyprland uses the last rule that matches a
 /// monitor, so an old rule naming a port (`DP-1`) must not come after the
-/// new rule for the monitor that is next plugged into it.
+/// new rule for the monitor that is next plugged into it. Within each group
+/// the rules are [`in_hyprland_order`].
 fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>) {
     let live: Vec<OutputEntry> = layout
         .entries
         .iter()
         .map(|entry| {
             let mut entry = entry.clone();
-            // The rule Hyprland would use: the last one that matches.
+            // The rule Hyprland would use: the last one that matches, by
+            // Hyprland's own `desc:` prefix rule.
             if let Some(before) = old
                 .layout
                 .entries
                 .iter()
                 .rev()
-                .find(|e| e.id.matches(&entry))
+                .find(|e| e.id.matches_as_hyprland(&entry))
             {
                 let (state, before) = (&mut entry.state, &before.state);
                 state.adaptive_sync = state.adaptive_sync.or(before.adaptive_sync);
@@ -201,6 +237,9 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
             entry
         })
         .collect();
+    // Which monitor a rule is for is dsplr's question, so by whole words: a
+    // rule for `… SER1` is kept while only `… SER12` is connected. It goes
+    // before the rule saved for `… SER12`, which Hyprland then uses for it.
     let kept: Vec<OutputEntry> = old
         .layout
         .entries
@@ -208,7 +247,10 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
         .filter(|before| !layout.entries.iter().any(|live| before.id.matches(live)))
         .cloned()
         .collect();
-    let entries = kept.iter().cloned().chain(live).collect();
+    let entries = in_hyprland_order(kept.clone())
+        .into_iter()
+        .chain(in_hyprland_order(live))
+        .collect();
     let file = MonitorsLua {
         layout: Layout { entries },
         catch_all: old.catch_all.clone(),
@@ -773,6 +815,112 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
             at(r#"output = "DP-1""#) < at(r#"output = "desc:AOC Q27G4 SERIAL0000001""#),
             "{text}"
         );
+    }
+
+    /// An old rule whose description is the live AOC's cut mid-word is for
+    /// another monitor (dsplr's whole words), so it is kept; but Hyprland
+    /// applies it to the AOC now (its plain prefix), so the AOC's new rule
+    /// carries over its `vrr`.
+    #[test]
+    fn a_rule_for_a_shorter_serial_is_kept_and_carried_over_as_hyprland_reads_it() {
+        let config = Config::new("");
+        let old = r#"hl.monitor({ output = "desc:AOC Q27G4 SERIAL000000", mode = "1920x1080@60", position = "0x0", scale = 1, vrr = 1 })"#;
+        fs::write(config.monitors(), old).unwrap();
+        let saved = config.save(&live(), Some(old)).unwrap();
+        assert_eq!(
+            saved.kept,
+            [OutputId::Description("AOC Q27G4 SERIAL000000".into())]
+        );
+        let text = config.read();
+        assert_eq!(text.matches("vrr = 1").count(), 2, "{text}");
+    }
+
+    /// Two AOCs whose serials are SER1 and SER12, the SER12 right of it.
+    fn ser1_and_ser12() -> Vec<OutputEntry> {
+        ["SER1", "SER12"]
+            .into_iter()
+            .zip([("DP-1", 0), ("DP-2", 2560)])
+            .map(|(serial, (connector, x))| OutputEntry {
+                id: OutputId::new("AOC", "Q27G4", serial, connector),
+                output: Some(Output {
+                    connector: connector.into(),
+                    description: format!("AOC Q27G4 {serial}"),
+                    physical_size_mm: None,
+                    modes: vec![Mode::new(2560, 1440, 120_000)],
+                }),
+                state: OutputState {
+                    mode: Some(Mode::new(2560, 1440, 120_000)),
+                    x,
+                    ..OutputState::default()
+                },
+            })
+            .collect()
+    }
+
+    /// Whether `text` has SER1's rule before SER12's, so that Hyprland,
+    /// using the last rule whose `desc:` prefixes a monitor's description,
+    /// gives each AOC its own.
+    fn ser1_first(text: &str) -> bool {
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {text}"))
+        };
+        at(r#""desc:AOC Q27G4 SER1""#) < at(r#""desc:AOC Q27G4 SER12""#)
+    }
+
+    #[test]
+    fn a_rule_whose_desc_starts_another_s_is_written_first() {
+        for reversed in [false, true] {
+            let config = Config::new("");
+            let mut entries = ser1_and_ser12();
+            if reversed {
+                entries.reverse();
+            }
+            let mut layout = live();
+            layout.entries.extend(entries);
+            config.save(&layout, None).unwrap();
+            let text = config.read();
+            assert!(ser1_first(&text), "reversed: {reversed}: {text}");
+            // Everything else keeps its order.
+            assert!(
+                text.find(r#""eDP-1""#) < text.find(r#""desc:AOC Q27G4 SERIAL0000001""#),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn kept_rules_whose_desc_starts_another_s_are_written_first_too() {
+        for reversed in [false, true] {
+            let config = Config::new("");
+            let mut old = Layout {
+                entries: ser1_and_ser12(),
+            };
+            if reversed {
+                old.entries.reverse();
+            }
+            let old = with_header(
+                &monitor_calls(
+                    &MonitorsLua {
+                        layout: old,
+                        catch_all: None,
+                    },
+                    MonitorNaming::Description,
+                )
+                .unwrap(),
+                Comment::Lua,
+            );
+            fs::write(config.monitors(), &old).unwrap();
+            let saved = config.save(&live(), Some(&old)).unwrap();
+            assert_eq!(saved.kept.len(), 2);
+            let text = config.read();
+            assert!(ser1_first(&text), "reversed: {reversed}: {text}");
+            assert!(
+                text.find(r#""desc:AOC Q27G4 SER12""#)
+                    < text.find(r#""desc:AOC Q27G4 SERIAL0000001""#),
+                "kept before live: {text}"
+            );
+        }
     }
 
     #[test]

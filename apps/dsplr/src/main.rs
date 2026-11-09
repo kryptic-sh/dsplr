@@ -117,7 +117,9 @@ enum Exit {
     /// dsplr for the ones only the displays show, such as an output name
     /// that names no output.
     Usage = 2,
-    /// Validation refused the layout.
+    /// dsplr refused before asking the desktop or writing anything:
+    /// validation refused the layout, the backend cannot put it into the
+    /// desktop's request, or the backend cannot save here at all.
     Refused = 3,
     /// The desktop refused the layout.
     BackendRefused = 4,
@@ -416,6 +418,7 @@ mod tests {
             &["dsplr", "set", "DP-1"][..],
             &["dsplr", "set", "DP-1", "--yes", "--dry-run"],
             &["dsplr", "set", "DP-1", "--enable", "--disable"],
+            &["dsplr", "set", "DP-1", "--mirror", "DP-2", "--no-mirror"],
             &["dsplr", "set", "--pos", "0,0"],
         ] {
             let error = Cli::try_parse_from(args).unwrap_err();
@@ -430,6 +433,7 @@ mod tests {
             &["--enable"],
             &["--disable"],
             &["--mirror", "DP-2"],
+            &["--no-mirror"],
         ] {
             let args = [&["dsplr", "set", "DP-1"][..], change].concat();
             assert!(Cli::try_parse_from(&args).is_ok(), "{args:?}");

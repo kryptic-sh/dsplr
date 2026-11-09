@@ -97,8 +97,8 @@ So:
   `$XDG_CONFIG_HOME/hypr`, then `~/.config/hypr`;
   [05](05-persistence-and-profiles.md#hyprland)); the owner's `hyprland.lua`
   already `require`s it. Legacy hyprlang configs (`hyprland.conf` + `monitor=`
-  lines) are detected; until their writer exists, `persist` there is
-  `Unsupported`.
+  lines) are detected, and `persist` there is `Unsupported`: Hyprland 0.57 reads
+  only Lua configs, so no hyprlang writer is planned.
 
 ## wlroots compositors (`Wlr`)
 

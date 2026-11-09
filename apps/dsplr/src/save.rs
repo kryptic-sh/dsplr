@@ -49,7 +49,8 @@ pub async fn run(backend: &Backend, options: &Options) -> Exit {
 fn failed(backend: &Backend, error: &Error) -> Exit {
     eprintln!("dsplr: cannot save on {}: {error}", backend.name());
     if matches!(error, Error::Unsupported { .. }) {
-        Exit::BackendRefused
+        // dsplr declined before writing anything, as validation does.
+        Exit::Refused
     } else {
         Exit::Failure
     }

@@ -120,14 +120,7 @@ impl Hyprland {
     /// the state back to see what it made of it. Adaptive sync turned off is
     /// not written (see [`dsplr_persist::hyprland::monitor_call`]).
     pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
-        let rules = monitor_calls(
-            &MonitorsLua {
-                layout: layout.clone(),
-                catch_all: None,
-            },
-            MonitorNaming::Connector,
-        )?;
-        self.eval(&rules).await
+        self.eval(&monitor_rules(layout)?).await
     }
 
     /// The current state as a [`Layout`].
@@ -167,6 +160,19 @@ impl Hyprland {
             }),
         }
     }
+}
+
+/// The monitor rules [`Hyprland::apply`] sends for `layout`, one per
+/// output, named by connector. Built without Hyprland, so a layout the rules
+/// cannot hold ([`Error::Write`]) is refused before anything is sent.
+pub fn monitor_rules(layout: &Layout) -> Result<String, Error> {
+    Ok(monitor_calls(
+        &MonitorsLua {
+            layout: layout.clone(),
+            catch_all: None,
+        },
+        MonitorNaming::Connector,
+    )?)
 }
 
 /// Where Hyprland's sockets are: `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`.
@@ -326,11 +332,28 @@ mod tests {
         let mut layout = hyprland.snapshot().await.expect("snapshot");
         requests.recv().await.expect("the snapshot's request");
 
+        // Hyprland's test has nothing to ask, but a layout that can be sent
+        // gets that far.
+        let backend = crate::Backend::Hyprland(hyprland.clone());
+        assert!(matches!(
+            backend.test(&layout).await,
+            Err(crate::Error::Unsupported { .. })
+        ));
+
         layout.entries[1].state.mode = None;
         assert!(matches!(
             hyprland.apply(&layout).await,
             Err(Error::Write(_))
         ));
+        // The test refuses it too, before the apply flow keeps a revert point.
+        for result in [backend.test(&layout).await, backend.apply(&layout).await] {
+            let error = result.expect_err("refused");
+            assert!(
+                matches!(error, crate::Error::Hyprland(Error::Write(_))),
+                "{error:?}"
+            );
+            assert!(error.is_refused_before_sending() && !error.is_refusal());
+        }
         assert!(requests.try_recv().is_err(), "nothing was sent");
     }
 

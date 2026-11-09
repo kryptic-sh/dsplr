@@ -27,8 +27,9 @@ Hyprland Lua config (`Backend::persist`, built on
 `dsplr_persist::hyprland::save`); its e2e has not run yet (below). `dsplr set`
 edits one output of a fresh snapshot and hands the layout to the same flow
 (`apply::run`); its steps run in `apps/dsplr/tests/sway_e2e.rs`, and a mirror
-step in `hyprland_e2e.rs` (not run yet, as below). Not written yet: saving under
-a hyprlang config or on wlroots.
+step and a `--no-mirror` step in `hyprland_e2e.rs` (not run yet, as below). Not
+written yet: saving on wlroots. Saving under a hyprlang config is declined
+(below).
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -63,8 +64,9 @@ milestone:
     `--force`).
   - `--force` also replaces another tool's file without asking, as it overwrites
     anything; `--yes` replaces only a readable file another tool wrote.
-  - Exit codes: `4` when the backend cannot save at all (`Unsupported`: a
-    hyprlang config, wlroots), as the backend refusing the request; `1` when
+  - Exit codes: `3` when the backend cannot save at all (`Unsupported`: a
+    hyprlang config, wlroots), as dsplr declining before writing (changed from
+    `4` on 2026-11-09, when `4` became the desktop's refusal only); `1` when
     nothing was saved because a file needs `--force`, the user said no, there
     was no terminal to ask on, or a file could not be read or written.
   - Saving prints its messages, the diff and the `require` line on stderr, as
@@ -165,10 +167,6 @@ milestone:
 
 ## Open work in the Windows-owned crates
 
-- **`dsplr set` cannot stop a mirror**: `--mirror OUT` starts one, and nothing
-  ends it short of `dsplr apply` with a file or a revert. It needs a spelling
-  (`--mirror none` collides with an output named `none`; `--no-mirror` is
-  clearer), which is the owner's call.
 - **`dsplr set --enable` does not place the output**: a desktop that reports a
   disabled output at the origin (wlroots, Hyprland) gets it back there, so
   validation refuses the overlap unless `--pos` is given. Placing it beside the
@@ -176,34 +174,23 @@ milestone:
   it; not done. Turned on without a mode, an output takes its preferred mode,
   else its largest at the highest refresh (`set::default_mode`); headless sway
   lists no mode for a disabled output, so there `--mode` is needed too.
+  `--no-mirror` does not place the output either: Hyprland moves a mirror onto
+  its source (`CMonitor::setMirror` sets its position to the source's, v0.57.1
+  source, not observed), so ending one without `--pos` is refused as an overlap
+  (exit `3`). The Hyprland e2e's `--no-mirror` step passes `--pos`.
 - **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
   output's size, and a neighbour it now overlaps or leaves a gap beside is
   refused or warned about by validation, not shifted. `Layout::normalise` and
   `snap` exist for the GUI; whether `set` should use them is open.
 - **Adaptive sync is checked against `Capabilities` only by `dsplr set`**:
   `Layout::validate` does not look at `adaptive_sync`, so a layout file asking
-  for a value the backend lacks reaches the backend (on `wlr`, its `Plan` error,
-  exit `4`, not `3`). Moving the check into validation would cover both.
-- **A description can pick a monitor with a longer serial**: `OutputId::matches`
-  reads a description as a prefix, as Hyprland's `desc:` does, and both
-  `dsplr set` (after an exact connector or description match fails) and
-  `apply::bind` use it. With `AOC Q27G4 SER1` unplugged, that name matches
-  `AOC Q27G4 SER12`: `set` then says `dsplr: setting …` naming the monitor it
-  found, but with `--yes` it still edits it; `apply` with a file does so without
-  naming it. Options for the owner: match only up to a word boundary (the prefix
-  must end where a word of the description ends), which stops this and still
-  matches `AOC Q27G4` to every Q27G4; or keep Hyprland's semantics, so a profile
-  matches what Hyprland's own `desc:` rule would. Not changed: the rule is
-  shared with how profiles will match.
+  for a value the backend lacks reaches the backend: on `wlr` its `Plan` error
+  refuses it at the test step, before the revert point (exit `3`, as `sway_e2e`
+  checks), but the GUI's validation would not show it. Moving the check into
+  validation would cover both.
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.
-- **Legacy `monitors.conf` writer** (hyprlang `monitor = …` lines): not written,
-  so `dsplr save` under a `hyprland.conf` is `Unsupported` (exit 4). Hyprland
-  0.57.1 no longer reads hyprlang configs at all (its `getMainConfigPath` looks
-  for `hyprland.lua` only), so the writer would serve 0.56 and older; whether it
-  is still wanted is the owner's call. The Linux session offered to run a
-  generated file through headless Hyprland 0.57.1 to check it.
 - **The reader refuses Hyprland forms a layout cannot hold**: `preferred` and
   `highres` modes, a mode without a refresh, `auto` positions and scales,
   `vrr = 3` (fullscreen video and games, which a layout cannot tell from 2), any
@@ -226,6 +213,26 @@ milestone:
   the user approved, so a change while the question waits is caught; one made
   during a call's own read-to-rename (a read, a write and an `fsync`) is not. No
   lock: nothing else that writes the file would honour one.
+- **A saved rule can still win over a longer description's, across the kept and
+  live groups**: `save`'s `merged` writes the kept rules (monitors not
+  connected) before the live ones, and orders each group with
+  `in_hyprland_order` so a `desc:` that starts another comes first. Between the
+  groups only kept-before-live holds, so with `AOC Q27G4 SER12` unplugged (kept)
+  and `AOC Q27G4 SER1` connected (live), SER1's rule is written last and
+  Hyprland, matching `desc:` by prefix, applies it to the SER12 when it is next
+  plugged in. Analysed 2026-11-09: a single order over both groups works for
+  `desc:` rules (kept connector rules first, then all `desc:` rules in prefix
+  order, kept before live otherwise), but a live monitor without a serial is
+  written by connector (`eDP-1`) while Hyprland can still match its description
+  with a `desc:` rule cut mid-word (`desc:BOE 0x0A`), so its rule has no safe
+  fixed place: first lets a later mid-word rule beat it now, last lets it beat a
+  monitor later plugged into that port. Proposed, not built: kept connector
+  rules first; then `desc:` rules in prefix order; each live connector rule just
+  after the last `desc:` rule that prefixes its monitor's description (with
+  none, at the front as today). In general, every live monitor's own rule comes
+  after every other rule Hyprland would match to it; whether that order can ever
+  contradict itself is unchecked. Needs a rule cut mid-word or a mid-word prefix
+  between monitors; dsplr and nwg-displays write full descriptions.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files, which wait for the profile store's format.
 - **`Transform`'s text uses wl_output's quarter turns, not sway's**: `Rotate90`
@@ -409,5 +416,12 @@ and the `monitors.lua` writer:
 - **Faking per-output scale on X11 with RandR CRTC transforms**
   (`xrandr --scale`): blurs and costs performance; the RandR backend reports
   scale as read-only instead.
+- **A writer for Hyprland's legacy hyprlang `monitors.conf`** (`monitor = …`
+  lines sourced from `hyprland.conf`; the owner's call, 2026-11-09). Hyprland
+  0.57.1 reads no hyprlang config at all (its `getMainConfigPath` looks for
+  `hyprland.lua` only, and its one config manager reads every path as Lua), so
+  the writer would serve only 0.56 and older. `dsplr save` under a hyprlang
+  config stays `Unsupported` (exit `3`), saying dsplr writes only the Lua
+  config's `monitors.lua`.
 - **Live screen previews in the canvas** (wdisplays-style screencopy). Cost of a
   screencopy path for little help in arranging; revisit if asked.

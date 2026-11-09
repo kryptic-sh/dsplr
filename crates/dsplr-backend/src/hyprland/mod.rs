@@ -8,6 +8,6 @@ mod ipc;
 mod monitors;
 mod snapshot;
 
-pub use ipc::{Error, Hyprland, REQUEST_TIMEOUT};
+pub use ipc::{Error, Hyprland, REQUEST_TIMEOUT, monitor_rules};
 pub use monitors::{ModeError, Monitor, parse_mode};
 pub use snapshot::{SnapshotError, layout};

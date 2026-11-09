@@ -55,14 +55,21 @@ pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
 }
 
 /// Applies `point`'s layout, shows what did not come back as it was, and
-/// removes the revert point. Returns whether the layout was applied; when
-/// not, the revert point stays for the watchdog or a revert by hand.
-pub async fn go_back(backend: &Backend, path: &Path, point: &RevertPoint) -> bool {
+/// removes the revert point. Returns [`Exit::Success`] when the layout was
+/// applied, else the exit code for why not; then the revert point stays for
+/// the watchdog or a revert by hand.
+pub async fn go_back(backend: &Backend, path: &Path, point: &RevertPoint) -> Exit {
     if let Err(error) = backend.apply(&point.layout).await {
         eprintln!(
             "dsplr: cannot go back to the revert point: {error}; `dsplr restore --revert` tries again"
         );
-        return false;
+        return if error.is_refused_before_sending() {
+            Exit::Refused
+        } else if error.is_refusal() || error.is_stale() {
+            Exit::BackendRefused
+        } else {
+            Exit::Failure
+        };
     }
     match settle(backend, &point.layout, &backend.capabilities()).await {
         Ok(differences) => report(&differences),
@@ -71,7 +78,7 @@ pub async fn go_back(backend: &Backend, path: &Path, point: &RevertPoint) -> boo
     if let Err(error) = revert::remove_if(path, &point.token) {
         eprintln!("dsplr: {error}");
     }
-    true
+    Exit::Success
 }
 
 /// `dsplr restore --revert`. With `after` and `token` it is the watchdog: it
@@ -108,11 +115,7 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    if go_back(&backend, &path, &point).await {
-        Exit::Success
-    } else {
-        Exit::BackendRefused
-    }
+    go_back(&backend, &path, &point).await
 }
 
 #[cfg(test)]

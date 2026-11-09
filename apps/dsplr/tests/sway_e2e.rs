@@ -1,6 +1,6 @@
 //! `dsplr backend`, `dsplr apply` (with and without `--dry-run`),
-//! `dsplr set` and `dsplr restore --revert` against a real, headless sway,
-//! whose backend has a real test.
+//! `dsplr set`, `dsplr save` and `dsplr restore --revert` against a real,
+//! headless sway, whose backend has a real test.
 //!
 //! Run through the harness, which starts that sway where it cannot reach the
 //! desktop session and gives dsplr a private state directory:
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use dsplr_backend::Backend;
-use dsplr_model::{Layout, Mode, Transform};
+use dsplr_model::{AdaptiveSync, Layout, Mode, Transform};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/support.rs"]
@@ -88,6 +88,14 @@ async fn apply_tests_on_a_dry_run_and_applies_and_reverts(backend: &Backend, run
     assert!(text.contains("test before apply"), "{text}");
     assert!(!text.contains("mirroring"), "{text}");
 
+    // dsplr cannot save on wlroots yet, and declines before writing.
+    let (code, text) = dsplr(&["save"]);
+    assert_eq!(code, Some(REFUSED), "{text}");
+    assert!(
+        text.contains("cannot save on wlr") && text.contains("not supported here"),
+        "{text}"
+    );
+
     let start = backend.snapshot().await.expect("snapshot");
     let snapshot = || async { backend.snapshot().await.expect("snapshot") };
 
@@ -140,6 +148,31 @@ async fn apply_tests_on_a_dry_run_and_applies_and_reverts(backend: &Backend, run
     let (code, text) = dsplr(&["apply", "--dry-run", &file_mirrored]);
     assert_eq!(code, Some(REFUSED), "{text}");
     assert!(text.contains("cannot mirror"), "{text}");
+
+    // What validation passes but the protocol cannot express is refused by
+    // dsplr at the test step, before sway is asked or a change starts: a
+    // refusal of dsplr's, not the desktop's.
+    let automatic = edited(&start, |layout| {
+        entry_mut(layout, "HEADLESS-2").state.adaptive_sync = Some(AdaptiveSync::Automatic);
+    });
+    let file_automatic = layout_file(runtime, "automatic.json", &automatic);
+    for args in [
+        ["apply", "--dry-run", &file_automatic],
+        ["apply", "--yes", &file_automatic],
+    ] {
+        let (code, text) = dsplr(&args);
+        assert_eq!(code, Some(REFUSED), "{args:?}: {text}");
+        assert!(
+            text.contains("wlr cannot take the layout")
+                && text.contains("automatic adaptive sync cannot be set"),
+            "{args:?}: {text}"
+        );
+    }
+    assert_eq!(snapshot().await, start);
+    assert!(
+        !revert_file.exists(),
+        "a refusal before sending starts no change"
+    );
 
     // --yes applies and keeps it; a revert by hand puts the old layout back.
     let (code, text) = dsplr(&["apply", "--yes", &file]);
@@ -265,6 +298,13 @@ async fn set_edits_one_output(backend: &Backend) {
     assert_eq!(snapshot().await, start);
     assert!(!revert_file.exists(), "a refusal starts no change");
 
+    // sway mirrors nothing, so --no-mirror asks for what is already so: like
+    // any setting at its current value, it goes through and changes nothing.
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--no-mirror", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(snapshot().await, start);
+    revert_to(backend, &start).await;
+
     // Turned off, and on again where it was. Headless sway lists no mode for
     // an output that is off, so turning it on needs one.
     let (code, text) = dsplr(&["set", "HEADLESS-1", "--disable", "--scale", "2", "--yes"]);
@@ -283,6 +323,12 @@ async fn set_edits_one_output(backend: &Backend) {
     assert_eq!(code, Some(USAGE), "{text}");
     assert!(
         text.contains("it is off; add --enable to change --pos"),
+        "{text}"
+    );
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--no-mirror", "--yes"]);
+    assert_eq!(code, Some(USAGE), "{text}");
+    assert!(
+        text.contains("it is off; add --enable to change --no-mirror"),
         "{text}"
     );
     assert_eq!(snapshot().await, off);

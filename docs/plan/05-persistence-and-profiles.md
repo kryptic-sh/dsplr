@@ -27,8 +27,9 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   `hl.monitor({ output = …, mode = …, position = …, scale = …, transform = …, vrr = …, … })`
   calls, one per output, plus a disabled entry for outputs turned off. The
   owner's `hyprland.lua` already has `require("monitors")`.
-- **hyprlang config**: write `monitors.conf` with `monitor = …` lines, sourced
-  from `hyprland.conf`.
+- **hyprlang config** (`hyprland.conf`): not written. Hyprland 0.57 reads only
+  the Lua config, so `persist` there is `Unsupported`, saying dsplr writes only
+  the Lua config's `monitors.lua` (the owner's call, 2026-11-09).
 - Outputs are written by **description** (`desc:AOC Q27G4 18DQ2HA004850`) when
   the serial is non-empty, so a monitor keeps its settings on another port; by
   connector name otherwise. A GUI toggle names them all by connector instead, as

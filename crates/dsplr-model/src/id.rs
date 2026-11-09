@@ -24,7 +24,8 @@ pub enum OutputId {
     Connector(String),
     /// A monitor as a config file names it by its description (Hyprland's
     /// `desc:` form), which cannot be split back into make, model and
-    /// serial. It names a live output by [`OutputId::matches`].
+    /// serial. It names a live output by [`OutputId::matches`]; Hyprland's
+    /// own reading is [`OutputId::matches_as_hyprland`].
     Description(String),
 }
 
@@ -43,15 +44,38 @@ impl OutputId {
         }
     }
 
-    /// Whether this identity, from a saved layout, names the live output
-    /// `live`:
+    /// Whether this identity, from a saved layout or the command line,
+    /// names the live output `live`, by dsplr's rule:
     /// - an EDID identity, when `live` has the same one;
     /// - a connector, when `live` is on that connector;
-    /// - a description, when `live`'s description starts with it, which is
-    ///   Hyprland's rule for `desc:` (`CMonitor::matchesStaticSelector`). A
-    ///   blank description matches nothing, though Hyprland would match
-    ///   every monitor with it.
+    /// - a description, when `live`'s description is it or starts with it
+    ///   and a space: whole words, so `AOC Q27G4` names every Q27G4 but
+    ///   `AOC Q27G4 SER1` does not name `AOC Q27G4 SER12`. A blank
+    ///   description matches nothing.
+    ///
+    /// This is how dsplr picks an output. What Hyprland will do with a rule
+    /// is [`OutputId::matches_as_hyprland`].
     pub fn matches(&self, live: &OutputEntry) -> bool {
+        self.matches_with(live, |live, description| {
+            live.strip_prefix(description)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
+    }
+
+    /// Whether Hyprland takes a monitor rule naming this identity to name
+    /// `live`: as [`OutputId::matches`], except that a description names
+    /// every monitor whose description starts with it, even mid-word, which
+    /// is Hyprland's rule for `desc:` (`CMonitor::matchesStaticSelector`).
+    /// For modelling the rules Hyprland reads, not for picking an output. A
+    /// blank description matches nothing here, though Hyprland would match
+    /// every monitor with it.
+    pub fn matches_as_hyprland(&self, live: &OutputEntry) -> bool {
+        self.matches_with(live, |live, description| live.starts_with(description))
+    }
+
+    /// [`OutputId::matches`], with `named` deciding whether a live
+    /// description (first) is named by a non-blank one (second).
+    fn matches_with(&self, live: &OutputEntry, named: impl Fn(&str, &str) -> bool) -> bool {
         match self {
             Self::Edid { .. } => live.id == *self,
             Self::Connector(connector) => live.connector() == Some(connector.as_str()),
@@ -60,7 +84,7 @@ impl OutputId {
                 !description.is_empty()
                     && live
                         .description()
-                        .is_some_and(|live| live.starts_with(description))
+                        .is_some_and(|live| named(&live, description))
             }
         }
     }
@@ -136,12 +160,40 @@ mod tests {
         assert!(!OutputId::Connector("DP-1".into()).matches(&aoc));
 
         let desc = |text: &str| OutputId::Description(text.into());
-        assert!(desc("AOC Q27G4 SERIAL0000001").matches(&aoc));
-        assert!(desc("  AOC Q27G4 ").matches(&aoc), "a prefix, as Hyprland");
-        assert!(!desc("AOC Q27G4 SERIAL0000002").matches(&aoc));
-        assert!(!desc("Q27G4").matches(&aoc), "a prefix, not a substring");
-        assert!(!desc("").matches(&aoc), "blank never matches");
-        assert!(!desc("  ").matches(&panel));
+        for matches in [OutputId::matches, OutputId::matches_as_hyprland] {
+            assert!(matches(&edid, &aoc) && !matches(&edid, &panel));
+            assert!(matches(&desc("AOC Q27G4 SERIAL0000001"), &aoc), "exact");
+            assert!(matches(&desc("  AOC Q27G4 "), &aoc), "whole words");
+            assert!(!matches(&desc("AOC Q27G4 SERIAL0000002"), &aoc));
+            assert!(!matches(&desc("Q27G4"), &aoc), "a prefix, not a substring");
+            assert!(!matches(&desc(""), &aoc), "blank never matches");
+            assert!(!matches(&desc("  "), &panel));
+        }
+    }
+
+    #[test]
+    fn dsplr_matches_a_description_by_whole_words_and_hyprland_by_prefix() {
+        let ser = |serial: &str| {
+            live(
+                OutputId::new("AOC", "Q27G4", serial, "DP-1"),
+                "DP-1",
+                &format!("AOC Q27G4 {serial}"),
+            )
+        };
+        let (ser1, ser12) = (ser("SER1"), ser("SER12"));
+        let desc = |text: &str| OutputId::Description(text.into());
+
+        assert!(desc("AOC Q27G4 SER1").matches(&ser1), "exact");
+        assert!(!desc("AOC Q27G4 SER1").matches(&ser12), "SER1 is not SER12");
+        assert!(desc("AOC Q27G4").matches(&ser12), "a word ends there");
+        assert!(!desc("AOC Q27").matches(&ser12), "mid-word");
+
+        assert!(desc("AOC Q27G4 SER1").matches_as_hyprland(&ser1));
+        assert!(
+            desc("AOC Q27G4 SER1").matches_as_hyprland(&ser12),
+            "Hyprland's desc: is a plain prefix"
+        );
+        assert!(desc("AOC Q27").matches_as_hyprland(&ser12));
     }
 
     #[test]

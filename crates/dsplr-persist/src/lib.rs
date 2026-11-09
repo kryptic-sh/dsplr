@@ -5,8 +5,8 @@
 //! saved beside Hyprland's config, the managed-file header and atomic write
 //! every saved file goes through, a line diff to show what a save would
 //! change, and the revert point.
-//! The legacy `monitors.conf`, the other desktops and the profile store are
-//! not written yet.
+//! The other desktops and the profile store are not written yet; Hyprland's
+//! legacy hyprlang `monitors.conf` is not written at all.
 
 pub mod diff;
 pub mod hyprland;

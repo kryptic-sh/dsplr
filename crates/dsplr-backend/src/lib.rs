@@ -61,28 +61,53 @@ pub enum Persisted {
 }
 
 impl Error {
-    /// Whether the layout itself was refused, and nothing changed: by the
-    /// desktop (wlroots' `failed`, a rule Hyprland rejected), or by the
-    /// backend because the desktop's interface cannot express it. Not a
-    /// connection that failed or timed out, and not [`Error::is_stale`].
+    /// Whether the desktop itself refused the layout, and nothing changed:
+    /// wlroots' `failed`, a rule Hyprland rejected. Not a layout dsplr
+    /// refused before sending it ([`Error::is_refused_before_sending`]), a
+    /// connection that failed or timed out, or [`Error::is_stale`].
     #[must_use]
     pub const fn is_refusal(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
-            Self::Wlr(wlr::Error::Failed | wlr::Error::Plan(_))
-            | Self::Hyprland(hyprland::Error::Refused { .. } | hyprland::Error::Write(_)) => true,
+            Self::Wlr(wlr::Error::Failed) | Self::Hyprland(hyprland::Error::Refused { .. }) => true,
+            _ => false,
+        }
+    }
+
+    /// Whether the backend refused the layout before sending anything,
+    /// because it cannot be put into the desktop's request. The desktop was
+    /// not asked, so nothing changed. On wlroots, a [`wlr::PlanError`]: an
+    /// output named twice, one enabled without a mode, a mode or scale out
+    /// of the protocol's range, or a setting the protocol cannot express (a
+    /// mirror, a primary output, colour settings, automatic adaptive sync).
+    /// On Hyprland, a [`hyprland::Error::Write`]: an output with no name,
+    /// enabled without a mode or with an unusable scale, or mirroring one
+    /// with no name. An output that is no longer connected is
+    /// [`Error::is_stale`] instead.
+    #[must_use]
+    pub const fn is_refused_before_sending(&self) -> bool {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(_))) => false,
+            #[cfg(target_os = "linux")]
+            Self::Wlr(wlr::Error::Plan(_)) | Self::Hyprland(hyprland::Error::Write(_)) => true,
             _ => false,
         }
     }
 
     /// Whether the desktop's state changed between reading it and the
-    /// request, so the request was dropped unapplied. Read the state again
-    /// before deciding anything; never retry the same request blindly.
+    /// request, so the request was dropped unapplied: wlroots' `cancelled`,
+    /// or an output in the layout that is no longer connected (unplugged
+    /// between the snapshot and the request), which dsplr finds before
+    /// sending. Read the state again before deciding anything; never retry
+    /// the same request blindly.
     #[must_use]
     pub const fn is_stale(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
-            Self::Wlr(wlr::Error::Cancelled) => true,
+            Self::Wlr(
+                wlr::Error::Cancelled | wlr::Error::Plan(wlr::PlanError::NotConnected(_)),
+            ) => true,
             _ => false,
         }
     }
@@ -168,10 +193,13 @@ impl Backend {
     }
 
     /// Asks the desktop whether it would apply `layout`, changing nothing.
+    /// A layout the backend cannot send is refused here, as it would be by
+    /// [`apply`](Self::apply) ([`Error::is_refused_before_sending`]).
     ///
     /// [`Error::Unsupported`] on a backend with no real test (Hyprland's is a
-    /// stub that always succeeds); the apply flow then skips the step rather
-    /// than pretend it ran (`docs/plan/02-architecture.md`, step 2).
+    /// stub that always succeeds) once the layout is known to be sendable;
+    /// the apply flow then skips the step rather than pretend it ran
+    /// (`docs/plan/02-architecture.md`, step 2).
     #[cfg_attr(
         not(target_os = "linux"),
         expect(unused_variables, reason = "no backend exists off Linux")
@@ -179,10 +207,13 @@ impl Backend {
     pub async fn test(&self, layout: &Layout) -> Result<(), Error> {
         match *self {
             #[cfg(target_os = "linux")]
-            Self::Hyprland(_) => Err(Error::Unsupported {
-                what: "testing a layout",
-                reason: "Hyprland's wlr-output-management test is a stub that always succeeds",
-            }),
+            Self::Hyprland(_) => {
+                hyprland::monitor_rules(layout)?;
+                Err(Error::Unsupported {
+                    what: "testing a layout",
+                    reason: "Hyprland's wlr-output-management test is a stub that always succeeds",
+                })
+            }
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.test(layout).await?),
         }
@@ -226,7 +257,7 @@ impl Backend {
                     Err(SaveError::Conflict(conflict)) => Err(Error::Conflict(conflict)),
                     Err(SaveError::Hyprlang(_)) => Err(Error::Unsupported {
                         what: "saving the layout",
-                        reason: "Hyprland reads a hyprlang hyprland.conf here, and dsplr cannot write its monitors.conf yet",
+                        reason: "Hyprland reads a hyprlang hyprland.conf here, and dsplr writes only a Lua config's monitors.lua",
                     }),
                     Err(error) => Err(Error::Hyprland(hyprland::Error::Save(error))),
                 }
@@ -236,6 +267,68 @@ impl Backend {
                 what: "saving the layout",
                 reason: "dsplr cannot write a wlroots compositor's config yet",
             }),
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use dsplr_model::OutputId;
+    use dsplr_persist::hyprland::WriteError;
+
+    use super::{Error, hyprland, wlr};
+
+    #[test]
+    fn a_refusal_is_the_desktop_s_one_before_sending_dsplr_s_and_a_vanished_output_stale() {
+        let by_desktop = [
+            Error::Wlr(wlr::Error::Failed),
+            Error::Hyprland(hyprland::Error::Refused {
+                request: "/eval".into(),
+                reply: "error".into(),
+            }),
+        ];
+        let before_sending = [
+            Error::Wlr(wlr::Error::Plan(wlr::PlanError::Twice("DP-1".into()))),
+            Error::Hyprland(hyprland::Error::Write(WriteError::NoMode(
+                OutputId::Connector("DP-1".into()),
+            ))),
+        ];
+        let stale = [
+            Error::Wlr(wlr::Error::Cancelled),
+            Error::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(
+                OutputId::Connector("DP-1".into()),
+            ))),
+        ];
+        let neither = [
+            Error::Wlr(wlr::Error::Timeout { what: "apply" }),
+            Error::Unsupported {
+                what: "testing a layout",
+                reason: "a stub",
+            },
+        ];
+        for error in &by_desktop {
+            assert!(error.is_refusal(), "{error:?}");
+            assert!(!error.is_refused_before_sending(), "{error:?}");
+        }
+        for error in &before_sending {
+            assert!(error.is_refused_before_sending(), "{error:?}");
+            assert!(!error.is_refusal(), "{error:?}");
+        }
+        for error in &stale {
+            assert!(error.is_stale(), "{error:?}");
+            assert!(
+                !error.is_refusal() && !error.is_refused_before_sending(),
+                "{error:?}"
+            );
+        }
+        for error in by_desktop.iter().chain(&before_sending) {
+            assert!(!error.is_stale(), "{error:?}");
+        }
+        for error in &neither {
+            assert!(
+                !error.is_refusal() && !error.is_refused_before_sending() && !error.is_stale(),
+                "{error:?}"
+            );
         }
     }
 }
