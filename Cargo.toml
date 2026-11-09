@@ -26,6 +26,8 @@ redundant_pub_crate = "warn"
 # internal
 dsplr-backend = { path = "crates/dsplr-backend", version = "0.1.0" }
 dsplr-config = { path = "crates/dsplr-config", version = "0.1.0" }
+dsplr-core = { path = "crates/dsplr-core", version = "0.1.0" }
+dsplr-gui = { path = "crates/dsplr-gui", version = "0.1.0" }
 dsplr-model = { path = "crates/dsplr-model", version = "0.1.0" }
 dsplr-persist = { path = "crates/dsplr-persist", version = "0.1.0" }
 

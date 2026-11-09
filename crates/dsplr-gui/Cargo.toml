@@ -11,6 +11,14 @@ authors.workspace = true
 readme.workspace = true
 
 [dependencies]
+crcbl-app = "0.17.2"
+crcbl-frame = "0.17.2"
+crcbl-hal = "0.17.2"
+crcbl-shell = "0.17.2"
+crcbl-ui = { version = "0.17.2", features = ["parsed-font"] }
+dsplr-core.workspace = true
+glam = "0.34"
+thiserror = "2.0.21"
 
 [lints]
 workspace = true

@@ -14,7 +14,9 @@ pub struct Mode {
     /// Pixels.
     pub height: u32,
     /// Millihertz, the unit `wlr-output-management` and KDE use. Backends
-    /// reporting hertz convert with [`hz_to_mhz`].
+    /// reporting hertz convert with [`hz_to_mhz`]. `0` when it is not known:
+    /// `wlr-output-management` sends no refresh for a mode without a fixed
+    /// one, and a custom mode's `0` leaves it unspecified.
     pub refresh_mhz: u32,
     #[serde(default)]
     pub preferred: bool,
@@ -40,6 +42,26 @@ impl Mode {
             preferred: false,
             scales: Vec::new(),
             handle: None,
+        }
+    }
+
+    /// The refresh as people read it, `143.998 Hz`, or `unknown` when it is
+    /// not known (`refresh_mhz` is `0`).
+    pub fn refresh_text(&self) -> String {
+        if self.refresh_mhz == 0 {
+            "unknown".into()
+        } else {
+            format!("{} Hz", mhz_to_hz_text(self.refresh_mhz))
+        }
+    }
+
+    /// The mode as people read it: `2560x1440 @ 143.998 Hz`, or
+    /// `1920x1080 (refresh unknown)`.
+    pub fn describe(&self) -> String {
+        if self.refresh_mhz == 0 {
+            format!("{}x{} (refresh unknown)", self.width, self.height)
+        } else {
+            format!("{}x{} @ {}", self.width, self.height, self.refresh_text())
         }
     }
 
@@ -178,6 +200,22 @@ mod tests {
             height,
             refresh_mhz,
         }
+    }
+
+    #[test]
+    fn a_mode_reads_as_its_size_and_refresh_in_hertz() {
+        assert_eq!(
+            Mode::new(1920, 1080, 59_940).describe(),
+            "1920x1080 @ 59.94 Hz"
+        );
+        assert_eq!(Mode::new(2560, 1440, 120_000).refresh_text(), "120 Hz");
+    }
+
+    #[test]
+    fn a_refresh_of_zero_reads_as_unknown_not_as_zero_hertz() {
+        let mode = Mode::new(1280, 720, 0);
+        assert_eq!(mode.describe(), "1280x720 (refresh unknown)");
+        assert_eq!(mode.refresh_text(), "unknown");
     }
 
     #[test]

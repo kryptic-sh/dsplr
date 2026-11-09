@@ -1,6 +1,6 @@
 //! `dsplr list`: the layout as text, one block per output.
 
-use dsplr_model::{Layout, Mode, OutputEntry, mhz_to_hz_text};
+use dsplr_model::{Layout, Mode, OutputEntry};
 
 /// The text `dsplr list` prints.
 pub fn describe(layout: &Layout) -> String {
@@ -34,7 +34,7 @@ fn describe_entry(entry: &OutputEntry) -> String {
             state
                 .mode
                 .as_ref()
-                .map_or_else(|| "no mode".to_owned(), mode_text),
+                .map_or_else(|| "no mode".to_owned(), Mode::describe),
             format!("position {},{}", state.x, state.y),
             format!("scale {}", state.scale),
             format!("transform {}", state.transform),
@@ -61,9 +61,9 @@ fn describe_entry(entry: &OutputEntry) -> String {
             .iter()
             .map(|mode| {
                 if mode.preferred {
-                    format!("{} (preferred)", mode_text(mode))
+                    format!("{} (preferred)", mode.describe())
                 } else {
-                    mode_text(mode)
+                    mode.describe()
                 }
             })
             .collect();
@@ -72,32 +72,13 @@ fn describe_entry(entry: &OutputEntry) -> String {
     lines.into_iter().map(|line| line + "\n").collect()
 }
 
-/// `2560x1440 @ 143.998 Hz`: refresh in hertz, exact to the millihertz, with
-/// trailing zeros dropped (`60 Hz`, `59.94 Hz`).
-fn mode_text(mode: &Mode) -> String {
-    format!(
-        "{}x{} @ {} Hz",
-        mode.width,
-        mode.height,
-        mhz_to_hz_text(mode.refresh_mhz)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
         AdaptiveSync, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
     };
 
-    use super::{describe, mode_text};
-
-    #[test]
-    fn a_mode_reads_as_its_size_and_refresh_in_hertz() {
-        assert_eq!(
-            mode_text(&Mode::new(1920, 1080, 59_940)),
-            "1920x1080 @ 59.94 Hz"
-        );
-    }
+    use super::describe;
 
     #[test]
     fn an_empty_layout_says_so() {

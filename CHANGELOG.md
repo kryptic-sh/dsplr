@@ -31,9 +31,19 @@ and this project adheres to
 
 ### Added
 
+- `dsplr` with no command opens the GUI: a window showing every enabled output
+  as a rectangle at its logical size, scaled to fit, labelled with its
+  connector, description and mode, with disabled outputs in a tray below and the
+  selected output's settings in a read-only panel (settings the backend cannot
+  set say so). `Tab` and `Shift+Tab` step through the outputs, a click selects
+  one, `q` or `Escape` quits. It reads the displays on a backend thread before
+  the window opens, so a desktop with no backend exits `6` with no window; no
+  window system or no usable GPU exits `1` with the reason. Dragging, editing,
+  Apply and Save are not in it yet.
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive
-  sync and available modes; `dsplr list --json` prints the same layout in the
-  versioned JSON form profiles will use (refresh in millihertz).
+  sync and available modes (a refresh the desktop did not report reads as
+  `refresh unknown`, not `0 Hz`); `dsplr list --json` prints the same layout in
+  the versioned JSON form profiles will use (refresh in millihertz).
 - `dsplr backend` prints what detection checked, the backend it found and that
   backend's capabilities.
 - Two backends so far: Hyprland, and wlroots compositors (`wlr`). With no

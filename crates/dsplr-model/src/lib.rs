@@ -33,5 +33,6 @@ pub use mode::{
     mhz_to_hz_text,
 };
 pub use name::ParseNameError;
+pub use rect::Rect;
 pub use transform::Transform;
 pub use validate::{Field, Problem, ProblemKind, Severity};

@@ -7,7 +7,13 @@
 - `dsplr-persist`: each writer against golden files; each reader round-trip; the
   hand-edit guard (a changed hash refuses to overwrite).
 - `dsplr-core`: editor actions, undo, the confirm timer as a state machine with
-  an injected clock, `DrawList` snapshots for a fixed layout.
+  an injected clock, `DrawList` snapshots for a fixed layout. The snapshots are
+  the draw list's text form (one line per fill, outline, text and hit region)
+  compared with `crates/dsplr-core/src/snapshots/<name>.txt`; a change to the
+  canvas that is meant is written back with
+  `DSPLR_BLESS=1 cargo test -p dsplr-core`, which still fails each snapshot test
+  it rewrote, so a stray `DSPLR_BLESS` can never pass a run; run again without
+  it, and read the diff before the files are committed.
 - `dsplr-backend`: each backend's translation layer against **recorded replies**
   — `hyprctl monitors all -j` output, `GetCurrentState` replies, RandR screen
   resources — kept as fixtures, including the owner's machine (eDP-1 disabled,
@@ -44,4 +50,7 @@ mode the monitor rejects, let a confirm time out, kill dsplr mid-confirm and run
 ## Not covered by automated tests (stated as a gap)
 
 - Real monitors' behaviour on a mode they advertise but cannot show.
-- The crcbl rendering of the GUI beyond `DrawList` snapshots.
+- The crcbl rendering of the GUI beyond `DrawList` snapshots. The window was run
+  by hand in `tests/e2e/headless-sway.sh` (Vulkan through Mesa's lavapipe, keys
+  through `wtype`, a screenshot with `grim`); no test does that yet, and no
+  click has been sent to it.

@@ -4,7 +4,7 @@
 //! it from a layout file and `dsplr set` one output at a time,
 //! `dsplr restore --revert` goes back, `dsplr save` makes the current state
 //! last, and `dsplr save --profile`, `dsplr restore` and `dsplr profile` keep
-//! named layouts. The GUI is not written yet.
+//! named layouts. `dsplr` alone opens the GUI.
 
 use std::fs;
 use std::io::{self, Write};
@@ -21,6 +21,7 @@ use dsplr_persist::profile::ProfileName;
 
 mod apply;
 mod backend;
+mod gui;
 mod list;
 mod profile;
 mod restore;
@@ -192,29 +193,30 @@ impl From<Exit> for ExitCode {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            eprintln!("dsplr: cannot start the async runtime: {error}");
-            return Exit::Failure.into();
-        }
+    let Some(command) = Cli::parse().command else {
+        return gui::run().into();
     };
-    runtime.block_on(run(cli)).into()
+    match runtime() {
+        Ok(runtime) => runtime.block_on(run(command)).into(),
+        Err(exit) => exit.into(),
+    }
 }
 
-async fn run(cli: Cli) -> Exit {
-    match cli.command {
-        None => {
-            eprintln!(
-                "dsplr: the GUI is not written yet; `dsplr list` and `dsplr backend` read the displays"
-            );
+/// The current-thread runtime every command and the GUI's backend thread
+/// run on, or, when it cannot start, the error reported and the exit code.
+fn runtime() -> Result<tokio::runtime::Runtime, Exit> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| {
+            eprintln!("dsplr: cannot start the async runtime: {error}");
             Exit::Failure
-        }
-        Some(Command::Backend) => {
+        })
+}
+
+async fn run(command: Command) -> Exit {
+    match command {
+        Command::Backend => {
             let detection = detect().await;
             let code = if detection.backend.is_some() {
                 Exit::Success
@@ -223,18 +225,18 @@ async fn run(cli: Cli) -> Exit {
             };
             print(&backend::describe(&detection).await).unwrap_or(code)
         }
-        Some(Command::List { json }) => list(json).await,
-        Some(Command::Apply { file, apply }) => apply_file(&file, &apply).await,
-        Some(Command::Set {
+        Command::List { json } => list(json).await,
+        Command::Apply { file, apply } => apply_file(&file, &apply).await,
+        Command::Set {
             output,
             changes,
             apply,
-        }) => set(&output, &changes, &apply).await,
-        Some(Command::Save {
+        } => set(&output, &changes, &apply).await,
+        Command::Save {
             force,
             yes,
             profile,
-        }) => match find_backend().await {
+        } => match find_backend().await {
             Ok(backend) => {
                 let options = save::Options { force, yes };
                 match profile {
@@ -244,17 +246,17 @@ async fn run(cli: Cli) -> Exit {
             }
             Err(exit) => exit,
         },
-        Some(Command::Restore {
+        Command::Restore {
             revert: true,
             after,
             token,
             ..
-        }) => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
-        Some(Command::Restore { name, apply, .. }) => match apply_options(&apply) {
+        } => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
+        Command::Restore { name, apply, .. } => match apply_options(&apply) {
             Ok(options) => profile::restore(name.as_ref(), &options).await,
             Err(exit) => exit,
         },
-        Some(Command::Profile { command }) => match command {
+        Command::Profile { command } => match command {
             ProfileCommand::List { json } => profile::list(json),
             ProfileCommand::Show { name, json } => profile::show(&name, json),
             ProfileCommand::Rm { name } => profile::remove(&name),

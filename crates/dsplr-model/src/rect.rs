@@ -12,6 +12,9 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// Where `entry`'s settings put it: its position and logical size.
+    /// `None` when it has no logical size; whether it is enabled is the
+    /// caller's question.
     pub fn of(entry: &OutputEntry) -> Option<Self> {
         let (width, height) = entry.state.logical_size()?;
         Some(Self {

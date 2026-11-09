@@ -43,6 +43,14 @@ niri's config (`dsplr_persist::niri::save`); both niri e2e tests
 (2026-11-10), each alone and both in one harness in either order. The CI job is
 added and has not run yet.
 
+M3 (the GUI) is under way. `dsplr` with no command reads the displays on a
+backend thread and opens a crcbl window showing the canvas (outputs at their
+logical sizes, the tray of disabled ones, pending edits as outlines) and a
+read-only property panel, with Tab and click selection and `q` / `Esc` to quit;
+`dsplr-core` builds the frame as a platform-free draw list with snapshot tests.
+It ran in `tests/e2e/headless-sway.sh` on Mesa's lavapipe (2026-11-10). What M3
+still needs is listed in `docs/plan/06-gui.md` ("Still to build in M3").
+
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
 only as a way to group the work. The Hyprland e2e needs `kwin_wayland` to nest
@@ -230,9 +238,11 @@ milestone:
   connection (`Wlr::connect`) and closes it, so the serial guards only the
   instant between reading the heads and sending the configuration, and a change
   made after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
-  The backend thread of `docs/plan/02-architecture.md`, holding one
-  `wlr::Connection` and following its `done` events, is M3's. `Connection` reads
-  nothing between calls today; it would need a dispatch loop for that.
+  The GUI's backend thread (`apps/dsplr/src/gui.rs`) exists but reads one
+  snapshot and ends; holding one `wlr::Connection` there and following its
+  `done` events, waking the window with crcbl's waker (C4), is still M3's.
+  `Connection` reads nothing between calls today; it would need a dispatch loop
+  for that.
 - **A scale that is not a 256th is reported as changed after every `wlr`
   apply**: `set_scale` takes a `wl_fixed`, so 1.3 arrives as 1.30078125, and
   `Layout::differences` compares within `SCALE_EPSILON`. `dsplr apply` then
@@ -358,29 +368,58 @@ milestone:
   for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
-- **The GUI (M3)**: `dsplr-gui` is still a stub; nothing is built against crcbl.
-- **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: crcbl agreed
-  (2026-11-09) to add `connector: Option<String>` to crcbl-shell's
-  `MonitorInfo`, `Some` only when the platform reported a name
-  (`wl_output.name`, the RandR output name) and `None` for its fallbacks
-  (`output-N`, `wl-output-N`, `screen`) and on Win32, AppKit, web and headless.
-  Send crcbl the request when M3 starts; it builds it as one slice with e2e
-  tests. On Wayland the name can arrive after the output first appears, so match
-  on hotplug and change events too. On wlroots and Hyprland it equals
-  wlr-output-management's `head.name`.
-- **`crcbl-wl-scanner`'s `decode_event` reads past its borrow; fixed in crcbl,
-  not released.** The generated `decode_event(opcode, args: &WlArgument)` turns
-  the reference to one slot into a pointer and reads `args.add(1..)`, outside
-  that reference's provenance under Stacked Borrows. Fixed on crcbl's main
-  (755fe629, CI and Miri green, 2026-11-09); the release is the owner's call.
-  The new API: `decode_event<'a>(opcode, args: &'a [WlArgument])` (a short slice
-  gives `None`), and
-  `crcbl_wayland::ffi::with_dispatcher_args(message, args, f)`, which sizes the
-  slice from the message signature and takes a closure for every lifetime, so
-  decoded strings must be copied out inside it. When the release lands: bump
-  every crcbl crate with `cargo add`, and have `wlr::connection`'s dispatcher
-  decode inside `with_dispatcher_args`, as crcbl's `crcbl-wayland-probe`
-  `outputs.rs` `dispatch` does.
+- **The rest of the GUI (M3)**: dragging and snapping, editing (keys and the
+  panel's widgets), Apply / Save / Revert / Identify and their `Request`s to the
+  backend thread, the confirm dialogs, the identify overlay, configurable keys,
+  system fonts, and the backend thread following the desktop's changes. Listed
+  with what each needs in `docs/plan/06-gui.md` ("Still to build in M3").
+  `Editor::edit` records one undo step per call, so a drag must make one call
+  when it ends (or merge its steps), not one per pointer move. `q` quits without
+  asking even with pending edits; nothing in the window can make one yet, and
+  the question belongs with the editing slice.
+- **No automated GUI test**: the window was run by hand in
+  `tests/e2e/headless-sway.sh` with
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` (lavapipe), keys sent
+  with `wtype` and screenshots taken with `grim` (2026-11-10): it showed three
+  outputs (one scaled, one disabled in the tray), `Tab`, `Shift+Tab`, `q` and
+  `Escape` acted, and no Vulkan driver or no X display gave a clear error and
+  exit `1`. A test doing the same in CI's sway VM needs `vulkan-swrast`, `wtype`
+  and `grim` in the VM's packages, and a held keyboard (below). A click was
+  never sent: no pointer injector (`wlrctl`, `ydotool`) is installed here; the
+  hit regions are covered by `dsplr-core`'s unit tests only, and the pointer
+  position taken from a pointer-enter (`ShellEvent::PointerFocus`) by nothing.
+  Not run on niri, Hyprland or X11.
+- **The first key of each `wtype` call is reported lost** in the headless sway
+  harness (found in review, 2026-11-10). Suspected: crcbl-shell's handling of a
+  keymap change, since each `wtype` uploads its own keymap; the crcbl session
+  has been told. Not reproduced in this slice's runs, where each key went as its
+  own `wtype` call while a keyboard was held and every one arrived (`Tab`,
+  `Shift+Tab`, `q`, `Escape`). Whether a real keyboard loses a key after a
+  layout switch is unchecked.
+- **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
+  since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
+  call). `MonitorInfo::connector: Option<String>` is `Some` from
+  `wl_output.name`, else (below `wl_output` v4) `zxdg_output_v1.name`, and on
+  X11 the RandR output name; `None` for crcbl's made-up names (`wl-output-N`,
+  `output-N`, `CRTC-N`, `screen` without RandR) and on Win32, AppKit, web and
+  headless. A late `wl_output.name` republishes with `MonitorsChanged`. Caveats
+  for matching against wlr-output-management's `head.name`: Xvfb's real RandR
+  output is named `screen`, and RandR 1.0 emulation reports `default`, which no
+  head matches. It is a new public field, so `MonitorInfo { .. }` literals need
+  it. Needed for the identify overlay and the per-output confirm dialogs.
+- **crcbl 0.18.0 (tagged 2026-11-10) fixes `crcbl-wl-scanner`'s
+  `decode_event`**, which read past its borrow: the generated
+  `decode_event(opcode, args: &WlArgument)` turned the reference to one slot
+  into a pointer and read `args.add(1..)`, outside that reference's provenance
+  under Stacked Borrows. The new API:
+  `decode_event<'a>(opcode, args: &'a [WlArgument])` (a short slice gives
+  `None`), and `crcbl_wayland::ffi::with_dispatcher_args(message, args, f)`,
+  which sizes the slice from the message signature and takes a closure for every
+  lifetime, so decoded strings must be copied out inside it. Once 0.18.0 is on
+  crates.io: bump every crcbl crate with `cargo add`, and have
+  `wlr::connection`'s dispatcher decode inside `with_dispatcher_args`, as
+  crcbl's `crcbl-wayland-probe` `outputs.rs` `dispatch` does. C3 is not in
+  0.18.0.
 - **e2e for the other desktops**: each backend (M5 to M7) adds a
   `headless-<desktop>.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`, and
@@ -512,8 +551,9 @@ From the plan review (2026-11-04), each checked against its source:
 - `wlr-output-management`'s `set_scale` takes a `wl_fixed` the compositor may
   round.
 
-crcbl's tree was read at source level only for the needs in
-`docs/plan/06-gui.md`; nothing has been built against it.
+crcbl's tree was read at source level for the needs in `docs/plan/06-gui.md`;
+the main window is built on crcbl 0.17.2 (C1 on Wayland, the canvas of C6), and
+the table there says which needs are confirmed.
 
 ## Not verified (stated as gaps)
 
@@ -602,6 +642,11 @@ and the `monitors.lua` writer:
 
 ## Behaviour that surprised us but is not a bug
 
+- **Keys reach a window in headless sway only while a keyboard is held**:
+  headless sway has no keyboard of its own, so a lone `wtype -k Tab` sent
+  nothing dsplr's window saw. With `wtype -s 3600000 -m shift &` holding a
+  virtual keyboard for the session (pikr's e2e does the same), every key
+  arrived.
 - **sway 1.12 picks an output's settings differently at startup and on a
   reload** (headless, 2026-11-10): on a reload the last setting given wins, by
   connector, identifier or `*` alike; at startup and on hotplug a `*` still
