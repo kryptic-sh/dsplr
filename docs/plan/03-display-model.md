@@ -138,17 +138,23 @@ success, so it is not one. Checked:
 Dragging on the canvas snaps an output's edges to the nearest edges of the
 others within a threshold in screen pixels (`SNAP_DISTANCE`), preferring
 edge-to-edge contact, then aligned top/left edges, then centres. On release the
-layout is **normalised**: translated so the minimum x and y across enabled
-outputs is zero, which is what XRandR requires and what every other backend
-accepts.
+layout is **lifted off negative positions** (`Layout::make_non_negative`): every
+output moves by the least amount that leaves no enabled output at a negative x
+or y, along an axis only where one went negative, and not at all otherwise. So a
+drag changes only the output dragged unless it left one negative, and a layout
+away from the origin (headless sway's starts at x 1920) keeps its place; moving
+every output to the origin on each release would make them all pending changes,
+and an apply would move them all (decided 2026-11-10). `Layout::normalise` (the
+minimum x and y moved to zero, which XRandR requires) is the RandR backend's to
+apply at M7, not the canvas's.
 
 `Layout::snap` takes its threshold in layout pixels, so `SNAP_DISTANCE` belongs
 to the canvas (`dsplr-core`), which divides it by the canvas zoom before
 calling. Each axis snaps on its own. Edge contact is only offered against an
 output that overlaps, or nearly, along the other axis, since touching is
-impossible otherwise. `Layout::normalise` moves disabled outputs and mirrors by
-the same amount as the rest, and refuses (changing nothing) when a position
-would leave `i32`.
+impossible otherwise. `Layout::make_non_negative` and `Layout::normalise` move
+disabled outputs and mirrors by the same amount as the rest, and refuse
+(changing nothing) when a position would leave `i32`.
 
 ## JSON form
 

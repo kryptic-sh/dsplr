@@ -1,5 +1,6 @@
 //! Arranging outputs on the canvas: snapping a dragged output to the others,
-//! and normalising the layout to the origin on release
+//! lifting the layout off negative positions on release, and normalising it
+//! to the origin where a backend needs that
 //! (`docs/plan/03-display-model.md#snapping`).
 
 use crate::rect::Rect;
@@ -49,14 +50,44 @@ impl Layout {
     ///
     /// When an output would land outside `i32`; the layout is then unchanged.
     pub fn normalise(&mut self) -> Result<(), PositionOutOfRange> {
-        let Some(min_x) = placed(&self.entries).map(|(_, e)| e.state.x).min() else {
+        let Some((min_x, min_y)) = self.placed_min() else {
             return Ok(());
         };
-        let min_y = placed(&self.entries)
-            .map(|(_, e)| e.state.y)
-            .min()
-            .unwrap_or_default();
-        let shift = |position: i32, by: i32| i32::try_from(i64::from(position) - i64::from(by));
+        self.translate(-i64::from(min_x), -i64::from(min_y))
+    }
+
+    /// Moves every output by the least amount that leaves no enabled,
+    /// non-mirrored output at a negative x or y: along an axis only where
+    /// one is negative, and not at all when none is. Unlike
+    /// [`Layout::normalise`], a layout whose outputs start away from the
+    /// origin (sway's at x 1920) keeps its place, so an edit to one output
+    /// moves no other unless it has to.
+    ///
+    /// # Errors
+    ///
+    /// When an output would land outside `i32`; the layout is then unchanged.
+    pub fn make_non_negative(&mut self) -> Result<(), PositionOutOfRange> {
+        let Some((min_x, min_y)) = self.placed_min() else {
+            return Ok(());
+        };
+        let lift = |min: i32| (-i64::from(min)).max(0);
+        match (lift(min_x), lift(min_y)) {
+            (0, 0) => Ok(()),
+            (dx, dy) => self.translate(dx, dy),
+        }
+    }
+
+    /// The smallest x and the smallest y among the placed outputs.
+    fn placed_min(&self) -> Option<(i32, i32)> {
+        let min_x = placed(&self.entries).map(|(_, e)| e.state.x).min()?;
+        let min_y = placed(&self.entries).map(|(_, e)| e.state.y).min()?;
+        Some((min_x, min_y))
+    }
+
+    /// Moves every output by `dx`, `dy`, or none when one would land outside
+    /// `i32`.
+    fn translate(&mut self, dx: i64, dy: i64) -> Result<(), PositionOutOfRange> {
+        let shift = |position: i32, by: i64| i32::try_from(i64::from(position) + by);
         let moved = self
             .entries
             .iter()
@@ -65,8 +96,8 @@ impl Layout {
                     output: entry.id.clone(),
                 };
                 Ok((
-                    shift(entry.state.x, min_x).map_err(out_of_range)?,
-                    shift(entry.state.y, min_y).map_err(out_of_range)?,
+                    shift(entry.state.x, dx).map_err(out_of_range)?,
+                    shift(entry.state.y, dy).map_err(out_of_range)?,
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -223,6 +254,51 @@ mod tests {
                 output: OutputId::Connector("eDP-1".into())
             })
         );
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn making_non_negative_moves_nothing_away_from_the_origin() {
+        // sway's headless outputs start at x 1920.
+        let mut layout = Layout {
+            entries: vec![
+                monitor("HEADLESS-2", 1920, 1080, 1920, 0),
+                monitor("HEADLESS-1", 1280, 720, 3840, 0),
+            ],
+        };
+        let before = layout.clone();
+        layout.make_non_negative().unwrap();
+        assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn making_non_negative_lifts_only_the_axis_that_went_negative() {
+        let mut disabled = monitor("eDP-1", 1920, 1080, -5000, 40);
+        disabled.state.enabled = false;
+        let mut layout = Layout {
+            entries: vec![
+                monitor("DP-1", 1920, 1080, -500, 300),
+                monitor("DP-2", 1920, 1080, 1920, 200),
+                disabled,
+            ],
+        };
+        layout.make_non_negative().unwrap();
+        assert_eq!(
+            positions(&layout),
+            [(0, 300), (2420, 200), (-4500, 40)],
+            "x by 500, y not at all"
+        );
+    }
+
+    #[test]
+    fn making_non_negative_out_of_range_changes_nothing() {
+        let mut far = monitor("eDP-1", 1920, 1080, i32::MAX, 0);
+        far.state.enabled = false;
+        let mut layout = Layout {
+            entries: vec![monitor("DP-1", 1920, 1080, -10, 0), far],
+        };
+        let before = layout.clone();
+        assert!(layout.make_non_negative().is_err());
         assert_eq!(layout, before);
     }
 

@@ -1,14 +1,17 @@
 //! The crcbl windows (`docs/plan/06-gui.md`). So far the main window: the
-//! canvas and the read-only property panel dsplr-core draws, Tab and click
-//! selection, undo and redo, and quitting.
+//! canvas dsplr-core draws, where outputs are dragged and moved with keys,
+//! and the property panel, crcbl-ui widgets editing the selected output;
+//! every edit pending, with undo and redo, and quitting asks before dropping
+//! them.
 //!
-//! Not here yet: dragging, editing in the panel, Apply and Save with their
-//! confirm dialogs, the identify overlays, configurable keys, and following
-//! the desktop's changes.
+//! Not here yet: Apply and Save with their confirm dialogs, the identify
+//! overlays, configurable keys, and following the desktop's changes.
 
 mod gpu;
 mod keys;
 mod paint;
+mod panel;
+mod window;
 
 use std::time::{Duration, Instant};
 
@@ -16,17 +19,10 @@ use crcbl_app::backend::GpuError;
 use crcbl_app::present::PresentError;
 use crcbl_frame::graph::GraphError;
 use crcbl_hal::HalError;
-use crcbl_shell::{
-    ButtonState, CloseReply, LogicalSize, PointerButton, Shell, ShellError, ShellEvent, WindowDesc,
-    WindowId, WindowRole,
-};
-use crcbl_ui::draw_list::DrawList;
-use crcbl_ui::font::Font;
-use crcbl_ui::text::FontAtlas;
-use dsplr_core::{Editor, Point, Size, Theme, draw};
+use crcbl_shell::{LogicalSize, Shell, ShellError, ShellEvent, WindowDesc, WindowId, WindowRole};
+use dsplr_core::Editor;
 
 use crate::gpu::Gpu;
-use crate::keys::Action;
 
 /// The window's size when it opens, in logical pixels.
 const WINDOW_SIZE: LogicalSize = LogicalSize {
@@ -36,9 +32,6 @@ const WINDOW_SIZE: LogicalSize = LogicalSize {
 /// How long the window system gets to size a new window before dsplr gives
 /// up.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long to wait for the window system after an out-of-date swapchain
-/// before drawing again: a new size is usually on its way.
-const PRESENT_RETRY: Duration = Duration::from_millis(16);
 
 /// Why the GUI could not run.
 #[derive(Debug, thiserror::Error)]
@@ -74,19 +67,8 @@ pub fn run(editor: Editor) -> Result<(), GuiError> {
     })?;
     let (extent, early) = wait_for_size(shell.as_mut(), window)?;
     let mut gpu = Gpu::open(shell.as_ref(), window, extent)?;
-    let outcome = MainWindow {
-        shell: shell.as_mut(),
-        gpu: &mut gpu,
-        editor,
-        theme: Theme::tokyo_night(),
-        font: Font::sans(),
-        atlas: FontAtlas::built_in(),
-        list: DrawList::new(),
-        extent,
-        scale: 1.0,
-        pointer: Point::new(0.0, 0.0),
-    }
-    .run(early);
+    let outcome =
+        window::MainWindow::new(shell.as_mut(), window, editor, extent).run(&mut gpu, early);
     // The surface goes before the window it was made from.
     gpu.destroy();
     drop(shell);
@@ -111,161 +93,5 @@ fn wait_for_size(
             return Err(GuiError::NeverSized);
         }
         shell.wait_events(Some(Duration::from_millis(8)));
-    }
-}
-
-struct MainWindow<'a> {
-    shell: &'a mut dyn Shell,
-    gpu: &'a mut Gpu,
-    editor: Editor,
-    theme: Theme,
-    font: &'static Font,
-    /// crcbl's built-in glyph atlas, which its UI pass takes alongside the
-    /// parsed font's glyphs.
-    atlas: FontAtlas,
-    list: DrawList,
-    /// The window's size in device pixels, and device pixels per logical
-    /// pixel.
-    extent: (u32, u32),
-    scale: f32,
-    /// The pointer, in logical pixels.
-    pointer: Point,
-}
-
-/// What the loop does after an event.
-enum Step {
-    /// Nothing on screen changed.
-    Idle,
-    Redraw,
-    Quit,
-}
-
-impl MainWindow<'_> {
-    fn run(&mut self, mut early: Vec<ShellEvent>) -> Result<(), GuiError> {
-        let mut dirty = true;
-        loop {
-            let mut events = std::mem::take(&mut early);
-            self.shell.pump(&mut |event| events.push(event));
-            for event in events {
-                self.gpu.observe(&event);
-                match self.handle(event)? {
-                    Step::Idle => {}
-                    Step::Redraw => dirty = true,
-                    Step::Quit => return Ok(()),
-                }
-            }
-            if dirty && self.gpu.frame_due() {
-                self.frame();
-                let background = paint::linear(self.theme.background);
-                if self
-                    .gpu
-                    .present(self.shell, &self.list, &self.atlas, background)?
-                {
-                    dirty = false;
-                } else {
-                    // Out of date and reconfigured. Retrying at once would
-                    // spin while it stays out of date.
-                    self.shell.wait_events(Some(PRESENT_RETRY));
-                }
-                continue;
-            }
-            self.shell.wait_events(None);
-        }
-    }
-
-    fn handle(&mut self, event: ShellEvent) -> Result<Step, GuiError> {
-        Ok(match event {
-            ShellEvent::Resized {
-                size, scale_factor, ..
-            }
-            | ShellEvent::ScaleFactorChanged {
-                size, scale_factor, ..
-            } => {
-                self.extent = (size.width, size.height);
-                self.scale = scale_factor as f32;
-                self.gpu.resize(self.extent)?;
-                Step::Redraw
-            }
-            ShellEvent::CloseRequested { window } => {
-                self.shell.reply_close_request(window, CloseReply::Keep)?;
-                Step::Quit
-            }
-            ShellEvent::Key {
-                keysym,
-                state: ButtonState::Pressed,
-                modifiers,
-                ..
-            } => match keys::action(keysym, modifiers) {
-                Some(action) => self.act(action),
-                None => Step::Idle,
-            },
-            ShellEvent::PointerMotion { abs: Some(at), .. }
-            | ShellEvent::PointerFocus {
-                entered: true,
-                position: Some(at),
-                ..
-            } => {
-                self.pointer = self.logical(at.x, at.y);
-                Step::Idle
-            }
-            ShellEvent::Button {
-                button: PointerButton::Left,
-                state: ButtonState::Pressed,
-                position,
-                ..
-            } => {
-                if let Some(at) = position {
-                    self.pointer = self.logical(at.x, at.y);
-                }
-                let scene = draw(&self.editor, self.size(), &self.theme);
-                match scene.hit(self.pointer) {
-                    Some(output) => {
-                        self.editor.select(Some(output));
-                        Step::Redraw
-                    }
-                    None => Step::Idle,
-                }
-            }
-            _ => Step::Idle,
-        })
-    }
-
-    fn act(&mut self, action: Action) -> Step {
-        let changed = match action {
-            Action::SelectNext => {
-                self.editor.select_next();
-                true
-            }
-            Action::SelectPrevious => {
-                self.editor.select_previous();
-                true
-            }
-            Action::Undo => self.editor.undo(),
-            Action::Redo => self.editor.redo(),
-            Action::Quit => return Step::Quit,
-        };
-        if changed { Step::Redraw } else { Step::Idle }
-    }
-
-    /// The window's size in logical pixels.
-    fn size(&self) -> Size {
-        Size {
-            width: self.extent.0 as f32 / self.scale,
-            height: self.extent.1 as f32 / self.scale,
-        }
-    }
-
-    /// A point in device pixels, in logical ones.
-    fn logical(&self, x: f64, y: f64) -> Point {
-        Point::new(x as f32 / self.scale, y as f32 / self.scale)
-    }
-
-    /// Records this frame's draw list, in logical pixels drawn at the
-    /// window's scale.
-    fn frame(&mut self) {
-        let scene = draw(&self.editor, self.size(), &self.theme);
-        self.list.clear();
-        self.list.set_scale(self.scale);
-        paint::paint(&scene, &mut self.list, self.font);
     }
 }

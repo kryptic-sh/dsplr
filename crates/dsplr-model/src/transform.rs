@@ -23,7 +23,7 @@ pub enum Transform {
 
 impl Transform {
     /// In `wl_output.transform` order, so a value's index is its wire value.
-    const ALL: [Self; 8] = [
+    pub const ALL: [Self; 8] = [
         Self::Normal,
         Self::Rotate90,
         Self::Rotate180,
@@ -55,6 +55,20 @@ impl Transform {
             Self::Flipped180 => 6,
             Self::Flipped270 => 7,
         }
+    }
+
+    /// This transform turned a further quarter turn, clockwise or not, the
+    /// flip kept. `wl_output.transform`'s turns are counter-clockwise, so a
+    /// clockwise turn from `Normal` is `Rotate270`.
+    pub fn rotated(self, clockwise: bool) -> Self {
+        let value = self.to_wayland();
+        let (flip, turns) = (value & 4, value & 3);
+        let turns = if clockwise {
+            (turns + 3) % 4
+        } else {
+            (turns + 1) % 4
+        };
+        Self::ALL[(flip | turns) as usize]
     }
 
     /// Whether width and height trade places on screen (a quarter turn).
@@ -98,6 +112,23 @@ impl FromStr for Transform {
 #[cfg(test)]
 mod tests {
     use super::Transform;
+
+    #[test]
+    fn a_quarter_turn_keeps_the_flip_and_four_come_back() {
+        assert_eq!(Transform::Normal.rotated(true), Transform::Rotate270);
+        assert_eq!(Transform::Normal.rotated(false), Transform::Rotate90);
+        assert_eq!(Transform::Rotate90.rotated(true), Transform::Normal);
+        assert_eq!(Transform::Flipped.rotated(true), Transform::Flipped270);
+        assert_eq!(Transform::Flipped270.rotated(false), Transform::Flipped);
+        for transform in Transform::ALL {
+            let mut turned = transform;
+            for _ in 0..4 {
+                turned = turned.rotated(true);
+            }
+            assert_eq!(turned, transform);
+            assert_eq!(transform.rotated(true).rotated(false), transform);
+        }
+    }
 
     #[test]
     fn wayland_values_match_the_protocol() {

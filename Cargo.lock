@@ -580,6 +580,7 @@ dependencies = [
  "crcbl-shell",
  "crcbl-ui",
  "dsplr-core",
+ "dsplr-model",
  "glam",
  "thiserror",
 ]

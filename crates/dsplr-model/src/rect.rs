@@ -1,6 +1,6 @@
 //! An output's rectangle on the canvas, shared by validation and arranging.
 
-use crate::OutputEntry;
+use crate::{OutputEntry, OutputState};
 
 /// An output's place on the canvas, in whole layout pixels.
 #[derive(Debug, Clone, Copy)]
@@ -12,14 +12,19 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Where `entry`'s settings put it: its position and logical size.
-    /// `None` when it has no logical size; whether it is enabled is the
-    /// caller's question.
+    /// Where `entry`'s settings put it: [`Rect::of_state`].
     pub fn of(entry: &OutputEntry) -> Option<Self> {
-        let (width, height) = entry.state.logical_size()?;
+        Self::of_state(&entry.state)
+    }
+
+    /// Where these settings put an output: their position and logical size.
+    /// `None` when there is no logical size; whether the output is enabled is
+    /// the caller's question.
+    pub fn of_state(state: &OutputState) -> Option<Self> {
+        let (width, height) = state.logical_size()?;
         Some(Self {
-            x: entry.state.x.into(),
-            y: entry.state.y.into(),
+            x: state.x.into(),
+            y: state.y.into(),
             width: width.into(),
             height: height.into(),
         })

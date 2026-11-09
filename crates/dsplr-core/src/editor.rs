@@ -1,8 +1,15 @@
 //! The editor's state: the live layout the backend reported, the pending
 //! layout the user is editing over it, undo and redo over the pending edits,
-//! and which output is selected.
+//! and which output is selected. The edits themselves are in `edits`, and
+//! dragging on the canvas in `drag`.
+
+mod drag;
+mod edits;
 
 use dsplr_model::{Capabilities, Layout, OutputState};
+
+pub use drag::SNAP_DISTANCE;
+pub use edits::{Direction, NUDGE_STEP, scale_choices};
 
 /// The desktop's state as the backend thread reports it
 /// (`docs/plan/02-architecture.md`): the layout, and what the backend that
@@ -20,7 +27,7 @@ pub struct Snapshot {
 /// The pending layout starts as a copy of the live one and has the same
 /// entries in the same order, so an output is named by its index in either.
 /// Every change to it goes through [`Editor::edit`], which records an undo
-/// step.
+/// step, or through a drag, which records one when it ends.
 #[derive(Debug, Clone)]
 pub struct Editor {
     snapshot: Snapshot,
@@ -30,6 +37,8 @@ pub struct Editor {
     /// Pending layouts undone, the latest undone last.
     redo: Vec<Layout>,
     selected: Option<usize>,
+    /// The drag under way, if any.
+    drag: Option<drag::Drag>,
 }
 
 impl Editor {
@@ -42,6 +51,7 @@ impl Editor {
             undo: Vec::new(),
             redo: Vec::new(),
             selected: None,
+            drag: None,
         };
         editor.selected = editor.order().first().copied();
         editor
@@ -69,8 +79,12 @@ impl Editor {
 
     /// Changes output `index`'s pending settings with `change`, recording an
     /// undo step and dropping the redo history when it changed anything.
-    /// Returns whether it did; an index with no output changes nothing.
+    /// Returns whether it did; an index with no output, or an edit during a
+    /// drag, changes nothing.
     pub fn edit(&mut self, index: usize, change: impl FnOnce(&mut OutputState)) -> bool {
+        if self.drag.is_some() {
+            return false;
+        }
         let Some(entry) = self.pending.entries.get(index) else {
             return false;
         };
@@ -85,8 +99,12 @@ impl Editor {
         true
     }
 
-    /// Goes back one edit. Returns whether there was one.
+    /// Goes back one edit. Returns whether there was one; during a drag
+    /// there is none.
     pub fn undo(&mut self) -> bool {
+        if self.drag.is_some() {
+            return false;
+        }
         let Some(previous) = self.undo.pop() else {
             return false;
         };
@@ -95,8 +113,12 @@ impl Editor {
         true
     }
 
-    /// Goes forward one undone edit. Returns whether there was one.
+    /// Goes forward one undone edit. Returns whether there was one; during a
+    /// drag there is none.
     pub fn redo(&mut self) -> bool {
+        if self.drag.is_some() {
+            return false;
+        }
         let Some(next) = self.redo.pop() else {
             return false;
         };

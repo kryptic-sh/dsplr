@@ -21,6 +21,10 @@ pub struct Theme {
     pub accent: Color,
     /// A pending edit's outline, and a changed value in the panel.
     pub pending: Color,
+    /// An output validation refuses, and the bar saying why.
+    pub error: Color,
+    /// An output validation warns about, and the bar saying why.
+    pub warning: Color,
     /// A tray tile: a disabled output.
     pub tray: Color,
     /// A tray tile's border.
@@ -45,6 +49,8 @@ impl Theme {
             border: Color::hex(0x414868),
             accent: Color::hex(0x7aa2f7),
             pending: Color::hex(0xff9e64),
+            error: Color::hex(0xf7768e),
+            warning: Color::hex(0xe0af68),
             tray: Color::hex(0x16161e),
             tray_border: Color::hex(0x3b4261),
             text: Color::hex(0xc0caf5),

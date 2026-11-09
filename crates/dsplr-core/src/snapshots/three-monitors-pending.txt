@@ -13,33 +13,11 @@ text 32.0,700.0 15 #a9b1d6 clip 24.0,692.0 168.0x52.0 "HDMI-A-1"
 text 32.0,718.0 13 #565f89 clip 24.0,692.0 168.0x52.0 "disabled"
 outline 24.0,158.9 350.8x197.3 2.0 #ff9e64
 outline 585.2,158.9 350.8x197.3 2.0 #ff9e64
-fill 960.0,0.0 320.0x768.0 #16161e
-fill 960.0,0.0 1.0x768.0 #292e42
-text 976.0,16.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Output"
-text 1088.0,16.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "DP-2"
-text 976.0,38.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Description"
-text 1088.0,38.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "unknown"
-text 976.0,60.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Enabled"
-text 1088.0,60.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "yes"
-text 976.0,82.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Mode"
-text 1088.0,82.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "2560x1440"
-text 976.0,104.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Refresh"
-text 1088.0,104.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "144 Hz"
-text 976.0,126.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Custom mode"
-text 1088.0,126.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "not supported by sway"
-text 976.0,148.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Position"
-text 1088.0,148.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "1920, 0"
-text 976.0,170.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Scale"
-text 1088.0,170.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "1.25"
-text 976.0,192.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Transform"
-text 1088.0,192.0 13 #c0caf5 clip 968.0,8.0 304.0x752.0 "90"
-text 976.0,214.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Adaptive sync"
-text 1088.0,214.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "not supported by sway"
-text 976.0,236.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "Mirror of"
-text 1088.0,236.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "not supported by sway"
 fill 0.0,768.0 1280.0x32.0 #16161e
 fill 0.0,768.0 1280.0x1.0 #292e42
-text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "sway  ·  pending edits  ·  Tab next output  ·  click select  ·  u / C-r undo / redo  ·  q quit"
+text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "sway  ·  pending edits  ·  drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  u / C-r undo / redo  ·  q quit"
+hit 24.0,158.9 350.8x197.3 output 0
+hit 585.2,158.9 350.8x197.3 output 2
 hit 24.0,224.7 350.8x197.3 output 0
 hit 374.8,158.9 210.5x374.2 output 1
 hit 24.0,692.0 168.0x52.0 output 2

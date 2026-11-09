@@ -53,4 +53,6 @@ mode the monitor rejects, let a confirm time out, kill dsplr mid-confirm and run
 - The crcbl rendering of the GUI beyond `DrawList` snapshots. The window was run
   by hand in `tests/e2e/headless-sway.sh` (Vulkan through Mesa's lavapipe, keys
   through `wtype`, a screenshot with `grim`); no test does that yet, and no
-  click has been sent to it.
+  click has been sent to it, so dragging and the panel's widgets are covered by
+  `dsplr-core`'s editor and hit-region tests and a build of the panel's tree,
+  not by a pointer in a window.

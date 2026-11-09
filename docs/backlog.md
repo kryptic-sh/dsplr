@@ -45,11 +45,14 @@ added and has not run yet.
 
 M3 (the GUI) is under way. `dsplr` with no command reads the displays on a
 backend thread and opens a crcbl window showing the canvas (outputs at their
-logical sizes, the tray of disabled ones, pending edits as outlines) and a
-read-only property panel, with Tab and click selection and `q` / `Esc` to quit;
-`dsplr-core` builds the frame as a platform-free draw list with snapshot tests.
-It ran in `tests/e2e/headless-sway.sh` on Mesa's lavapipe (2026-11-10). What M3
-still needs is listed in `docs/plan/06-gui.md` ("Still to build in M3").
+logical sizes, the tray of disabled ones, pending edits as outlines, validation
+problems in red and yellow) and an editable property panel (crcbl-ui widgets).
+Edits are pending, each undoable: dragging with snapping, the key table's moves,
+turns, scale steps and on/off, and the panel's fields; quitting with pending
+edits asks. `dsplr-core` holds the editor and builds a platform-free draw list
+with snapshot tests. It ran in `tests/e2e/headless-sway.sh` on Mesa's lavapipe
+(2026-11-10). Apply and save from the window, and the rest M3 still needs, are
+listed in `docs/plan/06-gui.md` ("Still to build in M3").
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -368,34 +371,61 @@ milestone:
   for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
-- **The rest of the GUI (M3)**: dragging and snapping, editing (keys and the
-  panel's widgets), Apply / Save / Revert / Identify and their `Request`s to the
-  backend thread, the confirm dialogs, the identify overlay, configurable keys,
-  system fonts, and the backend thread following the desktop's changes. Listed
-  with what each needs in `docs/plan/06-gui.md` ("Still to build in M3").
-  `Editor::edit` records one undo step per call, so a drag must make one call
-  when it ends (or merge its steps), not one per pointer move. `q` quits without
-  asking even with pending edits; nothing in the window can make one yet, and
-  the question belongs with the editing slice.
+- **The rest of the GUI (M3)**: Apply / Save / Revert / Identify and their
+  `Request`s to the backend thread, the confirm dialogs, the identify overlay,
+  configurable keys, system fonts, the backend thread following the desktop's
+  changes, and reaching the panel's widgets from the keyboard (Tab selects
+  outputs; the widgets take the pointer, and keys only once a field or list is
+  engaged). Listed with what each needs in `docs/plan/06-gui.md` ("Still to
+  build in M3").
+- **Key moves can leave negative positions**: `h j k l` and `H J K L` move one
+  output and nothing else, so a nudge left of x 0 leaves it at -10, which
+  wlroots and Hyprland take; only a drag's release lifts the layout off negative
+  positions (`Layout::make_non_negative`, plan 03). Lifting after key moves too
+  would make them shift every other output on that axis, as a drag does. And
+  `Layout::normalise`, the origin at 0,0 that XRandR requires, is to apply in
+  the RandR backend (M7), not in the editor.
+- **The GUI's choices that are guesses, not rules from a desktop**: the offered
+  scales where a mode lists none (quarter steps 0.5 to 3, or 1 to 3 whole;
+  Hyprland's own "clean" scales are not consulted), `NUDGE_STEP` (10 layout
+  pixels), `SNAP_DISTANCE` (12 window pixels), and `H J K L` moving only to an
+  output sharing some of the span across (a diagonal neighbour is not reached),
+  and stopping at a neighbour it already touches rather than jumping past it.
+  Any typed scale is still taken.
+- **The panel shows and does not edit** the primary output, Hyprland's colour
+  preset and bit depth, and KDE's overscan and RGB range.
+- **Panel keys are mapped by hand** (`dsplr-gui`'s `keys::nav`: Enter, Escape,
+  the arrows, Tab) where crcbl's docs pair `TextPump` with `crcbl-input`'s
+  action map. `crcbl-input` is not on plan 02's dependency list, so adding it is
+  the owner's call.
+- **A gap is reported on the outputs not reached from the first one**, so after
+  moving the first output away its neighbour gets the warning outline, and the
+  moved one only its pending one (seen 2026-11-10 in headless sway).
+  `Layout::validate`'s rule, not the canvas's; marking every output of a
+  disconnected group on both sides would need it to say which group is which.
 - **No automated GUI test**: the window was run by hand in
   `tests/e2e/headless-sway.sh` with
   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` (lavapipe), keys sent
-  with `wtype` and screenshots taken with `grim` (2026-11-10): it showed three
-  outputs (one scaled, one disabled in the tray), `Tab`, `Shift+Tab`, `q` and
-  `Escape` acted, and no Vulkan driver or no X display gave a clear error and
-  exit `1`. A test doing the same in CI's sway VM needs `vulkan-swrast`, `wtype`
-  and `grim` in the VM's packages, and a held keyboard (below). A click was
-  never sent: no pointer injector (`wlrctl`, `ydotool`) is installed here; the
-  hit regions are covered by `dsplr-core`'s unit tests only, and the pointer
-  position taken from a pointer-enter (`ShellEvent::PointerFocus`) by nothing.
-  Not run on niri, Hyprland or X11.
-- **The first key of each `wtype` call is reported lost** in the headless sway
-  harness (found in review, 2026-11-10). Suspected: crcbl-shell's handling of a
-  keymap change, since each `wtype` uploads its own keymap; the crcbl session
-  has been told. Not reproduced in this slice's runs, where each key went as its
-  own `wtype` call while a keyboard was held and every one arrived (`Tab`,
-  `Shift+Tab`, `q`, `Escape`). Whether a real keyboard loses a key after a
-  layout switch is unchecked.
+  with `wtype` and screenshots taken with `grim` (2026-11-10): three outputs
+  (one scaled, one disabled in the tray); `Tab`, `Shift+Tab`, `q` and `Escape`;
+  `l` ten times (100 pixels, then an overlap outlined in red and named in the
+  bar), `r` (turned), `+` (1.5 to 1.75), `space` (off, every field but Enabled
+  disabled), `u` (back on), then `q` asking and `y` quitting with exit `0`; no
+  Vulkan driver or no X display gave a clear error and exit `1`. A test doing
+  the same in CI's sway VM needs `vulkan-swrast`, `wtype` and `grim` in the VM's
+  packages, and a held keyboard (below). A click was never sent: no pointer
+  injector (`wlrctl`, `ydotool`) is installed here, so dragging, the panel's
+  drop-downs, checkbox, number and text field, the tooltips, and the pointer
+  position from a pointer-enter (`ShellEvent::PointerFocus`) were never used in
+  a window; the editor, drag and hit-region tests in `dsplr-core` and a build of
+  the panel's tree in `dsplr-gui` cover them. Not covered by any test: a draft
+  committed to the output it was typed for when a canvas click moves the
+  selection (`follow_selection` is tested for the reset, `Drafts::commits` on
+  its own; engaging a field needs a click on it), a panel click ignored behind
+  the quit prompt, and two navigation keys in one batch each getting a frame (an
+  open drop-down needs a click). A batch of canvas keys acting once each is
+  tested (`window::tests`, against crcbl's headless shell). Not run on niri,
+  Hyprland or X11.
 - **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
   since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
   call). `MonitorInfo::connector: Option<String>` is `Some` from
@@ -431,13 +461,16 @@ milestone:
   disabled output at the origin (wlroots, Hyprland) gets it back there, so
   validation refuses the overlap unless `--pos` is given. Placing it beside the
   others (the right edge of the layout, say) would guess where the user wants
-  it; not done. Turned on without a mode, an output takes its preferred mode,
-  else its largest at the highest refresh (`set::default_mode`); headless sway
-  lists no mode for a disabled output, so there `--mode` is needed too.
-  `--no-mirror` does not place the output either: Hyprland moves a mirror onto
-  its source (`CMonitor::setMirror` sets its position to the source's, v0.57.1
-  source, not observed), so ending one without `--pos` is refused as an overlap
-  (exit `3`). The Hyprland e2e's `--no-mirror` step passes `--pos`.
+  it; not done. The GUI's `space` makes that guess (right of the others, level
+  with the topmost, only when it would overlap one: `Editor::set_enabled`);
+  whether `set --enable` should share it is open. Turned on without a mode, an
+  output takes its preferred mode, else its largest at the highest refresh
+  (`set::default_mode`); headless sway lists no mode for a disabled output, so
+  there `--mode` is needed too. `--no-mirror` does not place the output either:
+  Hyprland moves a mirror onto its source (`CMonitor::setMirror` sets its
+  position to the source's, v0.57.1 source, not observed), so ending one without
+  `--pos` is refused as an overlap (exit `3`). The Hyprland e2e's `--no-mirror`
+  step passes `--pos`.
 - **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
   output's size, and a neighbour it now overlaps or leaves a gap beside is
   refused or warned about by validation, not shifted. `Layout::normalise` and
@@ -642,11 +675,21 @@ and the `monitors.lua` writer:
 
 ## Behaviour that surprised us but is not a bug
 
-- **Keys reach a window in headless sway only while a keyboard is held**:
-  headless sway has no keyboard of its own, so a lone `wtype -k Tab` sent
-  nothing dsplr's window saw. With `wtype -s 3600000 -m shift &` holding a
-  virtual keyboard for the session (pikr's e2e does the same), every key
-  arrived.
+- **Headless sway needs one keyboard held for the whole session, or keys are
+  lost** (a harness requirement, cause found by the crcbl session, 2026-11-10).
+  Headless sway has no keyboard of its own, so each `wtype` call's virtual
+  keyboard is the seat's only one, and `wtype` presses about 0.5 ms after the
+  device appears. When sway handles that press before the client's
+  `get_keyboard`, the client's `wl_keyboard.enter` lists the key as already
+  held, and crcbl deliberately ignores keys held at enter; each `wtype` exit
+  removes the keyboard, so every call races again. A race in `wtype`, not a
+  crcbl bug. Holding one keyboard first (`wtype -s 3600000 -m shift &`, as
+  pikr's e2e does) avoids it: with it, every key this slice sent arrived. Even
+  then the focus flips with each `wtype` call, and a release can arrive without
+  its press, so a test must not count on matched press and release. And `wtype`
+  types a space between its positional arguments (`wtype j j j` sends j, space,
+  j, space, j), which in dsplr turns the selected output on or off: send keys as
+  one argument (`wtype jjj`) or by name (`wtype -k Tab`).
 - **sway 1.12 picks an output's settings differently at startup and on a
   reload** (headless, 2026-11-10): on a reload the last setting given wins, by
   connector, identifier or `*` alike; at startup and on hotplug a `*` still

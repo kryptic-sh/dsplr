@@ -17,6 +17,7 @@ crcbl-hal = "0.17.2"
 crcbl-shell = "0.17.2"
 crcbl-ui = { version = "0.17.2", features = ["parsed-font"] }
 dsplr-core.workspace = true
+dsplr-model.workspace = true
 glam = "0.34"
 thiserror = "2.0.21"
 

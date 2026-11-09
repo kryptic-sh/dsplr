@@ -1,8 +1,5 @@
 fill 0.0,0.0 960.0x768.0 #1a1b26
 text 24.0,24.0 15 #565f89 clip 0.0,0.0 960.0x768.0 "No outputs"
-fill 960.0,0.0 320.0x768.0 #16161e
-fill 960.0,0.0 1.0x768.0 #292e42
-text 976.0,16.0 13 #565f89 clip 968.0,8.0 304.0x752.0 "No output selected"
 fill 0.0,768.0 1280.0x32.0 #16161e
 fill 0.0,768.0 1280.0x1.0 #292e42
-text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "sway  ·  Tab next output  ·  click select  ·  u / C-r undo / redo  ·  q quit"
+text 16.0,775.0 13 #f7768e clip 0.0,768.0 1280.0x32.0 "sway  ·  no output is enabled"

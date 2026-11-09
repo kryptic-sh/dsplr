@@ -34,12 +34,22 @@ and this project adheres to
 - `dsplr` with no command opens the GUI: a window showing every enabled output
   as a rectangle at its logical size, scaled to fit, labelled with its
   connector, description and mode, with disabled outputs in a tray below and the
-  selected output's settings in a read-only panel (settings the backend cannot
-  set say so). `Tab` and `Shift+Tab` step through the outputs, a click selects
-  one, `q` or `Escape` quits. It reads the displays on a backend thread before
-  the window opens, so a desktop with no backend exits `6` with no window; no
-  window system or no usable GPU exits `1` with the reason. Dragging, editing,
-  Apply and Save are not in it yet.
+  selected output's settings in a panel beside it. Changes are pending until
+  applied, drawn as outlines over the live layout, and every one can be undone
+  (`u`) and redone (`C-r`): drag an output (it snaps to the others' edges, and
+  an output left at a negative position moves the layout just clear of it on
+  release, and no other output moves otherwise), move it with `h j k l` or up to
+  its neighbour with `H J K L`, rotate it with `r` / `R`, step its scale with
+  `+` / `-`, turn it on or off with `space`, or set its mode, refresh, custom
+  mode (where the desktop takes them), scale, transform, adaptive sync and
+  mirror source in the panel. A setting the desktop cannot take is disabled,
+  with why as its tooltip. The pending layout is checked as it changes: an
+  overlap is outlined in red and a gap in yellow, with the problem in the bar.
+  `Tab` and `Shift+Tab` step through the outputs, a click selects one, and `q`
+  or `Escape` quits, asking first when edits are pending. It reads the displays
+  on a backend thread before the window opens, so a desktop with no backend
+  exits `6` with no window; no window system or no usable GPU exits `1` with the
+  reason. Applying and saving from the window are not in it yet.
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive
   sync and available modes (a refresh the desktop did not report reads as
   `refresh unknown`, not `0 Hz`); `dsplr list --json` prints the same layout in

@@ -234,7 +234,7 @@ fn edit(
             capabilities,
         )?);
     } else if changes.enable && entry.state.mode.is_none() {
-        entry.state.mode = default_mode(listed).cloned();
+        entry.state.mode = dsplr_model::default_mode(listed).cloned();
     }
     if changes.enable {
         entry.state.enabled = true;
@@ -265,43 +265,17 @@ fn edit(
     Ok(())
 }
 
-/// The mode `asked` names among `listed`, the output's modes, or a custom
-/// mode where the desktop takes one. Without a refresh: the size at the
-/// `current` mode's refresh when listed, so a new size keeps the refresh,
-/// else the highest refresh listed at that size.
+/// The mode `asked` names among `listed`, the output's modes, as
+/// [`dsplr_model::pick_mode`] chooses it, or why there is none, naming the
+/// nearest listed modes.
 fn pick_mode(
     asked: ModeSpec,
     listed: &[Mode],
     current: Option<&Mode>,
     capabilities: &Capabilities,
 ) -> Result<Mode, String> {
-    let at_size = || {
-        listed
-            .iter()
-            .filter(|mode| (mode.width, mode.height) == (asked.width, asked.height))
-    };
-    let found = match asked.refresh_mhz {
-        Some(refresh_mhz) => {
-            let wanted = Mode::new(asked.width, asked.height, refresh_mhz);
-            let closest = listed
-                .iter()
-                .filter(|mode| mode.matches(&wanted))
-                .min_by_key(|mode| mode.refresh_mhz.abs_diff(refresh_mhz));
-            match closest {
-                Some(mode) => Some(mode),
-                None if capabilities.custom_modes => return Ok(wanted),
-                None => None,
-            }
-        }
-        None => current
-            .and_then(|current| {
-                let same_refresh = Mode::new(asked.width, asked.height, current.refresh_mhz);
-                at_size().find(|mode| mode.matches(&same_refresh))
-            })
-            .or_else(|| at_size().max_by_key(|mode| mode.refresh_mhz)),
-    };
-    if let Some(mode) = found {
-        return Ok(mode.clone());
+    if let Some(mode) = dsplr_model::pick_mode(asked, listed, current, capabilities.custom_modes) {
+        return Ok(mode);
     }
     let size = format!("{}x{}", asked.width, asked.height);
     let mut refusal = match asked.refresh_mhz {
@@ -342,19 +316,6 @@ fn nearest(asked: ModeSpec, listed: &[Mode]) -> Vec<String> {
     texts
 }
 
-/// The mode an output turned on without one takes: the one it prefers, else
-/// its largest, at its highest refresh (Hyprland's `highres`).
-fn default_mode(listed: &[Mode]) -> Option<&Mode> {
-    listed.iter().find(|mode| mode.preferred).or_else(|| {
-        listed.iter().max_by_key(|mode| {
-            (
-                u64::from(mode.width) * u64::from(mode.height),
-                mode.refresh_mhz,
-            )
-        })
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
@@ -363,8 +324,8 @@ mod tests {
     };
 
     use super::{
-        Changes, ModeSpec, NotFound, default_mode, edit, find, off_refusal, parse_position,
-        parse_scale, pick_mode,
+        Changes, ModeSpec, NotFound, edit, find, off_refusal, parse_position, parse_scale,
+        pick_mode,
     };
 
     fn mode_arg(width: u32, height: u32, refresh_mhz: Option<u32>) -> ModeSpec {
@@ -494,55 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_with_a_refresh_is_the_listed_one_it_matches() {
-        let caps = Capabilities::default();
-        let mut handled = modes();
-        handled[1].handle = Some(dsplr_model::ModeHandle(1));
-        let picked = pick_mode(mode_arg(2560, 1440, Some(144_000)), &handled, None, &caps);
-        assert_eq!(
-            picked,
-            Ok(handled[1].clone()),
-            "within the tolerance, handle kept"
-        );
-        assert!(picked.unwrap().handle.is_some());
-    }
-
-    #[test]
-    fn a_refresh_takes_the_closest_listed_mode_not_the_first_within_tolerance() {
-        let caps = Capabilities::default();
-        let listed = [
-            Mode::new(1920, 1080, 60_004),
-            Mode::new(1920, 1080, 60_001),
-            Mode::new(1920, 1080, 59_997),
-        ];
-        assert_eq!(
-            pick_mode(mode_arg(1920, 1080, Some(60_000)), &listed, None, &caps),
-            Ok(listed[1].clone())
-        );
-    }
-
-    #[test]
-    fn a_size_alone_keeps_the_refresh_or_takes_the_highest() {
-        let caps = Capabilities::default();
-        let at_120 = Mode::new(2560, 1440, 120_000);
-        let at_60 = Mode::new(2560, 1440, 59_951);
-        let asked = mode_arg(1920, 1080, None);
-        assert_eq!(
-            pick_mode(asked, &modes(), Some(&at_120), &caps),
-            Ok(Mode::new(1920, 1080, 120_000))
-        );
-        assert_eq!(
-            pick_mode(asked, &modes(), Some(&at_60), &caps),
-            Ok(Mode::new(1920, 1080, 120_000)),
-            "59.951 is not listed at 1920x1080: the highest"
-        );
-        assert_eq!(
-            pick_mode(mode_arg(2560, 1440, None), &modes(), None, &caps),
-            Ok(Mode::new(2560, 1440, 143_998))
-        );
-    }
-
-    #[test]
     fn a_mode_not_listed_is_refused_naming_the_nearest() {
         let caps = Capabilities::default();
         let refusal =
@@ -579,15 +491,6 @@ mod tests {
         );
         let refusal = pick_mode(mode_arg(1280, 720, None), &modes(), None, &caps).unwrap_err();
         assert!(refusal.contains("as 1280x720@R"), "{refusal}");
-    }
-
-    #[test]
-    fn an_output_turned_on_without_a_mode_takes_its_preferred_or_largest() {
-        let mut listed = modes();
-        assert_eq!(default_mode(&listed), Some(&Mode::new(2560, 1440, 143_998)));
-        listed[3].preferred = true;
-        assert_eq!(default_mode(&listed).map(|m| m.refresh_mhz), Some(60_000));
-        assert_eq!(default_mode(&[]), None);
     }
 
     fn changes() -> Changes {
