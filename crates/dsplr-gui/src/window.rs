@@ -265,6 +265,12 @@ impl<'a> MainWindow<'a> {
                 // on its answer.
                 self.editor.cancel_drag();
                 self.ui.clear_focus();
+                // One change waits at a time (`busy` holds back the next
+                // request), but a confirm still open is closed, not leaked:
+                // its dialogs would outlive it.
+                if let Some(open) = self.confirming.take() {
+                    open.close(self.shell)?;
+                }
                 let (confirming, events, skipped) =
                     Confirming::open(self.shell, gpu, id, times, &layout);
                 if let Some(last) = skipped.last() {
@@ -534,6 +540,13 @@ impl<'a> MainWindow<'a> {
     }
 
     fn handle(&mut self, event: ShellEvent) -> Result<Step, GuiError> {
+        // Every arm below is the main window's. An event for another window
+        // reaches here only once that window is no longer live (a dialog its
+        // first key answered and closed, with the rest of the batch, a repeat
+        // or a second tap behind it), and is not for the canvas.
+        if event.window().is_some_and(|window| window != self.window) {
+            return Ok(Step::Idle);
+        }
         let editing = self.ui.text_editing() || self.ui.popup_list_open();
         if self.pump.observe(&event, editing) {
             return Ok(Step::Redraw);
@@ -928,7 +941,7 @@ mod tests {
     use dsplr_core::flow::Outcome;
     use dsplr_core::link::{Reply, Request};
 
-    use super::{Channels, Keymap, MainWindow};
+    use super::{Channels, Keymap, MainWindow, Step};
 
     /// The window's ends of a link, and the backend thread's.
     fn link() -> (Channels, Receiver<Request>, Sender<Reply>) {
@@ -979,6 +992,55 @@ mod tests {
         events.retain(|event| matches!(event, ShellEvent::Key { .. }));
         assert_eq!(events.len(), 2 * keys.len());
         events
+    }
+
+    /// The key events of pressing and releasing each of `keys` in turn on a
+    /// second window, as a dialog's keys arrive: the first window's id is
+    /// the one each test's main window has.
+    fn typed_elsewhere(keys: &[KeyCode]) -> Vec<ShellEvent> {
+        let mut source = HeadlessShell::new();
+        let main = source.create_window(&WindowDesc::default()).unwrap();
+        let other = source.create_window(&WindowDesc::default()).unwrap();
+        assert_ne!(main, other);
+        source.pump(&mut |_| {});
+        for &key in keys {
+            source.key_press(other, key).unwrap();
+            source.key_release(other, key).unwrap();
+        }
+        let mut events = Vec::new();
+        source.pump(&mut |event| events.push(event));
+        events.retain(|event| matches!(event, ShellEvent::Key { .. }));
+        assert_eq!(events.len(), 2 * keys.len());
+        assert!(events.iter().all(|event| event.window() == Some(other)));
+        events
+    }
+
+    /// Keys addressed to another window are not the main window's: the rest
+    /// of a batch typed into a confirm dialog its first key answered and
+    /// closed, a key repeat or a second tap would otherwise reach the canvas,
+    /// where Esc asks to quit and Enter then drops the pending edits.
+    #[test]
+    fn keys_for_another_window_do_nothing_here() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        for event in typed(&[KeyCode::KeyL]) {
+            main.handle(event).unwrap();
+        }
+        assert!(main.editor.has_pending(), "an edit to lose");
+        for event in typed_elsewhere(&[KeyCode::Escape, KeyCode::Enter, KeyCode::KeyQ]) {
+            let step = main.handle(event).unwrap();
+            assert!(matches!(step, Step::Idle), "a key for another window acted");
+        }
+        assert!(!main.quitting, "no quit prompt");
+        assert!(main.editor.has_pending(), "the edit is still pending");
     }
 
     /// A confirm dialog holds the keyboard, so its key presses are the

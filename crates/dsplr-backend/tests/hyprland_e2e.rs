@@ -10,9 +10,11 @@
 //! The test refuses to run when the harness did not start it, so `--ignored`
 //! on its own never changes a real desktop's monitors.
 //!
-//! One Hyprland serves every step, and the last one's
-//! `wlr-output-management` apply overrides Hyprland's monitor rules until it
-//! restarts, so the steps run in turn, in one test, in a fixed order.
+//! One Hyprland serves every step, so they run in turn, in one test, in a
+//! fixed order. The last one applies through `wlr-output-management`, whose
+//! state Hyprland keeps per monitor beside its rules: a later `eval` wins
+//! over it (0.57.2), and whether a reload does was not checked, so nothing
+//! runs after it.
 
 #![cfg(target_os = "linux")]
 
@@ -41,7 +43,8 @@ async fn a_headless_hyprland_applies_saves_watches_and_meets_the_protocol() {
     a_saved_layout_is_what_hyprland_reads_back_after_a_reload().await;
     let backend = hyprland_backend().await;
     a_watch_follows_reloads_and_hotplug(&backend).await;
-    // Last: what the protocol applies stays until Hyprland restarts.
+    // Last: Hyprland keeps what the protocol applies per monitor, and a
+    // reload after it was not checked.
     an_eval_mirror_meets_a_protocol_apply(&backend).await;
 }
 

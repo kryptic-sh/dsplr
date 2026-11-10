@@ -104,8 +104,8 @@ async fn detect_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Detect
 /// Why detection stops at a Hyprland that does not answer.
 #[cfg(target_os = "linux")]
 const HYPRLAND_UNREACHABLE: &str = "not tried: HYPRLAND_INSTANCE_SIGNATURE is set, so this is Hyprland, \
-     whose wlr-output-management has no real test and whose state applied through it \
-     overrides its monitor rules until restart";
+     whose wlr-output-management test always succeeds and which keeps what that protocol \
+     applies per monitor beside its own monitor rules; dsplr drives Hyprland through its socket";
 
 /// What the Hyprland check found.
 #[cfg(target_os = "linux")]

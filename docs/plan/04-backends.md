@@ -15,8 +15,10 @@ At start `dsplr-backend` picks one backend, first match wins:
 When `HYPRLAND_INSTANCE_SIGNATURE` is set but its socket cannot be found or does
 not answer, detection stops at row 1 with no backend rather than going on: the
 session is Hyprland, which offers `zwlr_output_manager_v1` too, and driving it
-as `Wlr` would test with its stub and leave protocol-applied state overriding
-its monitor rules until restart.
+as `Wlr` would test with its stub and leave protocol-applied state, which
+Hyprland keeps per monitor, beside its monitor rules (on 0.57.2 a later `eval`
+rule wins over it, and a protocol apply keeps an `eval` mirror;
+[Hyprland](#hyprland)).
 
 Detection never trusts `XDG_CURRENT_DESKTOP` alone: a variable says what the
 session claims to be, the registry and the bus say what is there.
@@ -76,7 +78,7 @@ Read in Hyprland's `src/protocols/OutputManagement.cpp` (main, 2026-11-04):
   as having no test step ([02](02-architecture.md#apply-confirm-revert)).
 - A protocol apply stores the new state per monitor name in memory
   (`m_monitorStates`), schedules a monitor-rule reload, and sends `succeeded`
-  after it.
+  after it. On 0.57.2 a later `eval` rule still wins over that state (below).
 
 So:
 
