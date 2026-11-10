@@ -8,8 +8,9 @@
 //! `dsplr save --profile`'s steps, `dsplr restore --revert`'s) and answers
 //! with [`Reply`]s. It reads the displays again after each request, when
 //! asked to, and after each change the desktop reports through
-//! [`Backend::watch`]. A watch that ends is not opened again: the bar says
-//! so, and Refresh and every request still read the displays
+//! [`Backend::watch`]. A watch that ends is opened again with `dsplr watch`'s
+//! backoff ([`watch::Backoff`]), each step said in the bar, until its tries
+//! are spent; meanwhile Refresh and every request still read the displays
 //! (`docs/plan/02-architecture.md`).
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -27,6 +28,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::apply::{self, Confirm};
 use crate::profile::{self, Blocked};
+use crate::watch::Backoff;
 use crate::{Exit, config, find_backend, restore, runtime, save};
 
 /// How long past the dialog's own timeout the backend thread waits for its
@@ -126,15 +128,16 @@ async fn serve(
         confirm_timeout,
     };
     thread.profiles();
-    let mut watch = match thread.backend.watch().await {
-        Ok(watch) => Some(watch),
+    let mut following = match thread.backend.watch().await {
+        Ok(watch) => Following::watching(watch),
         Err(error) => {
             thread.say(format!(
                 "cannot follow the displays' changes ({error}); Refresh reads them again"
             ));
-            None
+            Following::Stopped
         }
     };
+    let mut backoff = Backoff::default();
     let mut requests = bridge(incoming);
     loop {
         tokio::select! {
@@ -148,24 +151,111 @@ async fn serve(
                     return;
                 }
             }
-            changed = next_change(watch.as_mut()) => match changed {
-                Ok(()) => thread.refresh().await,
-                Err(error) => {
-                    thread.say(format!(
-                        "stopped following the displays' changes ({error}); Refresh reads them again"
-                    ));
-                    watch = None;
+            followed = next_followed(&mut following) => match followed {
+                Followed::Changed => thread.refresh().await,
+                Followed::Ended { error, lasted, delivered } => {
+                    backoff.ended(lasted, delivered);
+                    let why = format!("stopped following the displays' changes ({error})");
+                    following = thread.try_later(&mut backoff, &why);
                 }
+                Followed::Due => match thread.backend.watch().await {
+                    Ok(watch) => {
+                        thread.say("following the displays' changes again".to_owned());
+                        following = Following::watching(watch);
+                        // What changed while no watch was open.
+                        thread.refresh().await;
+                    }
+                    Err(error) => {
+                        let why = format!("cannot follow the displays' changes again ({error})");
+                        following = thread.try_later(&mut backoff, &why);
+                    }
+                },
             },
         }
     }
 }
 
-/// The next change `watch` reports; with no watch, never.
-async fn next_change(watch: Option<&mut Watch>) -> Result<(), dsplr_backend::Error> {
-    match watch {
-        Some(watch) => watch.changed().await,
-        None => std::future::pending().await,
+/// Where the backend thread is with following the desktop's changes.
+enum Following {
+    /// A watch is open: since when, and whether it has reported a change,
+    /// which [`Backoff::ended`] weighs when it ends.
+    Watching {
+        watch: Watch,
+        since: Instant,
+        delivered: bool,
+    },
+    /// The watch ended, and is opened again at this time.
+    Reopening(tokio::time::Instant),
+    /// Not following: none could be opened at the start, or the tries to
+    /// open it again are spent.
+    Stopped,
+}
+
+impl Following {
+    fn watching(watch: Watch) -> Self {
+        Self::Watching {
+            watch,
+            since: Instant::now(),
+            delivered: false,
+        }
+    }
+}
+
+/// What happened to the following.
+enum Followed {
+    /// The desktop reported a change.
+    Changed,
+    /// The watch ended, after `lasted`, having reported a change or not.
+    Ended {
+        error: Error,
+        lasted: Duration,
+        delivered: bool,
+    },
+    /// It is time to open the watch again.
+    Due,
+}
+
+/// The next thing that happens to `following`; when stopped, never.
+async fn next_followed(following: &mut Following) -> Followed {
+    match following {
+        Following::Watching {
+            watch,
+            since,
+            delivered,
+        } => match watch.changed().await {
+            Ok(()) => {
+                *delivered = true;
+                Followed::Changed
+            }
+            Err(error) => Followed::Ended {
+                error,
+                lasted: since.elapsed(),
+                delivered: *delivered,
+            },
+        },
+        Following::Reopening(at) => {
+            tokio::time::sleep_until(*at).await;
+            Followed::Due
+        }
+        Following::Stopped => std::future::pending().await,
+    }
+}
+
+/// When to try opening the watch again after `why`, by `backoff`, and the
+/// line that says so: `None` once its tries are spent.
+fn next_try(backoff: &mut Backoff, why: &str) -> (Option<Duration>, String) {
+    match backoff.next() {
+        Some(wait) => (
+            Some(wait),
+            format!(
+                "{why}; trying again in {} s, and Refresh reads them meanwhile",
+                wait.as_secs()
+            ),
+        ),
+        None => (
+            None,
+            format!("{why}; gave up following them, and Refresh reads them again"),
+        ),
     }
 }
 
@@ -217,6 +307,16 @@ impl BackendThread<'_> {
     /// Says `line` in the window, as the CLI prints it on stderr.
     fn say(&self, line: String) {
         self.tell(Reply::Message(line));
+    }
+
+    /// The following after `why`: opened again after [`next_try`]'s wait,
+    /// or stopped; said either way.
+    fn try_later(&self, backoff: &mut Backoff, why: &str) -> Following {
+        let (wait, line) = next_try(backoff, why);
+        self.say(line);
+        wait.map_or(Following::Stopped, |wait| {
+            Following::Reopening(tokio::time::Instant::now() + wait)
+        })
     }
 
     async fn handle(&mut self, request: Request) -> Option<Outcome> {
@@ -511,8 +611,42 @@ mod tests {
     use dsplr_core::link::{Answer, Reply};
     use dsplr_model::Layout;
 
-    use super::Window;
+    use super::{Window, next_try};
     use crate::apply::Confirm;
+    use crate::watch::{BACKOFF_FIRST, Backoff};
+
+    #[test]
+    fn an_ended_watch_is_tried_again_with_the_backoff_until_it_gives_up() {
+        let mut backoff = Backoff::default();
+        let (wait, line) = next_try(
+            &mut backoff,
+            "stopped following the displays' changes (gone)",
+        );
+        assert_eq!(wait, Some(BACKOFF_FIRST));
+        assert_eq!(
+            line,
+            format!(
+                "stopped following the displays' changes (gone); trying again in {} s, and Refresh reads them meanwhile",
+                BACKOFF_FIRST.as_secs()
+            )
+        );
+        let mut tries = 1;
+        let last = loop {
+            match next_try(&mut backoff, "again") {
+                (Some(_), _) => tries += 1,
+                (None, line) => break line,
+            }
+            assert!(tries < 1000, "the tries never ran out");
+        };
+        assert!(tries > 1, "tried more than once");
+        assert_eq!(
+            last,
+            "again; gave up following them, and Refresh reads them again"
+        );
+        // A watch that stayed up and reported a change starts them afresh.
+        backoff.ended(Duration::ZERO, true);
+        assert_eq!(next_try(&mut backoff, "x").0, Some(BACKOFF_FIRST));
+    }
 
     /// The window's side, answering each confirm with `answers` in turn: an
     /// answer naming the confirm's own id where `None`.

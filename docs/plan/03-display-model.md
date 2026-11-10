@@ -183,8 +183,15 @@ to the canvas (`dsplr-core`), which divides it by the canvas zoom before
 calling. Each axis snaps on its own. Edge contact is only offered against an
 output that overlaps, or nearly, along the other axis, since touching is
 impossible otherwise. `Layout::make_non_negative` and `Layout::normalise` move
-disabled outputs and mirrors by the same amount as the rest, and refuse
-(changing nothing) when a position would leave `i32`.
+mirrors by the same amount as the rest, so a mirror stays on its source (GNOME
+puts a mirror in its source's logical monitor, and reads it back there), and
+leave outputs that are off where they are: no desktop shows where an output that
+is off sits, so moving it would be a pending change that applies as nothing. So
+an output turned back on in the GUI (`Editor::set_enabled`) can find the layout
+moved on from it: where its old place overlaps an output on the canvas, or
+touches none, it goes to the right of them all, level with the topmost; where it
+still touches one and overlaps none, it keeps its place. Both refuse (changing
+nothing) when a position would leave `i32`.
 
 ## JSON form
 

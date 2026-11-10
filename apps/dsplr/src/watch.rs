@@ -45,7 +45,7 @@ const STAYED_UP: Duration = Duration::from_secs(60);
 
 /// The wait before the first try to reach the desktop again after the
 /// watch ends; each failed try doubles it, up to [`BACKOFF_MAX`].
-const BACKOFF_FIRST: Duration = Duration::from_secs(1);
+pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 
 /// The longest wait between tries to reach the desktop again.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);

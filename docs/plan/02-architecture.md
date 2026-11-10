@@ -38,16 +38,19 @@ apply, save, save as a profile, restore a profile, revert), and the backend
 thread (`apps/dsplr/src/gui.rs`) reads the displays again after each one and
 after each change the desktop reports (`Backend::watch`: a
 `wlr-output-management` connection of its own on wlroots, the event socket on
-Hyprland), waiting on both with `tokio::select!`. A watch that ends is not
-opened again: the bar says the window stopped following the displays, and
-Refresh and every request still read them. That is acceptable because the watch
-ends only when the compositor's socket closes, which on Hyprland and the wlroots
-compositors means the compositor (and the session with it) went away, or on a
-protocol error, which a new connection made the same way would likely meet
-again. The CLI does not send `Request`s: it and the backend thread drive the one
-apply flow (`dsplr_core::flow`, steps 1 to 6 below as a state machine with no
-I/O) through `apps/dsplr/src/apply.rs`'s `drive`, and differ only in who
-confirms (the terminal, the dialogs) and where the messages go.
+Hyprland), waiting on both with `tokio::select!`. A watch that ends is opened
+again with `dsplr watch`'s backoff (`watch::Backoff`: a wait from
+`BACKOFF_FIRST`, doubling up to `BACKOFF_MAX`, given up after `RECONNECT_TRIES`,
+started afresh by a watch that stayed up or reported a change), each step said
+in the bar; meanwhile Refresh and every request still read the displays, and a
+watch opened again reads them at once. The watch ends only when the compositor's
+socket closes, which on Hyprland and the wlroots compositors usually means the
+compositor went away, or on a protocol error, which a new connection may meet
+again; the backoff bounds both. The CLI does not send `Request`s: it and the
+backend thread drive the one apply flow (`dsplr_core::flow`, steps 1 to 6 below
+as a state machine with no I/O) through `apps/dsplr/src/apply.rs`'s `drive`, and
+differ only in who confirms (the terminal, the dialogs) and where the messages
+go.
 
 ## Apply, confirm, revert
 

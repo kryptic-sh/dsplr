@@ -172,7 +172,10 @@ impl Editor {
 
     /// Turns output `index` on or off. Turned on without a mode, it takes
     /// [`default_mode`]; turned on where it would overlap an output on the
-    /// canvas, it moves to the right of them all, level with the topmost.
+    /// canvas, or touch none of them (the layout moved on while it was off,
+    /// which moving to the origin does), it moves to the right of them all,
+    /// level with the topmost. Where it still touches one and overlaps none,
+    /// it keeps its place.
     pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
         if !enabled {
             return self.edit(index, |state| state.enabled = false);
@@ -195,7 +198,10 @@ impl Editor {
             let Some(entry_rect) = Rect::of_state(state, layout_mode) else {
                 return;
             };
-            if others.iter().any(|other| other.overlaps(entry_rect)) {
+            let overlaps = others.iter().any(|other| other.overlaps(entry_rect));
+            let detached =
+                !others.is_empty() && !others.iter().any(|other| other.touches(entry_rect));
+            if overlaps || detached {
                 let right = others.iter().map(|other| other.right()).max();
                 let top = others.iter().map(|other| other.y).min();
                 if let (Some(Ok(x)), Some(Ok(y))) =
@@ -299,7 +305,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
-        AdaptiveSync, Capabilities, Mode, ModeSpec, OutputId, OutputState, Transform,
+        AdaptiveSync, Capabilities, Mode, ModeSpec, OutputId, OutputState, Rect, Transform,
     };
 
     use super::{Direction, NUDGE_STEP, scale_choices};
@@ -344,6 +350,20 @@ mod tests {
         assert!(editor.nudge(0, Direction::Left));
         assert_eq!(state(&editor, 0).x, 0);
         assert_eq!(state(&editor, 1).x, 1920 + NUDGE_STEP);
+    }
+
+    #[test]
+    fn moving_to_the_origin_leaves_the_output_that_is_off_where_it_was() {
+        let mut snapshot = three_monitors();
+        snapshot.capabilities.origin_required = true;
+        let mut editor = Editor::new(snapshot);
+        let off = (state(&editor, 2).x, state(&editor, 2).y);
+        // DP-1 left from x 0 moves DP-2 right instead; DP-2 left again puts
+        // everything on screen back as it was.
+        assert!(editor.nudge(0, Direction::Left));
+        assert!(editor.nudge(1, Direction::Left));
+        assert_eq!((state(&editor, 2).x, state(&editor, 2).y), off);
+        assert!(!editor.has_pending(), "no change that shows nowhere");
     }
 
     #[test]
@@ -471,10 +491,30 @@ mod tests {
         assert_eq!((on.x, on.y), (3072, 0), "right of DP-2, level with its top");
         assert!(editor.toggle_enabled(2));
         assert!(!state(&editor, 2).enabled);
-        // Clear of the others already: it stays where it was.
+        // Beside DP-1 and clear of the others: it stays where it was.
         editor.edit(2, |state| state.x = -1920);
         assert!(editor.set_enabled(2, true));
         assert_eq!(state(&editor, 2).x, -1920);
+    }
+
+    #[test]
+    fn turned_on_away_from_the_others_it_joins_them() {
+        let mut editor = editor();
+        // Beside DP-1 when it went off; then the outputs on screen moved on
+        // without it, as moving a layout to the origin does now.
+        editor.edit(2, |state| (state.x, state.y) = (-1920, 360));
+        for index in [0, 1] {
+            editor.edit(index, |state| state.x += 500);
+        }
+        assert!(editor.set_enabled(2, true));
+        let layout_mode = editor.pending().extent_mode();
+        let rect = |index| Rect::of(&editor.pending().entries[index], layout_mode).unwrap();
+        assert!(
+            [0, 1].iter().any(|&other| rect(2).touches(rect(other))),
+            "it touches the layout: {:?}",
+            (state(&editor, 2).x, state(&editor, 2).y)
+        );
+        assert!(!editor.pending().entries.iter().any(|e| e.state.x < 0));
     }
 
     #[test]

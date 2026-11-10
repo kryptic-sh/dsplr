@@ -21,8 +21,9 @@ later work is below.
   so in the bar when the desktop changed it too, and every other setting takes
   the desktop's. Edits to outputs that went away are dropped, also in the bar. A
   read that changed nothing leaves the edits, their history and a drag alone;
-  otherwise a drag goes on over the new read while its output is there. The
-  watch is not reopened once it ends ([02](02-architecture.md#process)).
+  otherwise a drag goes on over the new read while its output is there. A watch
+  that ends is opened again with `dsplr watch`'s backoff, said in the bar
+  ([02](02-architecture.md#process)).
 - Text is the system's sans-serif through fontconfig, with its fallbacks
   (crcbl-ui's `system-fonts`, C7), else crcbl's committed `Font::sans`, with a
   note in the bar.
@@ -43,20 +44,20 @@ later work is below.
 
 Mouse-first for dragging, but every action has a key. The defaults:
 
-| Key             | Action                                          | `[keys]` name                                  |
-| --------------- | ----------------------------------------------- | ---------------------------------------------- |
-| `Tab` / `S-Tab` | select next / previous output                   | `select_next` / `select_previous`              |
-| `h j k l`       | nudge the selected output by one snap step      | `nudge_left` / `_down` / `_up` / `_right`      |
-| `H J K L`       | move the selected output to touch its neighbour | `touch_left` / `_down` / `_up` / `_right`      |
-| `r` / `R`       | rotate clockwise / counter-clockwise            | `rotate_clockwise` / `rotate_counterclockwise` |
-| `+` / `-`       | next / previous scale (and the keypad's)        | `scale_up` / `scale_down`                      |
-| `space`         | enable / disable                                | `toggle_enabled`                               |
-| `i`             | identify                                        | `identify`                                     |
-| `p` / `F6`      | keyboard into the panel, and back out           | `panel`                                        |
-| `m`             | show / hide the recent messages                 | `messages`                                     |
-| `a` / `s`       | apply / save                                    | `apply` / `save`                               |
-| `u` / `C-r`     | undo / redo                                     | `undo` / `redo`                                |
-| `q` / `Esc`     | quit (asks if there are pending edits)          | `quit`                                         |
+| Key             | Action                                                                                 | `[keys]` name                                  |
+| --------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `Tab` / `S-Tab` | select next / previous output                                                          | `select_next` / `select_previous`              |
+| `h j k l`       | nudge the selected output by one snap step                                             | `nudge_left` / `_down` / `_up` / `_right`      |
+| `H J K L`       | move the selected output to touch its neighbour                                        | `touch_left` / `_down` / `_up` / `_right`      |
+| `r` / `R`       | rotate clockwise / counter-clockwise                                                   | `rotate_clockwise` / `rotate_counterclockwise` |
+| `+` / `-`       | next / previous scale (and the keypad's)                                               | `scale_up` / `scale_down`                      |
+| `space`         | enable / disable (placed beside the others when its old spot overlaps or touches none) | `toggle_enabled`                               |
+| `i`             | identify                                                                               | `identify`                                     |
+| `p` / `F6`      | keyboard into the panel, and back out                                                  | `panel`                                        |
+| `m`             | show / hide the recent messages                                                        | `messages`                                     |
+| `a` / `s`       | apply / save                                                                           | `apply` / `save`                               |
+| `u` / `C-r`     | undo / redo                                                                            | `undo` / `redo`                                |
+| `q` / `Esc`     | quit (asks if there are pending edits)                                                 | `quit`                                         |
 
 Each is rebound in `config.toml`'s `[keys]` table as a list
 (`nudge_left = ["Left", "h"]`); an action left out keeps its defaults. A key is

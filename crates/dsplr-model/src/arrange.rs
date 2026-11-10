@@ -42,9 +42,11 @@ fn placed(entries: &[OutputEntry]) -> impl Iterator<Item = (usize, &OutputEntry)
 impl Layout {
     /// Moves every output so the smallest x and the smallest y among the
     /// enabled, non-mirrored outputs are both zero, which XRandR requires and
-    /// every other backend accepts. Disabled outputs and mirrors move by the
-    /// same amount, keeping their places relative to the rest. A layout with
-    /// nothing placed is left as it is.
+    /// every other backend accepts. Mirrors move by the same amount, staying
+    /// on their sources; outputs that are off stay where they are, since no
+    /// desktop shows where they sit, and moving them would make a change
+    /// that applies as nothing. A layout with nothing placed is left as it
+    /// is.
     ///
     /// # Errors
     ///
@@ -56,9 +58,10 @@ impl Layout {
         self.translate(-i64::from(min_x), -i64::from(min_y))
     }
 
-    /// Moves every output by the least amount that leaves no enabled,
-    /// non-mirrored output at a negative x or y: along an axis only where
-    /// one is negative, and not at all when none is. Unlike
+    /// Moves every enabled output by the least amount that leaves no
+    /// enabled, non-mirrored output at a negative x or y: along an axis only
+    /// where one is negative, and not at all when none is. Outputs that are
+    /// off stay where they are, as in [`Layout::normalise`]. Unlike
     /// [`Layout::normalise`], a layout whose outputs start away from the
     /// origin (sway's at x 1920) keeps its place, so an edit to one output
     /// moves no other unless it has to.
@@ -84,14 +87,17 @@ impl Layout {
         Some((min_x, min_y))
     }
 
-    /// Moves every output by `dx`, `dy`, or none when one would land outside
-    /// `i32`.
+    /// Moves every enabled output (mirrors too) by `dx`, `dy`, or none when
+    /// one would land outside `i32`. Outputs that are off stay.
     fn translate(&mut self, dx: i64, dy: i64) -> Result<(), PositionOutOfRange> {
         let shift = |position: i32, by: i64| i32::try_from(i64::from(position) + by);
         let moved = self
             .entries
             .iter()
             .map(|entry| {
+                if !entry.state.enabled {
+                    return Ok((entry.state.x, entry.state.y));
+                }
                 let out_of_range = |_| PositionOutOfRange {
                     output: entry.id.clone(),
                 };
@@ -215,19 +221,27 @@ mod tests {
     }
 
     #[test]
-    fn normalising_moves_the_placed_outputs_to_the_origin() {
+    fn normalising_moves_the_placed_outputs_to_the_origin_and_mirrors_with_them() {
         let mut disabled = monitor("eDP-1", 1920, 1080, -5000, -5000);
         disabled.state.enabled = false;
+        let mut mirror = monitor("HDMI-A-1", 1920, 1080, -1920, 300);
+        mirror.state.mirror_of = Some(OutputId::Connector("DP-1".into()));
         let mut layout = Layout {
             entries: vec![
                 monitor("DP-1", 1920, 1080, -1920, 300),
                 monitor("DP-2", 1920, 1080, 0, 200),
                 disabled,
+                mirror,
             ],
             ..Default::default()
         };
         layout.normalise().unwrap();
-        assert_eq!(positions(&layout), [(0, 100), (1920, 0), (-3080, -5200)]);
+        // The mirror stays on its source; the output that is off stays
+        // where it was, so moving the rest changes nothing about it.
+        assert_eq!(
+            positions(&layout),
+            [(0, 100), (1920, 0), (-5000, -5000), (0, 100)]
+        );
     }
 
     #[test]
@@ -245,7 +259,7 @@ mod tests {
     #[test]
     fn normalising_out_of_range_changes_nothing() {
         let mut far = monitor("eDP-1", 1920, 1080, i32::MAX, 0);
-        far.state.enabled = false;
+        far.state.mirror_of = Some(OutputId::Connector("DP-1".into()));
         let mut layout = Layout {
             entries: vec![monitor("DP-1", 1920, 1080, -10, 0), far],
             ..Default::default()
@@ -290,15 +304,15 @@ mod tests {
         layout.make_non_negative().unwrap();
         assert_eq!(
             positions(&layout),
-            [(0, 300), (2420, 200), (-4500, 40)],
-            "x by 500, y not at all"
+            [(0, 300), (2420, 200), (-5000, 40)],
+            "x by 500, y not at all; the output that is off not at all"
         );
     }
 
     #[test]
     fn making_non_negative_out_of_range_changes_nothing() {
         let mut far = monitor("eDP-1", 1920, 1080, i32::MAX, 0);
-        far.state.enabled = false;
+        far.state.mirror_of = Some(OutputId::Connector("DP-1".into()));
         let mut layout = Layout {
             entries: vec![monitor("DP-1", 1920, 1080, -10, 0), far],
             ..Default::default()

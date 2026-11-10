@@ -9,9 +9,9 @@ M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
 field with `hyprctl -j monitors all` and matched. Detection knows Hyprland, KDE
 Plasma (`kde`, over KWin's own protocols, which reads and applies; built at M5,
-its e2e not yet run, below), GNOME (`gnome`, over Mutter's `DisplayConfig` on
+its e2e green in CI, below), GNOME (`gnome`, over Mutter's `DisplayConfig` on
 the session bus, which reads, tests, applies and saves through Mutter; built at
-M6, its e2e not yet run, below) and wlroots compositors (`wlr`, over
+M6, its e2e green in CI, below) and wlroots compositors (`wlr`, over
 `zwlr_output_manager_v1`, which reads, tests and applies; its e2e runs on
 headless sway). Build order is `docs/plan/11-milestones.md`.
 
@@ -27,15 +27,15 @@ drives `dsplr apply` in the headless harness, locally and in CI's VM: kept with
 `--yes` then reverted by hand, declined, timed out, and dsplr killed at the
 prompt so its watchdog reverts. `dsplr save` writes the `monitors.lua` beside a
 Hyprland Lua config (`Backend::persist`, built on
-`dsplr_persist::hyprland::save`); its e2e has not run yet (below). `dsplr set`
-edits one output of a fresh snapshot and hands the layout to the same flow
-(`apply::run`); its steps run in `apps/dsplr/tests/sway_e2e.rs`, and a mirror
-step and a `--no-mirror` step in `hyprland_e2e.rs` (not run yet, as below).
-`dsplr save` on sway writes `outputs` beside sway's config
-(`dsplr_persist::sway::save`); both sway e2e tests save, change the outputs at
-runtime, reload and read the saved layout back, and start a second sway on the
-saved file, green on headless sway 1.12 locally (2026-11-10), each alone and
-both in one harness in either order. dsplr's profile store
+`dsplr_persist::hyprland::save`); its e2e runs in CI's VM, green in
+run 42776828806. `dsplr set` edits one output of a fresh snapshot and hands the
+layout to the same flow (`apply::run`); its steps run in
+`apps/dsplr/tests/sway_e2e.rs`, and a mirror step and a `--no-mirror` step in
+`hyprland_e2e.rs` (in CI's VM). `dsplr save` on sway writes `outputs` beside
+sway's config (`dsplr_persist::sway::save`); both sway e2e tests save, change
+the outputs at runtime, reload and read the saved layout back, and start a
+second sway on the saved file, green on headless sway 1.12 locally (2026-11-10),
+each alone and both in one harness in either order. dsplr's profile store
 (`dsplr_persist::profile`; `dsplr save --profile`, `dsplr restore [NAME]`,
 `dsplr profile list|show|rm`) is written, and `apps/dsplr/tests/sway_e2e.rs`
 saves, moves, restores (picked and by name) and removes profiles on headless
@@ -43,8 +43,8 @@ sway 1.12 (2026-11-10). Saving under a hyprlang config is declined (below).
 `wlr` works on niri 26.04, and `dsplr save` on niri writes `outputs.kdl` beside
 niri's config (`dsplr_persist::niri::save`); both niri e2e tests
 (`tests/e2e/headless-niri.sh`, niri nested in a headless sway) are green locally
-(2026-11-10), each alone and both in one harness in either order. The CI job is
-added and has not run yet.
+(2026-11-10), each alone and both in one harness in either order, and in CI's
+`niri` entry (green in run 42776828806).
 
 M3 (the GUI) is built but for its exit check, the owner switching from
 nwg-displays. `dsplr` with no command reads the displays on a backend thread and
@@ -277,40 +277,13 @@ milestone:
   catch-all is from plan 05's account of how niri 26.04 matches names, not a
   test of an `output "*"` node. KDE and GNOME keep their own configs, which
   dsplr does not write.
-- **The KDE e2e has not run anywhere** (`crates/dsplr-backend/tests/kwin_e2e.rs`
-  and `apps/dsplr/tests/kwin_e2e.rs`, under `tests/e2e/headless-kwin.sh`): the
-  owner's machine has no `kwin_wayland`, so their first run is CI's `kwin`
-  entry. Everything the `kde` backend does against a live KWin is unchecked
-  until then; what it rests on was read in KWin 6.8.2's source
-  (`docs/plan/04-backends.md#kde-plasma-6-kde`), not observed. The assumptions
-  most likely to fail first: that `--virtual --output-count 3` gives three
-  outputs named `Virtual-*` with one 1920x1080@60 mode each and one of them
-  primary; that KWin offers its globals soon after its socket appears (the tests
-  retry detection for `KWIN_WAIT`); that a mirror of a virtual output reads back
-  as one; that `failure_reason` is English with no translations installed
-  ("negative"); that a priority change alone emits a new output order; and that
-  `kwin_wayland --version` prints without a session (the harness gives it a time
-  limit). The GUI e2e was not run either.
-- **The GNOME e2e is green in CI, but not since the review fixes**
-  (`crates/dsplr-backend/tests/mutter_e2e.rs` and
-  `apps/dsplr/tests/mutter_e2e.rs`, under `tests/e2e/headless-mutter.sh`): its
-  first run, CI's `mutter` entry, passed against Mutter 51 (the backend's five
-  tests and the CLI's one). The owner's machine has no `mutter`, so it runs only
-  there. Not run yet: what M6's review changed, which the next CI run is the
-  first to check: detection requiring the Wayland socket's process to own
-  `DisplayConfig` (the harness's Mutter serves both), the serial of the last
-  snapshot making a later test or apply stale, the CLI moving an offset layout
-  to the origin (`moved the layout by 0,-10`), and
-  `dsplr set Meta-0 --disable --yes` turning off the primary output at the
-  origin, the others moved up to it and the next taking the primary. The D-Bus
-  side of each is unit-tested against a stand-in `DisplayConfig` on a private
-  `dbus-daemon` (`gnome::tests`).
-- **Moving a layout to the origin moves the outputs that are off too**
-  (`Layout::normalise` moves disabled outputs and mirrors by the same amount,
-  plan 03), so on GNOME an edit can change only where a disabled output sits,
-  which shows nowhere and still makes an undo step and a pending change that
-  applies as nothing. Leaving disabled outputs where they are would need a
-  normalise that skips them; not done.
+- **The KDE and GNOME e2e run only in CI** (`kwin_e2e.rs` and `mutter_e2e.rs` in
+  both crates, under `tests/e2e/headless-kwin.sh` and `headless-mutter.sh`): the
+  owner's machine has neither `kwin_wayland` nor `mutter`. Green in CI run
+  42776828806 (main, `--backend`): KWin's four backend tests and the CLI's one,
+  Mutter's five and the CLI's one, the latter with M6's review fixes (the moved
+  layout said as `moved the layout by 0,-10`, `dsplr set … --disable --yes` on
+  the primary at the origin, the stale serial). The GUI has not run on either.
 - **GNOME's session check refuses some real sessions**: behind a Wayland proxy
   (waypipe, a Flatpak sandbox's) the socket's process is the proxy, so GNOME is
   not found there rather than misjudged; and on GNOME on X11 the check is only
@@ -461,22 +434,6 @@ milestone:
   have been run. river, labwc and Wayfire are expected to work through the same
   protocol and are not checked; COSMIC's own extension and whether it saves
   outputs itself are still M4's to check (`docs/plan/04-backends.md`).
-- **The save e2e has not run.**
-  `a_saved_layout_is_what_hyprland_reads_back_after_a_reload`
-  (`crates/dsplr-backend/tests/hyprland_e2e.rs`) and
-  `dsplr_save_writes_monitors_lua_and_asks_before_replacing_one`
-  (`apps/dsplr/tests/hyprland_e2e.rs`) compile but have run nowhere (its
-  terminal helpers now live in `tests/e2e/support.rs`, shared with the sway
-  test, whose save prompt runs locally): the harness needs `kwin_wayland`, which
-  the owner's machine lacks, so their first run is CI's; run them with
-  `--test-threads=1`, since the save test's reload drops the other test's rules.
-  The harness now starts Hyprland without `--config`, finding
-  `hypr/hyprland.lua` in a private `XDG_CONFIG_HOME` the tests share, and gives
-  KWin, Hyprland and the tests a private `HOME` (`CARGO_HOME` and `RUSTUP_HOME`
-  pinned first; cargo under such a `HOME` was checked locally, KWin under one
-  was not); that lookup, and `require("monitors")` resolving beside it, were
-  checked with `Hyprland --verify-config` 0.57.1 (it reports a broken or missing
-  `monitors.lua`), not in a running Hyprland.
 - **What `dsplr save` cannot see**: a Hyprland started with `--config` (nothing
   outside Hyprland can read that path), and the system configs in
   `$XDG_CONFIG_DIRS` and `/etc/xdg` (not the user's to write beside), so with
@@ -610,13 +567,12 @@ milestone:
   the keysym without Caps Lock (xkbcommon's `xkb_state_key_get_one_sym` with the
   Lock modifier consumed, or the level-0/1 keysym with Shift alone), then match
   characters on it in `dsplr-gui`'s `keys::matches`.
-- **The change stream is not reopened once it ends**: the backend thread
-  (`apps/dsplr/src/gui.rs`) says "stopped following the displays' changes" and
-  drops its `Watch`; Refresh and every request still read the displays. It ends
-  only when the compositor's socket closes (the compositor gone) or on a
-  protocol error a new connection would likely repeat; plan 02 says why that is
-  acceptable. Reopening with a backoff is the change if a desktop turns out to
-  close it in normal use. Not seen: no run ended a watch.
+- **The GUI's watch reopening is unit-tested in its decision only**:
+  `gui::next_try` (the wait and the line, from `watch::Backoff`) has a test; the
+  loop that acts on it in `serve` (`Following`, `next_followed`) has none, and
+  no run has ended a watch, since nothing in the harnesses closes the
+  compositor's socket while it stays up. A watch that cannot be opened at the
+  start is not retried (said once, as before).
 - **Key config limits**: `[keys]` takes Ctrl, Alt and Shift, not Super, and a
   key name from `dsplr_config::keys::NAMES` or F1 to F12 (no arrows' keypad
   forms, no Insert); the dialogs', quit prompt's and engaged panel field's keys
@@ -691,49 +647,28 @@ milestone:
   moved one only its pending one (seen 2026-11-10 in headless sway).
   `Layout::validate`'s rule, not the canvas's; marking every output of a
   disconnected group on both sides would need it to say which group is which.
-- **The GUI e2e test has not passed in CI yet** (`apps/dsplr/tests/gui_e2e.rs`,
-  ignored): CI's `gui` entry runs it under `tests/e2e/headless-sway.sh` in the
-  VM, with `sway vulkan-swrast wtype` and
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Its first CI run
-  (42763145431) failed at the first "kept": the window dropped every key typed
-  into a confirm dialog (`MainWindow::run_loop` skipped the dialogs' events
-  before the key handler), so Enter kept a change only when it reached the main
-  window between the confirm arriving and the dialog taking the keyboard, a race
-  CI's slower lavapipe lost. Fixed (`dialog_answer`); with that wiring disabled
-  the test fails locally the same way. The test now waits on what sway shows,
-  not fixed sleeps: the window focused once open, and its title
-  (`CONFIRM_TITLE`) while a change waits on its answer. Still a fixed wait: the
-  2 s for the window to take in an output plugged in, which nothing outside it
-  shows. Unproven in CI: that the binary built on the Ubuntu runner finds what
-  it loads at run time in the VM (Vulkan loader, xkbcommon, fonts, cursor
-  theme). Green locally under `tests/e2e/headless-sway.sh` (2026-11-10): kept
-  with Enter, timed out, killed mid-confirm then reverted by the watchdog, and
-  an output plugged in with `swaymsg create_output` while the window is open,
-  then reached with Tab, edited and applied together with an edit made before it
-  came, each read back with `dsplr list --json`. The hotplug step fails with the
-  backend thread's watch switched off. One run with the watch switched off
-  failed earlier, at the first step's "kept", which does not use the watch: the
-  scale applied and then reverted: the dropped-key bug above, not the harness's
-  timing. Seen in `grim` screenshots the same day: an output created and one
-  disabled from outside appearing in the window, and `i` showing each output's
-  name and description on it, closed after `IDENTIFY_TIME`. Run by hand with
-  `grim` screenshots the same day: the dialog on both outputs, each named for
-  its output; Save replacing a foreign `outputs` file after its question
-  (Enter); and the editing keys of the last slice. Not driven by anything, since
-  each needs a click (no pointer injector, `wlrctl` or `ydotool`, is installed):
-  dragging, the panel's drop-downs, checkbox, number and text fields (custom
-  mode, profile name), the profile picker and Restore, the Revert and Refresh
-  buttons, the dialogs' own Keep and Revert buttons, the tooltips, and the
-  pointer position from a pointer-enter. They are covered by `dsplr-core`'s
-  editor, hit-region, flow and dialog tests, a build of the panel's tree, and
-  the window's key and request tests against crcbl's headless shell; Revert and
-  profile restore run the CLI's own `restore::revert` and `apply::bind`. Not
-  covered by any test: a draft committed to the output it was typed for when a
-  canvas click moves the selection (`follow_selection` is tested for the reset,
-  `Drafts::commits` on its own), a panel click ignored behind the quit prompt or
-  the dialogs, and two navigation keys in one batch each getting a frame. Not
-  run on niri, Hyprland or X11, and the dialogs' X11 override-redirect panels
-  never.
+- **What the GUI e2e covers** (`apps/dsplr/tests/gui_e2e.rs`, ignored; CI's
+  `gui` entry, under `tests/e2e/headless-sway.sh` with lavapipe, green in run
+  42776828806): kept with Enter, timed out, killed mid-confirm then reverted by
+  the watchdog, an output plugged in with `swaymsg create_output` while the
+  window is open, then reached with Tab, edited and applied together with an
+  edit made before it came, the panel by keys, and `dsplr identify`; each read
+  back with `dsplr list --json`. One fixed wait remains: the 2 s for the window
+  to take in an output plugged in, which nothing outside it shows. Not driven by
+  anything, since each needs a click (no pointer injector, `wlrctl` or
+  `ydotool`, is installed, and headless sway has no pointer): dragging, the
+  panel's drop-downs, checkbox, number and text fields (custom mode, profile
+  name), the profile picker and Restore, the Revert and Refresh buttons, the
+  dialogs' own Keep and Revert buttons, the tooltips, and the pointer position
+  from a pointer-enter. They are covered by `dsplr-core`'s editor, hit-region,
+  flow and dialog tests, a build of the panel's tree, and the window's key and
+  request tests against crcbl's headless shell; Revert and profile restore run
+  the CLI's own `restore::revert` and `apply::bind`. Not covered by any test: a
+  draft committed to the output it was typed for when a canvas click moves the
+  selection (`follow_selection` is tested for the reset, `Drafts::commits` on
+  its own), a panel click ignored behind the quit prompt or the dialogs, and two
+  navigation keys in one batch each getting a frame. Not run on niri, Hyprland,
+  KWin, Mutter or X11, and the dialogs' X11 override-redirect panels never.
 - **The confirm's fallback toplevel has not run anywhere**: where the window
   system has no panels, the confirm is one toplevel, and closing it reverts
   (`dialog_answer`, unit-tested on the decision only). Every compositor the e2e
@@ -788,8 +723,9 @@ milestone:
   it was following the displays again (2026-11-10). No e2e covers it.
 - **`dsplr watch`'s KDE and GNOME refusal**: checked once in
   `apps/dsplr/tests/mutter_e2e.rs` (`dsplr watch` exits `3` without `--force`),
-  which runs only in CI's VM and has not run since it was added. The same check
-  after a reconnect (a restart into another desktop) has no test.
+  green in CI run 42776828806. KDE's refusal has no e2e (`kwin_e2e.rs` does not
+  run `dsplr watch`), and neither has the same check after a reconnect (a
+  restart into another desktop).
 - **Only `dsplr watch` waits for a change in flight**: the revert point's
   `guarded_until_unix_ms` makes the watch hold back while a `dsplr apply`, a
   `dsplr set` or the GUI waits to be kept. The other way round is not
@@ -844,15 +780,16 @@ milestone:
   validation refuses the overlap unless `--pos` is given. Placing it beside the
   others (the right edge of the layout, say) would guess where the user wants
   it; not done. The GUI's `space` makes that guess (right of the others, level
-  with the topmost, only when it would overlap one: `Editor::set_enabled`);
-  whether `set --enable` should share it is open. Turned on without a mode, an
-  output takes its preferred mode, else its largest at the highest refresh
-  (`set::default_mode`); headless sway lists no mode for a disabled output, so
-  there `--mode` is needed too. `--no-mirror` does not place the output either:
-  Hyprland moves a mirror onto its source (`CMonitor::setMirror` sets its
-  position to the source's, v0.57.1 source, not observed), so ending one without
-  `--pos` is refused as an overlap (exit `3`). The Hyprland e2e's `--no-mirror`
-  step passes `--pos`.
+  with the topmost, when its old place would overlap one or touch none, as it
+  can since moving a layout to the origin leaves outputs that are off behind:
+  `Editor::set_enabled`); whether `set --enable` should share it is open. Turned
+  on without a mode, an output takes its preferred mode, else its largest at the
+  highest refresh (`set::default_mode`); headless sway lists no mode for a
+  disabled output, so there `--mode` is needed too. `--no-mirror` does not place
+  the output either: Hyprland moves a mirror onto its source
+  (`CMonitor::setMirror` sets its position to the source's, v0.57.1 source, not
+  observed), so ending one without `--pos` is refused as an overlap (exit `3`).
+  The Hyprland e2e's `--no-mirror` step passes `--pos`.
 - **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
   output's size, and a neighbour it now overlaps or leaves a gap beside is
   refused or warned about by validation, not shifted. `Layout::normalise` and
@@ -918,8 +855,6 @@ milestone:
   bspwm users are M7's. A profile file changed between the read and the rename
   of `dsplr save --profile` is overwritten without the question, as for
   `dsplr save`.
-- **`dsplr list` prints `@ 0 Hz` for a mode with no refresh**: headless sway's
-  outputs report refresh 0, which the protocol means as "not said".
 - **Some error paths of `dsplr apply` have no test**: a test or apply the
   desktop dropped because the displays changed (`Error::is_stale`; dsplr shows
   the current state, and after an apply removes the revert point instead of
@@ -979,18 +914,20 @@ headless sway 1.12 (2026-11-10): a relative path, `~`, `$HOME`,
 `$XDG_CONFIG_HOME` and an absolute path load; a quoted absolute path with a
 space in it does not.
 
-Read in KWin 6.8.2's source but not yet observed: that KWin saves
-`kwinoutputconfig.json` on every successful protocol apply
+Read in KWin 6.8.2's source and observed only in CI's headless KWin: that KWin
+saves `kwinoutputconfig.json` on every successful protocol apply
 (`Workspace::applyOutputConfiguration` calls
-`OutputConfigurationStore::storeConfig`); the KDE e2e checks it, and has not
-run. Read in Mutter 51.1's source at M6 and not yet observed: the
+`OutputConfigurationStore::storeConfig`; `kwin_saves_each_layout_it_applies`,
+green in run 42776828806). Read in Mutter 51.1's source at M6: the
 `ApplyMonitorsConfig` method values, `layout-mode`, the vendor being the PNP
-code, and the rest of `docs/plan/04-backends.md#gnome-gnome`; the GNOME e2e
-checks most of it, and has not run. Read in GNOME Shell 51.1's source:
-`ShowMonitorLabels` refuses callers that do not own one of its allowed names.
-Not verified by anyone: COSMIC's protocol offer and whether it persists outputs
-itself; the Xorg dummy driver giving several RandR outputs; KDE's confirm
-timeout; the RandR 1.5 details. Each is checked in its backend's milestone.
+code, and the rest of `docs/plan/04-backends.md#gnome-gnome`. CI's headless
+Mutter (green in run 42776828806) observed the method values and the logical
+layout mode; not the vendor, since its virtual monitors report `MetaVendor`, nor
+a real monitor's EDID. Read in GNOME Shell 51.1's source: `ShowMonitorLabels`
+refuses callers that do not own one of its allowed names. Not verified by
+anyone: COSMIC's protocol offer and whether it persists outputs itself; the Xorg
+dummy driver giving several RandR outputs; KDE's confirm timeout; the RandR 1.5
+details. Each is checked in its backend's milestone.
 
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off

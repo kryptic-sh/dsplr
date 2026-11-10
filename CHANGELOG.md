@@ -77,30 +77,31 @@ and this project adheres to
   an output left at a negative position moves the layout just clear of it on
   release, and no other output moves otherwise), move it with `h j k l` or up to
   its neighbour with `H J K L`, rotate it with `r` / `R`, step its scale with
-  `+` / `-`, turn it on or off with `space`, or set its mode, refresh, custom
-  mode (where the desktop takes them), scale, transform, adaptive sync and
-  mirror source in the panel. A setting the desktop cannot take is disabled,
-  with why as its tooltip. The pending layout is checked as it changes: an
-  overlap is outlined in red and a gap in yellow, with the problem in the bar.
-  `Tab` and `Shift+Tab` step through the outputs, a click selects one, and `q`
-  or `Escape` quits, asking first when edits are pending. `p` (or `F6`) takes
-  the keyboard into the panel, where `Tab` / `S-Tab` move between its widgets,
-  the arrows move and choose, Enter or space works one, and `Escape` gives the
-  keys back to the canvas; `m` shows the last few messages from the backend over
-  the canvas, which the bar shows one at a time. It reads the displays on a
-  backend thread before the window opens, so a desktop with no backend exits `6`
-  with no window; no window system or no usable GPU exits `1` with the reason.
-  `a` (or Apply) applies the pending edits through the same confirm flow as
-  `dsplr apply`: tested, guarded by the revert point and its watchdog, read
-  back, and kept only once "Keep these display settings?" is answered on one of
-  the dialogs shown on every monitor (Enter keeps; Esc, the countdown, or dsplr
-  dying reverts; the keys work in the dialog that has the keyboard and in the
-  window, and while the change waits the window's title is "dsplr: keep these
-  display settings?"). `s` (or Save) saves the displays where the desktop reads
-  them, as `dsplr save` does, asking in the window before replacing a file dsplr
-  did not write or one edited by hand. The panel also saves the displays as a
-  named profile, restores a profile through the same flow, goes back to the
-  revert point, and reads the displays again.
+  `+` / `-`, turn it on or off with `space` (turned on where it would overlap
+  another output or touch none, it goes to the right of them), or set its mode,
+  refresh, custom mode (where the desktop takes them), scale, transform,
+  adaptive sync and mirror source in the panel. A setting the desktop cannot
+  take is disabled, with why as its tooltip. The pending layout is checked as it
+  changes: an overlap is outlined in red and a gap in yellow, with the problem
+  in the bar. `Tab` and `Shift+Tab` step through the outputs, a click selects
+  one, and `q` or `Escape` quits, asking first when edits are pending. `p` (or
+  `F6`) takes the keyboard into the panel, where `Tab` / `S-Tab` move between
+  its widgets, the arrows move and choose, Enter or space works one, and
+  `Escape` gives the keys back to the canvas; `m` shows the last few messages
+  from the backend over the canvas, which the bar shows one at a time. It reads
+  the displays on a backend thread before the window opens, so a desktop with no
+  backend exits `6` with no window; no window system or no usable GPU exits `1`
+  with the reason. `a` (or Apply) applies the pending edits through the same
+  confirm flow as `dsplr apply`: tested, guarded by the revert point and its
+  watchdog, read back, and kept only once "Keep these display settings?" is
+  answered on one of the dialogs shown on every monitor (Enter keeps; Esc, the
+  countdown, or dsplr dying reverts; the keys work in the dialog that has the
+  keyboard and in the window, and while the change waits the window's title is
+  "dsplr: keep these display settings?"). `s` (or Save) saves the displays where
+  the desktop reads them, as `dsplr save` does, asking in the window before
+  replacing a file dsplr did not write or one edited by hand. The panel also
+  saves the displays as a named profile, restores a profile through the same
+  flow, goes back to the revert point, and reads the displays again.
 - The GUI follows the desktop: an output plugged in, unplugged, turned on or off
   or changed by another program shows up in the window as it happens (on
   Hyprland, a monitor added or removed and a config reload; a rule changed with
@@ -109,7 +110,8 @@ and this project adheres to
   the desktop changed it too), everything else follows the desktop, and edits to
   an output that went away are dropped, which the bar also says. A drag goes on
   through it. If the window stops being able to follow the desktop, the bar says
-  so and Refresh still reads it.
+  so and it tries again, waiting longer each time (from one second up to thirty)
+  until it gives up; Refresh still reads the desktop meanwhile.
 - `i` (or Identify) shows each output's connector and description in large text
   on that output for a few seconds. Where the window system has no panels, the
   bar says identify is unsupported there. `dsplr identify` shows the same panels
@@ -158,18 +160,20 @@ and this project adheres to
   source's and a second primary output are refused before Mutter is asked (exit
   `3`), and validation refuses gaps, which Mutter does not take. Mutter needs
   the outputs to start at 0,0, so on GNOME the window moves the layout there
-  after every edit and drag, and `dsplr apply`, `set` and `restore` move the
-  layout they apply there first and say how far; `dsplr backend` lists it as
-  "starts at the origin". With no output that is on named primary (turning the
-  primary one off), Mutter's primary stays, else the first output left takes it,
-  and the read-back does not count that as a difference. A monitor's
-  underscanning and colour mode are sent back as they are, since Mutter resets
-  them otherwise. Mutter's physical layout mode, where an output is as big as
-  its mode whatever its scale, is read and kept: a layout from GNOME carries it
-  (`layout_mode` in the JSON form, written only where the desktop has one), the
-  canvas and validation size outputs by it, and `dsplr list` says so. A layout
-  file that names no mode keeps GNOME's; one naming another switches it, which
-  the confirm asks about and the read-back reports when it did not take.
+  after every edit and drag (outputs that are off stay where they are, so no
+  edit makes a change that shows nowhere; mirrors stay on their sources), and
+  `dsplr apply`, `set` and `restore` move the layout they apply there first and
+  say how far; `dsplr backend` lists it as "starts at the origin". With no
+  output that is on named primary (turning the primary one off), Mutter's
+  primary stays, else the first output left takes it, and the read-back does not
+  count that as a difference. A monitor's underscanning and colour mode are sent
+  back as they are, since Mutter resets them otherwise. Mutter's physical layout
+  mode, where an output is as big as its mode whatever its scale, is read and
+  kept: a layout from GNOME carries it (`layout_mode` in the JSON form, written
+  only where the desktop has one), the canvas and validation size outputs by it,
+  and `dsplr list` says so. A layout file that names no mode keeps GNOME's; one
+  naming another switches it, which the confirm asks about and the read-back
+  reports when it did not take.
 - `dsplr save` on GNOME sends the layout on screen to Mutter again as
   `persistent`: GNOME Shell asks whether to keep the display settings, and
   Mutter writes `monitors.xml` only once they are kept (Mutter alone keeps them
