@@ -148,6 +148,12 @@ pub struct Output {
     pub modes: Vec<Mode>,
 }
 
+/// The most overscan an output can have: it is a percentage of the picture,
+/// and KWin, the one desktop with overscan, takes no more
+/// (`kde_output_configuration_v2_overscan` in KWin 6.8's
+/// `src/wayland/outputmanagement_v2.cpp`).
+pub const OVERSCAN_MAX: u8 = 100;
+
 /// The settings of one monitor.
 ///
 /// Fields will be added, so build one with `..Default::default()`. The
@@ -177,7 +183,7 @@ pub struct OutputState {
     pub colour_preset: Option<String>,
     /// Bits per colour channel (Hyprland's `bitdepth`).
     pub bit_depth: Option<u8>,
-    /// Overscan in percent (KDE).
+    /// Overscan in percent (KDE), at most [`OVERSCAN_MAX`].
     pub overscan: Option<u8>,
     /// RGB range (KDE).
     pub rgb_range: Option<RgbRange>,

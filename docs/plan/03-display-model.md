@@ -149,7 +149,9 @@ success, so it is not one. Checked:
   overlaps between outputs"; a warning elsewhere (Hyprland and sway allow gaps,
   but the pointer cannot cross one);
 - mirroring supported, and mirror sources exist, are enabled and are not mirrors
-  themselves.
+  themselves;
+- at most one primary among the enabled outputs (`ProblemKind::SecondPrimary`);
+  an output that is off is no primary whatever it says, on GNOME and KDE alike.
 
 ## Snapping
 

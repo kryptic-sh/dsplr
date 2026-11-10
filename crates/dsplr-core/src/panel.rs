@@ -4,7 +4,8 @@
 //! widgets from it and hands the choices back to the [`Editor`]'s edits.
 
 use dsplr_model::{
-    AdaptiveSync, Capabilities, Mode, OutputEntry, OutputId, OutputState, SCALE_EPSILON, Transform,
+    AdaptiveSync, Capabilities, Mode, OVERSCAN_MAX, OutputEntry, OutputId, OutputState, RgbRange,
+    SCALE_EPSILON, Transform,
 };
 
 use crate::Editor;
@@ -12,6 +13,22 @@ use crate::editor::scale_choices;
 
 /// Why every field but `enabled` is locked on an output that is off.
 pub const OFF_REASON: &str = "turn the output on to change this";
+
+/// Why a setting the backend has is locked on an output it did not report
+/// it for (GNOME on a monitor without an RGB range): nothing says what it
+/// can be set to.
+pub const NOT_REPORTED: &str = "the desktop reports no value for this output";
+
+/// Why the primary checkbox is locked while checked: KDE and GNOME always
+/// have a primary output, so unchecking it would apply as nothing.
+pub const PRIMARY_KEPT: &str = "the desktop always has a primary; make another output primary";
+
+/// Why a mirror cannot be made primary: it shows its source.
+pub const PRIMARY_MIRROR: &str = "a mirror shows its source; make the source primary";
+
+/// The overscans offered, in percent: fine steps up to 10, then two
+/// coarse ones. An output's own value is offered too when not among them.
+const OVERSCANS: [u8; 13] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20];
 
 /// One field: its value, whether it differs from the live one, and why it
 /// cannot be changed, if it cannot.
@@ -57,7 +74,14 @@ pub struct Panel {
     pub transform: Field<Choice<Transform>>,
     pub adaptive_sync: Field<Choice<Option<AdaptiveSync>>>,
     pub mirror: Field<Choice<Option<OutputId>>>,
-    /// The settings only some backends have, shown and not edited here:
+    /// Whether it is the primary output; `None` where the backend has none.
+    pub primary: Option<Field<bool>>,
+    /// Its overscan, in percent; `None` where the backend has none.
+    pub overscan: Option<Field<Choice<u8>>>,
+    /// Its RGB range; `None` where the backend has none.
+    pub rgb_range: Option<Field<Choice<RgbRange>>>,
+    /// The settings only some backends have that are shown and not edited
+    /// here (Hyprland's colour preset and bit depth, `docs/backlog.md`):
     /// label, value, changed.
     pub other: Vec<(&'static str, String, bool)>,
 }
@@ -145,6 +169,40 @@ pub fn panel(editor: &Editor, index: usize) -> Option<Panel> {
             state.mirror_of != live.mirror_of,
             locked((!capabilities.mirroring).then(|| format!("{backend} cannot mirror outputs"))),
         ),
+        primary: capabilities.primary.then(|| {
+            let why = if state.primary {
+                Some(PRIMARY_KEPT)
+            } else if state.mirror_of.is_some() {
+                Some(PRIMARY_MIRROR)
+            } else {
+                None
+            };
+            field(
+                state.primary,
+                state.primary != live.primary,
+                locked(why.map(str::to_owned)),
+            )
+        }),
+        overscan: capabilities.overscan.then(|| {
+            field(
+                overscans(state.overscan),
+                state.overscan != live.overscan,
+                locked(live.overscan.is_none().then(|| NOT_REPORTED.to_owned())),
+            )
+        }),
+        rgb_range: capabilities.rgb_range.then(|| {
+            let options = [RgbRange::Automatic, RgbRange::Full, RgbRange::Limited]
+                .map(|range| (range.to_string(), range))
+                .to_vec();
+            let chosen = state
+                .rgb_range
+                .and_then(|current| options.iter().position(|(_, range)| *range == current));
+            field(
+                Choice { options, chosen },
+                state.rgb_range != live.rgb_range,
+                locked(live.rgb_range.is_none().then(|| NOT_REPORTED.to_owned())),
+            )
+        }),
         other: other(state, live, capabilities),
     })
 }
@@ -276,7 +334,29 @@ fn mirrors(editor: &Editor, index: usize, current: Option<&OutputId>) -> Choice<
     choose(options, &current.cloned())
 }
 
-/// The settings only some backends have, on a backend that has them.
+/// [`OVERSCANS`], with `current` added in its place when not among them;
+/// none chosen when it is not known.
+fn overscans(current: Option<u8>) -> Choice<u8> {
+    let mut percents = OVERSCANS.to_vec();
+    if let Some(current) = current.filter(|c| *c <= OVERSCAN_MAX && !percents.contains(c)) {
+        percents.push(current);
+        percents.sort_unstable();
+    }
+    let options = percents
+        .into_iter()
+        .map(|p| (format!("{p} %"), p))
+        .collect();
+    match current {
+        Some(current) => choose(options, &current),
+        None => Choice {
+            options,
+            chosen: None,
+        },
+    }
+}
+
+/// The settings only some backends have that the panel shows and does not
+/// edit, on a backend that has them.
 fn other(
     state: &OutputState,
     live: &OutputState,
@@ -284,14 +364,6 @@ fn other(
 ) -> Vec<(&'static str, String, bool)> {
     let default = || "default".to_owned();
     let mut rows = Vec::new();
-    if capabilities.primary {
-        let yes_no = |on: bool| if on { "yes" } else { "no" }.to_owned();
-        rows.push((
-            "Primary",
-            yes_no(state.primary),
-            state.primary != live.primary,
-        ));
-    }
     if capabilities.colour_preset {
         rows.push((
             "Colour preset",
@@ -308,32 +380,14 @@ fn other(
             state.bit_depth != live.bit_depth,
         ));
     }
-    if capabilities.overscan {
-        rows.push((
-            "Overscan",
-            state
-                .overscan
-                .map_or_else(default, |percent| format!("{percent} %")),
-            state.overscan != live.overscan,
-        ));
-    }
-    if capabilities.rgb_range {
-        rows.push((
-            "RGB range",
-            state
-                .rgb_range
-                .map_or_else(default, |range| range.to_string()),
-            state.rgb_range != live.rgb_range,
-        ));
-    }
     rows
 }
 
 #[cfg(test)]
 mod tests {
-    use dsplr_model::Mode;
+    use dsplr_model::{Mode, RgbRange};
 
-    use super::{Choice, Field, OFF_REASON, Panel, panel};
+    use super::{Choice, Field, NOT_REPORTED, OFF_REASON, PRIMARY_MIRROR, Panel, panel};
     use crate::Editor;
     use crate::fixtures::owners_machine;
 
@@ -382,6 +436,24 @@ mod tests {
             format!("vrr {}", choice(&panel.adaptive_sync)),
             format!("mirror {}", choice(&panel.mirror)),
         ];
+        lines.extend(
+            panel
+                .primary
+                .as_ref()
+                .map(|field| format!("primary {}{}", field.value, marks(field))),
+        );
+        lines.extend(
+            panel
+                .overscan
+                .as_ref()
+                .map(|field| format!("overscan {}", choice(field))),
+        );
+        lines.extend(
+            panel
+                .rgb_range
+                .as_ref()
+                .map(|field| format!("rgb {}", choice(field))),
+        );
         lines.extend(panel.other.iter().map(|(label, value, changed)| {
             format!("{label} {value}{}", if *changed { " *" } else { "" })
         }));
@@ -409,6 +481,68 @@ mod tests {
             ]
         );
         assert_eq!(panel(&editor, 2), None);
+    }
+
+    #[test]
+    fn primary_overscan_and_rgb_range_are_edited_where_the_backend_takes_them() {
+        let mut snapshot = owners_machine();
+        snapshot.backend = "kde".into();
+        snapshot.capabilities.primary = true;
+        snapshot.capabilities.overscan = true;
+        snapshot.capabilities.rgb_range = true;
+        snapshot.capabilities.colour_preset = false;
+        snapshot.capabilities.bit_depth = false;
+        snapshot.layout.entries[1].state.overscan = Some(3);
+        snapshot.layout.entries[1].state.rgb_range = Some(RgbRange::Full);
+        let mut editor = Editor::new(snapshot);
+        assert!(editor.set_primary(1, true));
+        let lines = text(&panel(&editor, 1).unwrap());
+        assert_eq!(
+            lines[10..],
+            [
+                "primary true * (locked: the desktop always has a primary; make another output primary)",
+                "overscan 3 % of [0 %, 1 %, 2 %, 3 %, 4 %, 5 %, 6 %, 7 %, 8 %, 9 %, 10 %, 15 %, 20 %]",
+                "rgb full of [automatic, full, limited]",
+            ]
+        );
+        // Not reported for an output: nothing to set it from.
+        let laptop = panel(&editor, 0).unwrap();
+        let rgb = laptop.rgb_range.unwrap();
+        assert_eq!(rgb.locked.as_deref(), Some(OFF_REASON), "and off");
+        assert_eq!(laptop.primary.unwrap().locked.as_deref(), Some(OFF_REASON));
+        // Not primary, it can be made so; a mirror cannot.
+        assert!(editor.set_primary(1, false));
+        assert_eq!(panel(&editor, 1).unwrap().primary.unwrap().locked, None);
+        editor.edit(1, |state| {
+            state.mirror_of = Some(dsplr_model::OutputId::Connector("eDP-1".into()));
+        });
+        assert_eq!(
+            panel(&editor, 1)
+                .unwrap()
+                .primary
+                .unwrap()
+                .locked
+                .as_deref(),
+            Some(PRIMARY_MIRROR)
+        );
+        let mut snapshot = owners_machine();
+        snapshot.capabilities.rgb_range = true;
+        snapshot.capabilities.overscan = true;
+        let editor = Editor::new(snapshot);
+        let monitor = panel(&editor, 1).unwrap();
+        assert_eq!(
+            monitor.rgb_range.unwrap().locked.as_deref(),
+            Some(NOT_REPORTED)
+        );
+        assert_eq!(
+            monitor.overscan.unwrap().locked.as_deref(),
+            Some(NOT_REPORTED)
+        );
+        // Where the backend has none, no row at all.
+        let editor = Editor::new(owners_machine());
+        let monitor = panel(&editor, 1).unwrap();
+        assert!(monitor.primary.is_none() && monitor.overscan.is_none());
+        assert!(monitor.rgb_range.is_none());
     }
 
     #[test]

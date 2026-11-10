@@ -892,6 +892,9 @@ impl<'a> MainWindow<'a> {
             Change::Transform(transform) => editor.set_transform(index, transform),
             Change::AdaptiveSync(sync) => editor.set_adaptive_sync(index, sync),
             Change::Mirror(source) => editor.set_mirror(index, source),
+            Change::Primary(primary) => editor.set_primary(index, primary),
+            Change::Overscan(percent) => editor.set_overscan(index, percent),
+            Change::RgbRange(range) => editor.set_rgb_range(index, range),
         }
     }
 

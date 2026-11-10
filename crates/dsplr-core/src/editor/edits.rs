@@ -7,8 +7,8 @@
 //! does not look at them.
 
 use dsplr_model::{
-    AdaptiveSync, Capabilities, Mode, ModeSpec, OutputId, Rect, SCALE_EPSILON, Transform,
-    default_mode, is_valid_scale, pick_mode,
+    AdaptiveSync, Capabilities, Mode, ModeSpec, OVERSCAN_MAX, OutputId, Rect, RgbRange,
+    SCALE_EPSILON, Transform, default_mode, is_valid_scale, pick_mode,
 };
 
 use super::{Editor, on_canvas};
@@ -178,7 +178,11 @@ impl Editor {
     /// it keeps its place.
     pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
         if !enabled {
-            return self.edit(index, |state| state.enabled = false);
+            // An output that is off is no primary: the desktop picks another.
+            return self.edit(index, |state| {
+                state.enabled = false;
+                state.primary = false;
+            });
         }
         let default = default_mode(self.listed_modes(index)).cloned();
         let layout_mode = self.pending.extent_mode();
@@ -284,6 +288,45 @@ impl Editor {
             && self.edit_on(index, |state| state.adaptive_sync = Some(sync))
     }
 
+    /// Makes output `index` the primary output, taking it from the one that
+    /// was, in one undo step; or not the primary, leaving none. Only where
+    /// the backend has a primary output, and only an output that is on and
+    /// no mirror: a mirror shows its source, which is the one to make
+    /// primary.
+    pub fn set_primary(&mut self, index: usize, primary: bool) -> bool {
+        let mirror = self
+            .pending
+            .entries
+            .get(index)
+            .is_some_and(|entry| entry.state.mirror_of.is_some());
+        self.snapshot.capabilities.primary
+            && self.is_on(index)
+            && !(primary && mirror)
+            && self.edit_layout(|layout| {
+                for (other, entry) in layout.entries.iter_mut().enumerate() {
+                    if other == index {
+                        entry.state.primary = primary;
+                    } else if primary {
+                        entry.state.primary = false;
+                    }
+                }
+            })
+    }
+
+    /// Sets output `index`'s overscan, in percent up to [`OVERSCAN_MAX`],
+    /// where the backend takes one.
+    pub fn set_overscan(&mut self, index: usize, percent: u8) -> bool {
+        self.snapshot.capabilities.overscan
+            && percent <= OVERSCAN_MAX
+            && self.edit_on(index, |state| state.overscan = Some(percent))
+    }
+
+    /// Sets output `index`'s RGB range, where the backend takes one.
+    pub fn set_rgb_range(&mut self, index: usize, range: RgbRange) -> bool {
+        self.snapshot.capabilities.rgb_range
+            && self.edit_on(index, |state| state.rgb_range = Some(range))
+    }
+
     /// Makes output `index` mirror `source`, another output in the layout, or
     /// stop mirroring; only where the backend mirrors.
     pub fn set_mirror(&mut self, index: usize, source: Option<OutputId>) -> bool {
@@ -305,7 +348,8 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
-        AdaptiveSync, Capabilities, Mode, ModeSpec, OutputId, OutputState, Rect, Transform,
+        AdaptiveSync, Capabilities, Mode, ModeSpec, OutputId, OutputState, Rect, RgbRange,
+        Transform,
     };
 
     use super::{Direction, NUDGE_STEP, scale_choices};
@@ -515,6 +559,63 @@ mod tests {
             (state(&editor, 2).x, state(&editor, 2).y)
         );
         assert!(!editor.pending().entries.iter().any(|e| e.state.x < 0));
+    }
+
+    /// [`three_monitors`] on a backend with a primary output, overscan, an
+    /// RGB range and mirroring, as KDE has; DP-2 is the primary, DP-1 at 0 % and full.
+    fn kde_like() -> Editor {
+        let mut snapshot = three_monitors();
+        snapshot.capabilities.primary = true;
+        snapshot.capabilities.overscan = true;
+        snapshot.capabilities.rgb_range = true;
+        snapshot.capabilities.mirroring = true;
+        snapshot.layout.entries[1].state.primary = true;
+        for entry in &mut snapshot.layout.entries {
+            entry.state.overscan = Some(0);
+            entry.state.rgb_range = Some(RgbRange::Full);
+        }
+        Editor::new(snapshot)
+    }
+
+    #[test]
+    fn making_an_output_primary_takes_it_from_the_other_in_one_step() {
+        let mut editor = kde_like();
+        assert!(editor.set_primary(0, true));
+        assert!(state(&editor, 0).primary);
+        assert!(!state(&editor, 1).primary, "one primary at a time");
+        assert!(!editor.set_primary(0, true), "already");
+        assert!(editor.undo());
+        assert!(!state(&editor, 0).primary);
+        assert!(state(&editor, 1).primary);
+        assert!(!editor.undo(), "one undo step");
+        assert!(editor.set_primary(1, false));
+        assert!(editor.pending().entries.iter().all(|e| !e.state.primary));
+        assert!(!editor.set_primary(2, true), "an output that is off");
+        // A mirror shows its source: it is not made primary.
+        assert!(editor.set_mirror(0, Some(OutputId::Connector("DP-2".into()))));
+        assert!(!editor.set_primary(0, true), "a mirror");
+        assert!(editor.undo());
+        // Turning the primary output off takes the flag with it: the desktop
+        // picks another, as KDE and GNOME do.
+        assert!(editor.set_primary(1, true));
+        assert!(editor.set_enabled(1, false));
+        assert!(!state(&editor, 1).primary);
+        let mut wlr = Editor::new(three_monitors());
+        assert!(!wlr.set_primary(0, true), "a backend with no primary");
+    }
+
+    #[test]
+    fn overscan_and_rgb_range_are_set_where_the_backend_takes_them() {
+        let mut editor = kde_like();
+        assert!(editor.set_overscan(0, 5));
+        assert_eq!(state(&editor, 0).overscan, Some(5));
+        assert!(!editor.set_overscan(0, 101), "more than all of it");
+        assert!(editor.set_rgb_range(0, RgbRange::Limited));
+        assert_eq!(state(&editor, 0).rgb_range, Some(RgbRange::Limited));
+        assert!(!editor.set_overscan(2, 5), "an output that is off");
+        let mut wlr = Editor::new(three_monitors());
+        assert!(!wlr.set_overscan(0, 5));
+        assert!(!wlr.set_rgb_range(0, RgbRange::Full));
     }
 
     #[test]

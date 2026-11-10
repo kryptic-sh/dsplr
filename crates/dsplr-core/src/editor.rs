@@ -90,20 +90,22 @@ impl Editor {
     /// no output, an edit during a drag, and one that would put a position
     /// outside `i32` change nothing.
     pub fn edit(&mut self, index: usize, change: impl FnOnce(&mut OutputState)) -> bool {
+        if self.pending.entries.get(index).is_none() {
+            return false;
+        }
+        self.edit_layout(|layout| change(&mut layout.entries[index].state))
+    }
+
+    /// [`Editor::edit`] for a change to several outputs at once, as one undo
+    /// step: making one output primary makes the others not.
+    pub(crate) fn edit_layout(&mut self, change: impl FnOnce(&mut Layout)) -> bool {
         if self.drag.is_some() {
             return false;
         }
-        let Some(entry) = self.pending.entries.get(index) else {
-            return false;
-        };
-        let mut state = entry.state.clone();
-        change(&mut state);
-        if state == entry.state {
-            return false;
-        }
         let mut pending = self.pending.clone();
-        pending.entries[index].state = state;
-        if !self.place(&mut pending) || pending == self.pending {
+        change(&mut pending);
+        // A change that changed nothing moves nothing to the origin either.
+        if pending == self.pending || !self.place(&mut pending) || pending == self.pending {
             return false;
         }
         self.undo

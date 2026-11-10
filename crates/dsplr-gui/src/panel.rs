@@ -1,14 +1,15 @@
 //! The property panel, built with crcbl-ui's widgets from
 //! [`dsplr_core::panel::Panel`]: a drop-down per choice, a checkbox for
-//! whether the output is on, a number for the scale and a text field for a
-//! custom mode. A field that cannot be changed is disabled, with why as its
-//! tooltip. What the user changes comes back as [`Change`]s for the editor.
+//! whether the output is on and one for whether it is primary, a number for
+//! the scale and a text field for a custom mode. A field that cannot be
+//! changed is disabled, with why as its tooltip. What the user changes comes
+//! back as [`Change`]s for the editor.
 
 use crcbl_ui::tree::{Engagement, Response, Ui};
 use dsplr_core::Theme;
 use dsplr_core::link::Question;
 use dsplr_core::panel::{Choice, Field, Panel};
-use dsplr_model::{AdaptiveSync, Mode, OutputId, Transform};
+use dsplr_model::{AdaptiveSync, Mode, OutputId, RgbRange, Transform};
 
 /// The widest a typed scale may be, and the smallest; a drag moves it by
 /// `SCALE_SPEED` per pixel, an engaged step by `SCALE_STEP`.
@@ -28,6 +29,9 @@ pub enum Change {
     Transform(Transform),
     AdaptiveSync(AdaptiveSync),
     Mirror(Option<OutputId>),
+    Primary(bool),
+    Overscan(u8),
+    RgbRange(RgbRange),
 }
 
 /// What the panel keeps between frames: the text of the custom mode field
@@ -366,6 +370,36 @@ fn fields(ui: &mut Ui, panel: Option<&Panel>, drafts: &mut Drafts, changes: &mut
         |id| Some(Change::Mirror(id.clone())),
         changes,
     );
+    if let Some(primary) = &panel.primary {
+        row(ui, "#primary", "Primary", primary, |ui| {
+            let mut on = primary.value;
+            let response = ui.checkbox("#primary-box", "", &mut on);
+            if response.changed {
+                changes.push(Change::Primary(on));
+            }
+            response
+        });
+    }
+    if let Some(overscan) = &panel.overscan {
+        choice(
+            ui,
+            "#overscan",
+            "Overscan",
+            overscan,
+            |&percent| Some(Change::Overscan(percent)),
+            changes,
+        );
+    }
+    if let Some(rgb_range) = &panel.rgb_range {
+        choice(
+            ui,
+            "#rgb-range",
+            "RGB range",
+            rgb_range,
+            |&range| Some(Change::RgbRange(range)),
+            changes,
+        );
+    }
     for (label, value, changed) in &panel.other {
         ui.block_keyed(label, ".row", &[], |ui| {
             let class = if *changed { ".label.changed" } else { ".label" };
@@ -480,12 +514,24 @@ mod tests {
     use dsplr_core::{Editor, Snapshot, Theme};
     use dsplr_model::{
         AdaptiveSync, Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState,
+        RgbRange,
     };
     use glam::Vec2;
 
     use super::{ActionDrafts, Actions, Built, Drafts, build, stylesheet};
 
     fn editor() -> Editor {
+        editor_with(Capabilities {
+            mirroring: true,
+            colour_preset: true,
+            bit_depth: true,
+            ..Capabilities::default()
+        })
+    }
+
+    /// Two outputs on a backend with `capabilities`, each with an overscan
+    /// and an RGB range to show.
+    fn editor_with(capabilities: Capabilities) -> Editor {
         let output = |connector: &str| Output {
             connector: connector.into(),
             description: format!("{connector} monitor"),
@@ -502,17 +548,14 @@ mod tests {
                 mode: Some(Mode::new(1920, 1080, 60_000)),
                 x,
                 adaptive_sync: Some(AdaptiveSync::Off),
+                overscan: Some(0),
+                rgb_range: Some(RgbRange::Automatic),
                 ..OutputState::default()
             },
         };
         Editor::new(Snapshot {
             backend: "hyprland".into(),
-            capabilities: Capabilities {
-                mirroring: true,
-                colour_preset: true,
-                bit_depth: true,
-                ..Capabilities::default()
-            },
+            capabilities,
             layout: Layout {
                 entries: vec![entry("DP-1", 0), entry("DP-2", 1920)],
                 ..Default::default()
@@ -524,13 +567,59 @@ mod tests {
     /// every node built once, nothing reported changed or asked for.
     #[test]
     fn the_panel_builds_with_one_node_per_key_and_does_nothing_at_rest() {
-        let editor = editor();
+        let kde_like = Capabilities {
+            primary: true,
+            overscan: true,
+            rgb_range: true,
+            ..Capabilities::default()
+        };
+        for editor in [editor(), editor_with(kde_like)] {
+            builds_once_at_rest(&editor);
+        }
+        // The primary, overscan and RGB range rows are each built where the
+        // backend has that setting: a row, its label and its widget.
+        let without = builds_once_at_rest(&editor_with(Capabilities::default()));
+        for (setting, capabilities) in [
+            (
+                "primary",
+                Capabilities {
+                    primary: true,
+                    ..Capabilities::default()
+                },
+            ),
+            (
+                "overscan",
+                Capabilities {
+                    overscan: true,
+                    ..Capabilities::default()
+                },
+            ),
+            (
+                "RGB range",
+                Capabilities {
+                    rgb_range: true,
+                    ..Capabilities::default()
+                },
+            ),
+        ] {
+            let with = builds_once_at_rest(&editor_with(capabilities));
+            assert!(
+                with > without + 2,
+                "{setting}: {with} nodes against {without}"
+            );
+        }
+    }
+
+    /// Builds `editor`'s first output's panel, checking it as above, and
+    /// returns how many nodes the bare panel has.
+    fn builds_once_at_rest(editor: &Editor) -> usize {
+        let mut bare = 0;
         let mut ui = Ui::new();
         ui.add_stylesheet("dsplr", &stylesheet(&Theme::tokyo_night()));
         let atlas = FontAtlas::built_in();
         let mut drafts = Drafts::default();
         let mut action_drafts = ActionDrafts::default();
-        let panel = panel(&editor, 0);
+        let panel = panel(editor, 0);
         assert!(panel.is_some());
         let profiles = ["home".to_owned(), "work".to_owned()];
         let question = Question {
@@ -561,9 +650,13 @@ mod tests {
                 );
                 assert_eq!(built, Built::default(), "nothing touched");
                 assert_eq!(ui.duplicate_keys(), [], "two nodes shared a key");
+                if question.is_none() {
+                    bare = ui.len();
+                }
             }
             assert!(ui.len() > 12, "the panel was built: {} nodes", ui.len());
         }
+        bare
     }
 
     #[test]

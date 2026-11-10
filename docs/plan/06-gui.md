@@ -19,7 +19,9 @@ later work is below.
   connectors), and merged setting by setting under the pending edits
   (`Editor::rebase`): a setting the user changed keeps the user's value, saying
   so in the bar when the desktop changed it too, and every other setting takes
-  the desktop's. Edits to outputs that went away are dropped, also in the bar. A
+  the desktop's. Which output is primary is merged as one setting of the whole
+  layout (one primary per desktop): edited anywhere, the user's choice holds on
+  every output. Edits to outputs that went away are dropped, also in the bar. A
   read that changed nothing leaves the edits, their history and a drag alone;
   otherwise a drag goes on over the new read while its output is there. A watch
   that ends is opened again with `dsplr watch`'s backoff, said in the bar
@@ -27,6 +29,15 @@ later work is below.
 - Text is the system's sans-serif through fontconfig, with its fallbacks
   (crcbl-ui's `system-fonts`, C7), else crcbl's committed `Font::sans`, with a
   note in the bar.
+- The panel edits the settings only some desktops have where the backend sets
+  them (`Capabilities`): the primary output (a checkbox; making one primary
+  takes it from the other, one undo step; locked while checked, since KDE and
+  GNOME always have one, and on a mirror, whose source is the one to make
+  primary; turning an output off clears its flag, the desktop picking another),
+  overscan (a percentage, offered in steps, `OVERSCAN_MAX` at most) and RGB
+  range. A field the backend has but did not report for an output (a KWin
+  virtual output, a monitor Mutter gives no RGB range) is locked, saying so.
+  Hyprland's colour preset and bit depth are shown only (backlog).
 - The panel is reached from the keyboard with the `panel` key ([Keys](#keys)),
   driven by crcbl-ui's own focus traversal (tree order, accept, back, arrows);
   `Tab` keeps selecting outputs on the canvas.

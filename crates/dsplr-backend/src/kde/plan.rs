@@ -2,7 +2,7 @@
 //! each output device is set to, and the output order, decided before
 //! anything is sent.
 
-use dsplr_model::{AdaptiveSync, Layout, OutputEntry, OutputId, RgbRange};
+use dsplr_model::{AdaptiveSync, Layout, OVERSCAN_MAX, OutputEntry, OutputId, RgbRange};
 
 use super::devices::{
     CAPABILITY_DISABLE, CAPABILITY_OVERSCAN, CAPABILITY_RGB_RANGE, CAPABILITY_VRR, Device,
@@ -30,11 +30,6 @@ pub const DISABLE_CAPABILITY_SINCE: u32 = 25;
 /// `src/wayland/outputmanagement_v2.cpp`), and the device sends that back as
 /// a `wl_fixed` again.
 pub const KWIN_SCALE_STEPS: u32 = 120;
-
-/// The largest overscan KWin takes, in percent: it ignores a request for
-/// more (`kde_output_configuration_v2_overscan` in KWin 6.8's
-/// `src/wayland/outputmanagement_v2.cpp`).
-pub const MAX_OVERSCAN: u8 = 100;
 
 /// What one device is set to. KWin changes only what a configuration
 /// names, so a device the layout does not name is left out.
@@ -171,7 +166,7 @@ fn config(
         Some(_) if !device.can(CAPABILITY_OVERSCAN) => {
             return Err(unsupported("overscan (KWin says the output has none)"));
         }
-        Some(percent) if percent > MAX_OVERSCAN => {
+        Some(percent) if percent > OVERSCAN_MAX => {
             return Err(unsupported("overscan above 100%"));
         }
         Some(percent) => Some(u32::from(percent)),
@@ -224,7 +219,9 @@ fn names(id: &OutputId, device: &Device) -> bool {
         || matches!(id, OutputId::Connector(connector) if *connector == device.head.name)
 }
 
-/// Each device's `set_priority`, when the layout names a primary output.
+/// Each device's `set_priority`, when the layout names a primary output that
+/// is on. An output that is off is no primary whatever a file or profile
+/// says, as on GNOME: KWin then picks one, as it does when none is named.
 fn priorities(
     assigned: &[Option<&OutputEntry>],
     devices: &[Device],
@@ -234,15 +231,12 @@ fn priorities(
     let mut primaries = assigned
         .iter()
         .zip(devices)
-        .filter(|(entry, _)| entry.is_some_and(|entry| entry.state.primary));
-    let Some((primary_entry, primary)) = primaries.next() else {
+        .filter(|(entry, _)| entry.is_some_and(|entry| entry.state.enabled && entry.state.primary));
+    let Some((_, primary)) = primaries.next() else {
         return Ok(vec![None; devices.len()]);
     };
     if let Some((_, second)) = primaries.next() {
         return Err(unsupported(second, "a second primary output"));
-    }
-    if !primary_entry.is_some_and(|entry| entry.state.enabled) {
-        return Err(unsupported(primary, "a primary output that is off"));
     }
     let Some(order) = order else {
         return Err(unsupported(
@@ -412,15 +406,20 @@ mod tests {
     }
 
     #[test]
+    fn a_primary_flag_on_an_output_that_is_off_is_ignored() {
+        // A file or profile can still say so; KWin picks the primary then.
+        let mut off = snapshot();
+        off.entries[1].state.primary = false;
+        off.entries[0].state.primary = true;
+        off.entries[0].state.enabled = false;
+        assert_eq!(planned(&off).expect("plans").priorities, [None; 3]);
+    }
+
+    #[test]
     fn a_primary_output_that_cannot_be_set_is_refused() {
         let mut two = snapshot();
         two.entries[2].state.primary = true;
         assert_eq!(refused(&two), "a second primary output");
-
-        let mut off = snapshot();
-        off.entries[1].state.primary = false;
-        off.entries[0].state.primary = true;
-        assert_eq!(refused(&off), "a primary output that is off");
 
         let primary = snapshot();
         assert!(matches!(

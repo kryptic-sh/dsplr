@@ -34,6 +34,7 @@ pub enum Field {
     Scale,
     Position,
     MirrorOf,
+    Primary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,9 @@ pub enum ProblemKind {
     /// The outputs do not start at the origin, on a backend that needs them
     /// to; the smallest x and y among them.
     NotAtOrigin { x: i32, y: i32 },
+    /// An output that is on is primary after another one is: a desktop has
+    /// one primary output.
+    SecondPrimary,
 }
 
 impl ProblemKind {
@@ -89,6 +93,7 @@ impl ProblemKind {
             | Self::MirrorSourceMissing
             | Self::MirrorSourceDisabled
             | Self::MirrorOfMirror => Field::MirrorOf,
+            Self::SecondPrimary => Field::Primary,
         }
     }
 }
@@ -135,6 +140,9 @@ impl fmt::Display for Problem {
             }
             ProblemKind::MirrorSourceDisabled => f.write_str("mirrors a disabled output"),
             ProblemKind::MirrorOfMirror => f.write_str("mirrors an output that is a mirror"),
+            ProblemKind::SecondPrimary => {
+                f.write_str("is primary as well as another output; a desktop has one")
+            }
             ProblemKind::NotAtOrigin { x, y } => write!(
                 f,
                 "this desktop needs the outputs to start at 0,0, and they start at {x},{y}"
@@ -175,6 +183,10 @@ impl Layout {
             check_one_scale(&enabled, &mut problems);
         }
         self.check_mirrors(capabilities, &mut problems);
+        // An output that is off is no desktop's primary, whatever it says.
+        for entry in enabled.iter().filter(|entry| entry.state.primary).skip(1) {
+            problems.push(Problem::error(&entry.id, ProblemKind::SecondPrimary));
+        }
         if capabilities.origin_required
             && let Some((x, y)) = self.placed_min()
             && (x, y) != (0, 0)
@@ -625,6 +637,25 @@ mod tests {
     fn a_stacked_layout_is_connected() {
         let layout = layout(vec![monitor("DP-1", 0, 0), monitor("DP-2", 500, 1080)]);
         assert_eq!(kinds(&layout, &Capabilities::default()), []);
+    }
+
+    #[test]
+    fn a_second_primary_output_is_refused_and_one_that_is_off_does_not_count() {
+        let primary = |name: &str, x| {
+            let mut entry = monitor(name, x, 0);
+            entry.state.primary = true;
+            entry
+        };
+        let two = layout(vec![primary("DP-1", 0), primary("DP-2", 1920)]);
+        assert_eq!(
+            kinds(&two, &permissive()),
+            [(Some(id("DP-2")), ProblemKind::SecondPrimary)]
+        );
+        assert_eq!(ProblemKind::SecondPrimary.field(), Field::Primary);
+        let mut off = primary("DP-2", 1920);
+        off.state.enabled = false;
+        let one = layout(vec![primary("DP-1", 0), off]);
+        assert_eq!(kinds(&one, &permissive()), []);
     }
 
     #[test]

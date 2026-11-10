@@ -154,9 +154,64 @@ fn merge(
             None => new.clone(),
         })
         .collect();
-    Layout {
+    let mut layout = Layout {
         entries,
         layout_mode: new_live.layout_mode,
+    };
+    merge_primary(old_live, pending, new_live, from, &mut layout, kept_over);
+    layout
+}
+
+/// Which output is primary, as one setting of the whole layout rather than
+/// one per output, since a desktop has one: when the user changed it on any
+/// output, the pending choice holds on every output (an output new to the
+/// read is not primary), and the desktop changing it too is a setting kept
+/// over, named for the output the user made primary; otherwise, or when
+/// that output went away, `merged` already has the desktop's.
+fn merge_primary(
+    old_live: &[OutputEntry],
+    pending: &[OutputEntry],
+    new_live: &Layout,
+    from: &[Option<usize>],
+    merged: &mut Layout,
+    kept_over: &mut Vec<(String, Setting)>,
+) {
+    let Some(edited) = old_live
+        .iter()
+        .zip(pending)
+        .find(|(before, after)| before.state.primary != after.state.primary)
+        .map(|(_, after)| after)
+    else {
+        return;
+    };
+    // The output the user made primary went away: the edit goes with it,
+    // as its others do (`Rebased::dropped`), and the desktop's stands.
+    let chosen = pending.iter().position(|entry| entry.state.primary);
+    if chosen.is_some_and(|chosen| !from.contains(&Some(chosen))) {
+        return;
+    }
+    for (entry, from) in merged.entries.iter_mut().zip(from) {
+        entry.state.primary = from.is_some_and(|old| pending[old].state.primary);
+    }
+    let desktop_changed = new_live
+        .entries
+        .iter()
+        .zip(from)
+        .any(|(new, from)| match *from {
+            Some(old) => new.state.primary != old_live[old].state.primary,
+            None => new.state.primary,
+        });
+    let differs = merged
+        .entries
+        .iter()
+        .zip(&new_live.entries)
+        .any(|(mine, new)| mine.state.primary != new.state.primary);
+    if desktop_changed && differs {
+        let named = pending
+            .iter()
+            .find(|entry| entry.state.primary)
+            .unwrap_or(edited);
+        kept_over.push((name(named), Setting::Primary));
     }
 }
 
@@ -180,7 +235,7 @@ fn merge_state(
         transform,
         adaptive_sync,
         mirror_of,
-        primary,
+        primary: _,
         colour_preset,
         bit_depth,
         overscan,
@@ -212,7 +267,8 @@ fn merge_state(
             &new.adaptive_sync,
         ),
         mirror_of: pick.one(Setting::MirrorOf, &old.mirror_of, mirror_of, &new.mirror_of),
-        primary: pick.one(Setting::Primary, &old.primary, primary, &new.primary),
+        // Layout-wide, in `merge_primary`.
+        primary: new.primary,
         colour_preset: pick.one(
             Setting::ColourPreset,
             &old.colour_preset,
@@ -304,6 +360,64 @@ mod tests {
             Some("DP-2 position changed on the desktop too; your pending edit is kept")
         );
         assert!(!editor.undo(), "the history held the old live settings");
+    }
+
+    /// [`three_monitors`] with all three on and DP-2 primary.
+    fn with_a_primary() -> Editor {
+        let mut snapshot = three_monitors();
+        snapshot.capabilities.primary = true;
+        snapshot.layout.entries[1].state.primary = true;
+        snapshot.layout.entries[2].state.enabled = true;
+        snapshot.layout.entries[2].state.x = 4480;
+        Editor::new(snapshot)
+    }
+
+    fn primaries(editor: &Editor) -> Vec<String> {
+        editor
+            .pending()
+            .entries
+            .iter()
+            .filter(|entry| entry.state.primary)
+            .map(|entry| entry.connector().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn the_primary_the_user_picked_stays_the_only_one() {
+        let mut editor = with_a_primary();
+        assert!(editor.set_primary(0, true));
+        // Another program made HDMI-A-1 primary meanwhile.
+        let mut read = editor.snapshot().clone();
+        read.layout.entries[1].state.primary = false;
+        read.layout.entries[2].state.primary = true;
+        let rebased = editor.rebase(read, true);
+        assert_eq!(primaries(&editor), ["DP-1"]);
+        assert_eq!(rebased.kept_over, [("DP-1".to_owned(), Setting::Primary)]);
+    }
+
+    #[test]
+    fn a_primary_picked_on_an_output_gone_goes_with_it() {
+        let mut editor = with_a_primary();
+        assert!(editor.set_primary(2, true));
+        // HDMI-A-1 unplugged; DP-2 still primary on the desktop.
+        let mut read = editor.snapshot().clone();
+        read.layout.entries.remove(2);
+        let rebased = editor.rebase(read, true);
+        assert_eq!(primaries(&editor), ["DP-2"]);
+        assert_eq!(rebased.dropped, ["HDMI-A-1"]);
+        assert_eq!(rebased.kept_over, []);
+        assert!(!editor.has_pending(), "nothing left to apply");
+    }
+
+    #[test]
+    fn with_the_primary_not_edited_the_desktop_s_is_taken() {
+        let mut editor = with_a_primary();
+        let mut read = editor.snapshot().clone();
+        read.layout.entries[1].state.primary = false;
+        read.layout.entries[2].state.primary = true;
+        let rebased = editor.rebase(read, true);
+        assert_eq!(primaries(&editor), ["HDMI-A-1"]);
+        assert_eq!(rebased, Rebased::default());
     }
 
     #[test]

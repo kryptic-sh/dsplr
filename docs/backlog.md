@@ -636,8 +636,26 @@ milestone:
   output sharing some of the span across (a diagonal neighbour is not reached),
   and stopping at a neighbour it already touches rather than jumping past it.
   Any typed scale is still taken.
-- **The panel shows and does not edit** the primary output, Hyprland's colour
-  preset and bit depth, and KDE's overscan and RGB range.
+- **Hyprland's colour preset and bit depth are shown, not edited**: the
+  `hyprland` backend's `Capabilities` leave them out, because its snapshot does
+  not read them, so a change could not be read back. Hyprland's apply already
+  sends them (`monitor_call` writes `cm` and `bitdepth`), and
+  `hyprctl -j monitors all` reports `colorManagementPreset` and `currentFormat`
+  (plan 04). What reading them needs: (1) the JSON's preset names to be the ones
+  `cm` takes; the 0.57.2 binary's strings hold `srgb`, `wide`, `edid`, `hdredid`
+  and `auto` whole, but `hdr`, `dcip3`, `dp3` and `adobe` (from
+  `NCMType::eCMType`) were not found, so they are unconfirmed; (2) bit depth
+  from `currentFormat` (`XRGB2101010` for 10, `XRGB8888` for 8, `Invalid` when
+  off), which says what is in force rather than the rule; (3) `bitdepth = 8`
+  written too, since `monitor_call` writes only `bitdepth = 10` and Hyprland
+  merges a rule onto the one before it, so an apply could never turn 10-bit off;
+  (4) every apply and save would then state `cm` and `bitdepth` for every
+  monitor, changing every saved `monitors.lua`. Each needs the headless Hyprland
+  harness (CI only) to confirm.
+- **The panel's overscan steps are a guess**: 0 to 10 % by one, then 15 and 20 %
+  (`dsplr-core`'s `OVERSCANS`), plus the output's own value; KDE's own settings
+  offer every percent. No `dsplr set` flag sets the primary output, overscan or
+  RGB range: plan 07 lists none.
 - **Panel keys are mapped by hand** (`dsplr-gui`'s `keys::nav`: Enter, Escape,
   the arrows, Tab) where crcbl's docs pair `TextPump` with `crcbl-input`'s
   action map. `crcbl-input` is not on plan 02's dependency list, so adding it is

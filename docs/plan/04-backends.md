@@ -244,8 +244,9 @@ As built:
   each new output order is a change.
 - **Capabilities**: mirroring from management version 13; adaptive sync off, on
   and automatic; fractional and per-output scale; overscan; RGB range; the
-  primary output when KWin offers `kde_output_order_v1`; native persistence and
-  saves on apply; no test, no gaps, no custom modes.
+  primary output when KWin offers `kde_output_order_v1` (a primary flag on an
+  output that is off is ignored, and KWin picks); native persistence and saves
+  on apply; no test, no gaps, no custom modes.
 - **KDE on X11** keeps KScreen's own daemon, which re-applies its saved config
   and would fight dsplr's `Randr` backend. `--backend randr` under a KDE session
   warns about this, and `dsplr watch` refuses it there too.
