@@ -313,9 +313,100 @@ a profile, moving an output and restoring it, by name and picked.
 
 ## Hotplug profiles
 
-`dsplr watch` (stretch, M8): stays running, listens to the backend's change
-stream and runs `restore` when the connected set changes. Opt-in; it is not
-started by the GUI. On desktops that persist on their own (KDE, GNOME) it is
-refused unless `--force`, because two things restoring layouts will fight.
+`dsplr watch` (M8) is written, and checked on headless sway 1.12 (2026-11-10) by
+plugging outputs in and unplugging them (`swaymsg create_output`,
+`swaymsg output NAME unplug`) under it. Opt-in; it is not started by the GUI.
+
+- **What it does**: stays running, follows the backend's change stream
+  (`Backend::watch`), and each time the set of connected outputs changes,
+  restores the profile `dsplr restore` would pick for them, by the same rules
+  (`dsplr_persist::profile::pick`: an exact fit, else the most recent subset,
+  through `profile::picked` in `apps/dsplr`). The outputs connected when it
+  starts count as a change, so `exec dsplr watch` replaces `dsplr restore --yes`
+  in an autostart. Profiles are read afresh each time, so one saved while it
+  runs is picked next time. No profile for the outputs is said, and nothing
+  changes.
+- **Only the connected set**: a change is the set of `(connector, OutputId)`
+  pairs (`watch::Connected`), so a mode, position, scale, on/off or mirror
+  change does nothing, a monitor moved to another port is a change, and so is an
+  unplug and a plug. That is what keeps it from answering its own apply, or
+  undoing a change the user made by hand. A second guard: a picked profile
+  already on screen (no differences once paired) is said and not applied, so a
+  watch restarted, or a desktop that put the layout back itself, applies
+  nothing.
+- **Debounced**: the displays are read once the changes have been quiet for
+  `watch::QUIET`, so a dock attaching several outputs one after another is one
+  restore, not one per output; but no later than `watch::QUIET_MAX` after the
+  first change not yet read, so a desktop that never stops reporting changes is
+  still read.
+- **Not over another change**: while another change waits to be kept (a
+  `dsplr apply` or `dsplr set` at its prompt, the GUI's confirm dialog, or that
+  change's watchdog reverting it), a restore would replace its revert point and
+  disarm its watchdog. So the revert point says while its change waits: written
+  with the time its watchdog reverts (`RevertPoint::guarded_until_unix_ms`, the
+  `revert_guarded_until_unix_ms` field in `revert.json`), and rewritten without
+  it once kept. The watch treats such a point as busy (`watch::busy`) until that
+  time plus the longest the watchdog's own revert takes
+  (`restore::change_limit`): it says so, leaves the new outputs unhandled, and
+  looks again every `watch::BUSY_RETRY`, restoring once the change is kept or
+  reverted. A revert point from before this field reads as kept. Only the watch
+  waits: a `dsplr apply` started during a watch's restore replaces the watch's
+  revert point, and the watch's keep then says the change was replaced, as for
+  any two changes at once.
+- **Unattended, so kept without asking**: a restore runs `dsplr apply`'s flow as
+  `dsplr restore --yes` does: validate, test, the revert point and its watchdog,
+  apply, re-read, keep. There is no one to ask, and kanshi keeps its profiles
+  the same way; a profile is a layout that was on screen when it was saved, one
+  that does not suit the outputs is not picked or is refused before anything is
+  sent, and `dsplr restore --revert` goes back from the revert point. A restore
+  that fails is said and not retried until the outputs change again. Whether a
+  hotplug restore should instead ask, with a confirm window on the desktop, is
+  the owner's call (`docs/backlog.md`).
+- **KDE and GNOME**: refused (exit `3`) unless `--force`, because KWin and
+  Mutter restore their own saved layout per set of outputs, and two things
+  restoring layouts will fight (`Backend::restores_on_hotplug`).
+- **A dropped watch** (the compositor restarted, or its socket closed) is
+  reconnected: the backend is detected again and a new watch opened, waiting
+  `watch::Backoff`'s doubling delays (`BACKOFF_FIRST` up to `BACKOFF_MAX`)
+  between tries, and giving up (exit `1`) after `RECONNECT_TRIES` failed tries
+  in a row. The tries start afresh only after a watch that worked: one that
+  reported a change, or stayed up for `STAYED_UP`; a watch that opens and ends
+  at once keeps counting, so it is given up on rather than reopened forever.
+  Once reconnected the outputs are checked as at the start, and the KDE and
+  GNOME refusal is checked again, as the desktop may be another one. Checked by
+  hand on headless sway (killed and started again under a running watch,
+  2026-11-10); a Hyprland restart gets a new instance signature, which the
+  watch's environment does not have (`docs/backlog.md`). If the desktop cannot
+  be reached when it starts, it exits at once (`6`, or `1` when no watch can be
+  opened).
+- **Stopping**: SIGINT or SIGTERM ends it with exit `0`. One that arrives during
+  a restore is taken once the restore has finished, so a kept change never
+  leaves its revert point to the watchdog. The sway e2e sends SIGTERM during a
+  restore whose settle runs to its end (adaptive sync on a headless output never
+  reads back as asked), and checks the watch is still running a second later,
+  then exits `0` with the change kept.
+- **Logs** go to stderr, one `dsplr:` line each, as every command's do: the
+  compositor puts its children's stderr in its own log or the journal, and an
+  autostart line can redirect it. Plan 02's `tracing` logs in
+  `$XDG_STATE_HOME/dsplr/logs/` are not added yet (`docs/backlog.md`).
+
+Starting it with the session, one line per compositor (no installer):
+
+| Desktop               | Line                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| Hyprland (Lua config) | `hl.on("hyprland.start", function () hl.exec_cmd("dsplr watch") end)` in `hyprland.lua` |
+| Hyprland (hyprlang)   | `exec-once = dsplr watch` in `hyprland.conf`                                            |
+| sway                  | `exec dsplr watch` in sway's config                                                     |
+| niri                  | `spawn-at-startup "dsplr" "watch"` in `config.kdl`                                      |
+| river                 | `dsplr watch &` in `init`                                                               |
+| labwc                 | `dsplr watch &` in `autostart`                                                          |
+| Wayfire               | `watch = dsplr watch` under `[autostart]` in `wayfire.ini`                              |
+| An XDG autostart      | a `~/.config/autostart/dsplr-watch.desktop` with `Exec=dsplr watch`                     |
+| KDE Plasma, GNOME     | not needed: the desktop restores its own layouts (`dsplr watch --force` if not)         |
+
+The Hyprland Lua line follows the autostart example in Hyprland 0.57.2's default
+config (read in its binary, 2026-11-10); the sway line is what the e2e harness's
+sway runs commands with; the others are each compositor's usual autostart, not
+run here.
 
 Importing kanshi and autorandr profiles into the store is a stretch item.

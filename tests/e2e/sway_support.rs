@@ -146,6 +146,10 @@ pub async fn reload_until(backend: &Backend, expected: &Layout) {
 /// wherever each is), so a saved file is checked here as well.
 pub struct FreshSway {
     pub wlr: Wlr,
+    /// Its Wayland socket and its IPC socket, the `WAYLAND_DISPLAY` and
+    /// `SWAYSOCK` a dsplr run against it is given.
+    pub wayland: PathBuf,
+    pub swaysock: PathBuf,
     _sway: Running,
 }
 
@@ -226,7 +230,18 @@ impl FreshSway {
         .await
         .expect("the fresh sway's output manager");
         assert_eq!(wlr.compositor().await, dsplr_backend::wlr::Compositor::Sway);
-        Self { wlr, _sway: sway }
+        Self {
+            wlr,
+            wayland,
+            swaysock,
+            _sway: sway,
+        }
+    }
+
+    /// Runs `swaymsg` with `args` against this sway, and returns what it
+    /// printed. A command sway refuses fails the test.
+    pub fn swaymsg(&self, args: &[&str]) -> String {
+        swaymsg_to(&self.swaysock, args)
     }
 
     /// Takes snapshots until the layout is `expected`, failing the test if

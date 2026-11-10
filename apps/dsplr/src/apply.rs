@@ -7,11 +7,12 @@ use std::io::{self, BufRead, IsTerminal};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use dsplr_backend::Backend;
 use dsplr_core::flow::{self, Answer, Change, Failure, Flow, Outcome, Step};
 use dsplr_model::{Capabilities, Difference, Layout, OutputEntry, OutputId, assign};
+use dsplr_persist::profile::unix_ms;
 use dsplr_persist::revert::{self, RevertPoint};
 
 use crate::{Exit, restore};
@@ -220,10 +221,10 @@ fn prepare(
         vec![format!("cannot keep a revert point: {error}")]
     };
     let path = revert::default_path().map_err(cannot_keep)?;
-    let point = RevertPoint::new(current.clone());
-    revert::save(&path, &point).map_err(cannot_keep)?;
     let delay = restore::watchdog_delay(confirm_timeout, backend.request_timeout());
     let started = Instant::now();
+    let point = RevertPoint::guarding(current.clone(), unix_ms(SystemTime::now() + delay));
+    revert::save(&path, &point).map_err(cannot_keep)?;
     if let Err(error) = restore::spawn_watchdog(&point.token, delay) {
         let mut why = vec![format!("cannot start the revert watchdog: {error}")];
         if let Err(error) = revert::remove_if(&path, &point.token) {

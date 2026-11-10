@@ -27,8 +27,14 @@ const WATCHDOG_GRACE: Duration = Duration::from_secs(5);
 /// and the apply and settle of dsplr's own revert after a no, so the two
 /// never go back at once even when every request runs to its timeout.
 pub fn watchdog_delay(confirm_timeout: Duration, request_timeout: Duration) -> Duration {
-    let change = request_timeout + settle_limit(request_timeout);
+    let change = change_limit(request_timeout);
     change + confirm_timeout + change + WATCHDOG_GRACE
+}
+
+/// The longest one apply and its settle take on a backend whose requests
+/// take at most `request_timeout`: a change, or a revert ([`go_back`]).
+pub fn change_limit(request_timeout: Duration) -> Duration {
+    request_timeout + settle_limit(request_timeout)
 }
 
 /// Starts the watchdog for the change `token` names: a detached
@@ -168,6 +174,7 @@ mod tests {
             // An apply and its settle, each request running to its timeout,
             // before and after the prompt.
             let change = request + settle_limit(request);
+            assert_eq!(super::change_limit(request), change);
             assert!(settle_limit(request) > SETTLE + request);
             assert!(watchdog_delay(confirm, request) > 2 * change + confirm);
         }

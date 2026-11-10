@@ -361,6 +361,21 @@ impl Backend {
         }
     }
 
+    /// Whether the desktop puts a layout it saved back by itself when the
+    /// connected outputs change: KWin from its `kwinoutputconfig.json`,
+    /// Mutter from its `monitors.xml`, each keeping a layout per set of
+    /// outputs. Something else restoring layouts on hotplug there
+    /// (`dsplr watch`) would fight it.
+    #[must_use]
+    pub const fn restores_on_hotplug(&self) -> bool {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(_) | Self::Kde(_) => true,
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(_) | Self::Wlr(_) => false,
+        }
+    }
+
     /// A way to follow the desktop's changes to its outputs: on wlroots a
     /// connection of its own that dispatches the output manager's `done`
     /// events, on KDE one that dispatches each output device's `done` and

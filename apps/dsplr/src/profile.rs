@@ -186,33 +186,49 @@ pub async fn restore(name: Option<&ProfileName>, options: &apply::Options) -> Ex
         Ok(layout) => layout,
         Err(exit) => return exit,
     };
-    let Some((profile, fit)) = profile::pick(&profiles, &current) else {
+    let Some((profile, fit)) = picked(&profiles, &current) else {
+        return Exit::NoProfile;
+    };
+    eprintln!("dsplr: {}", restoring(profile, fit));
+    apply::onto(&backend, current, &profile.layout, options).await
+}
+
+/// The profile [`profile::pick`] picks among `profiles` for `current`, the
+/// displays as they are now, and how it fits; with none, `None`, said on
+/// stderr.
+pub fn picked<'a>(profiles: &'a [Profile], current: &Layout) -> Option<(&'a Profile, Fit)> {
+    let picked = profile::pick(profiles, current);
+    if picked.is_none() {
         eprintln!(
             "dsplr: no profile is for the outputs connected now ({}), so nothing changed",
-            outputs(&current)
+            outputs(current)
         );
         if profiles.is_empty() {
             eprintln!("dsplr: there are no profiles; `dsplr save --profile NAME` saves one");
         }
-        return Exit::NoProfile;
-    };
+    }
+    picked
+}
+
+/// The line saying `profile`, which fits the outputs connected now as
+/// `fit` says, is being restored.
+pub fn restoring(profile: &Profile, fit: Fit) -> String {
     match fit {
-        Fit::Exact => eprintln!(
-            "dsplr: restoring profile \"{}\", saved for the outputs connected now",
+        Fit::Exact => format!(
+            "restoring profile \"{}\", saved for the outputs connected now",
             profile.name.as_str()
         ),
-        Fit::Subset => eprintln!(
-            "dsplr: restoring profile \"{}\", saved for {} of the outputs connected now; the others stay as they are",
+        Fit::Subset => format!(
+            "restoring profile \"{}\", saved for {} of the outputs connected now; the others stay as they are",
             profile.name.as_str(),
             outputs(&profile.layout)
         ),
     }
-    apply::onto(&backend, current, &profile.layout, options).await
 }
 
 /// The profiles in the store at `dir` that can be read, the others
 /// reported.
-fn readable(dir: &std::path::Path) -> Result<Vec<Profile>, Exit> {
+pub fn readable(dir: &std::path::Path) -> Result<Vec<Profile>, Exit> {
     let listed = profile::list(dir).map_err(|error| {
         eprintln!("dsplr: {error}");
         Exit::Failure
@@ -231,7 +247,7 @@ fn readable(dir: &std::path::Path) -> Result<Vec<Profile>, Exit> {
 }
 
 /// `layout`'s outputs by their identities, comma-separated.
-fn outputs(layout: &Layout) -> String {
+pub fn outputs(layout: &Layout) -> String {
     let names: Vec<String> = layout
         .entries
         .iter()

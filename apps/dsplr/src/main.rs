@@ -27,6 +27,7 @@ mod profile;
 mod restore;
 mod save;
 mod set;
+mod watch;
 
 /// Arrange, size and configure monitors on Hyprland, wlroots compositors,
 /// KDE Plasma, GNOME and X11.
@@ -118,6 +119,18 @@ enum Command {
         token: Option<String>,
         #[command(flatten)]
         apply: ApplyArgs,
+    },
+    /// Stay running, and each time the set of connected outputs changes,
+    /// apply the profile `dsplr restore` would pick for them, as
+    /// `dsplr restore --yes` does: kept without asking, with the revert
+    /// point written for `dsplr restore --revert`. The outputs connected
+    /// when it starts count as a change. Other changes (a mode, a position,
+    /// an output switched off) restore nothing. Stops on SIGINT or SIGTERM.
+    Watch {
+        /// Run on KDE Plasma and GNOME too, which restore their own saved
+        /// layouts when outputs are plugged in.
+        #[arg(long)]
+        force: bool,
     },
     /// List, show and remove the profiles `dsplr save --profile` saves.
     Profile {
@@ -254,6 +267,10 @@ async fn run(command: Command) -> Exit {
         } => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
         Command::Restore { name, apply, .. } => match apply_options(&apply) {
             Ok(options) => profile::restore(name.as_ref(), &options).await,
+            Err(exit) => exit,
+        },
+        Command::Watch { force } => match config() {
+            Ok(config) => watch::run(force, config.confirm.timeout()).await,
             Err(exit) => exit,
         },
         Command::Profile { command } => match command {
@@ -522,6 +539,18 @@ mod tests {
         ] {
             let error = Cli::try_parse_from(args).unwrap_err();
             assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn watch_takes_force_only() {
+        let cli = Cli::try_parse_from(["dsplr", "watch"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Watch { force: false })));
+        let cli = Cli::try_parse_from(["dsplr", "watch", "--force"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Watch { force: true })));
+        for flag in ["--yes", "--dry-run"] {
+            let error = Cli::try_parse_from(["dsplr", "watch", flag]).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{flag}: {error}");
         }
     }
 

@@ -61,6 +61,13 @@ backend thread follows the desktop's changes (`Backend::watch`); keys are
 rebound in `config.toml`'s `[keys]`; text is the system's sans-serif. What M3
 still lists is in `docs/plan/06-gui.md` ("Still to build in M3").
 
+M8 is under way: `dsplr watch` (`apps/dsplr/src/watch.rs`) restores the picked
+profile, kept without asking, each time the connected outputs change, with the
+rules in `docs/plan/05-persistence-and-profiles.md` ("Hotplug profiles").
+`apps/dsplr/tests/sway_e2e.rs` plugs outputs in and unplugs them under it on a
+second headless sway 1.12 of its own (2026-11-10). The GUI's profile picker and
+kanshi / autorandr import are still to build.
+
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
 only as a way to group the work. The Hyprland e2e needs `kwin_wayland` to nest
@@ -230,6 +237,27 @@ milestone:
   - `Persisted::Profile(name)` (plan 05's intro) was not added: profiles are
     saved by the CLI through `dsplr_persist::profile`, not through
     `Backend::persist`; the GUI may want it at M8.
+
+- **`dsplr watch`, decided while building it (2026-11-10); confirm or change**:
+  - A hotplug restore is kept without asking, as `dsplr restore --yes` and
+    kanshi keep theirs: there is no terminal, and the revert point and its
+    watchdog still guard the apply. The alternative is a confirm window on the
+    desktop (the GUI's confirm dialog, opened by the daemon), which would make a
+    hotplug restore that hides a screen revert itself unless kept, at the cost
+    of a window popping up at every dock and undock, and the daemon depending on
+    the GUI stack. Nothing is built for it yet.
+  - The outputs connected when it starts count as a change, so it restores at
+    once and `exec dsplr watch` replaces `dsplr restore --yes` in an autostart.
+    After a reconnect it checks again the same way.
+  - Its messages go to stderr, not plan 02's `tracing` logs in
+    `$XDG_STATE_HOME/dsplr/logs/`: the compositor already puts its children's
+    stderr in its log or the journal, and no other command logs to a file yet.
+    Adding `tracing` and `tracing-subscriber` (on plan 02's list) is the way to
+    a log file, for every command at once.
+  - Giving up: after `RECONNECT_TRIES` failed tries in a row to reach the
+    desktop again, it exits `1` rather than polling forever after the session
+    ended. A watch that opens and ends at once does not start the tries afresh;
+    only one that reported a change or stayed up for `STAYED_UP` does.
 
 ## Open work in the Linux-owned crates
 
@@ -639,6 +667,33 @@ milestone:
 - **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
 
+- **`dsplr watch` was run on sway only**: its e2e is in `sway_e2e.rs`. Not run
+  on niri, Hyprland, KDE or GNOME; each backend's `Watch` is tested in its own
+  e2e, and the daemon uses nothing else from the backend that `dsplr restore`
+  does not. The niri harness has one nested output and no way to add another.
+- **`dsplr watch` after a Hyprland restart**: Hyprland gives a new instance its
+  own `HYPRLAND_INSTANCE_SIGNATURE`, and the watch keeps the old one from its
+  environment, so detection finds no Hyprland and the watch gives up after its
+  tries. Not observed; usually the session (and the watch with it) ends with
+  Hyprland anyway. Finding the newest instance under `$XDG_RUNTIME_DIR/hypr/`
+  would fix it.
+- **The reconnect was checked by hand only**: a second headless sway killed and
+  started again in the same runtime directory under a running watch, which said
+  it was following the displays again (2026-11-10). No e2e covers it.
+- **`dsplr watch`'s KDE and GNOME refusal**: checked once in
+  `apps/dsplr/tests/mutter_e2e.rs` (`dsplr watch` exits `3` without `--force`),
+  which runs only in CI's VM and has not run since it was added. The same check
+  after a reconnect (a restart into another desktop) has no test.
+- **Only `dsplr watch` waits for a change in flight**: the revert point's
+  `guarded_until_unix_ms` makes the watch hold back while a `dsplr apply`, a
+  `dsplr set` or the GUI waits to be kept. The other way round is not
+  coordinated: a `dsplr apply` started during a watch's restore replaces the
+  watch's revert point, and the watch's keep then reports the change replaced. A
+  lock every flow takes would cover both; not built, as the window is a
+  restore's few seconds.
+- **The rest of M8**: the GUI's profile picker, and importing kanshi and
+  autorandr profiles (stretch).
+
 ## Open work in the Windows-owned crates
 
 - **`dsplr set --enable` does not place the output**: a desktop that reports a
@@ -863,6 +918,15 @@ and the `monitors.lua` writer:
   own seat (seatd) with a virtio GPU can, which is what CI does.
 
 ## Behaviour that surprised us but is not a bug
+
+- **sway numbers each new headless output afresh**: after
+  `swaymsg create_output` and `swaymsg output HEADLESS-3 unplug` (sway 1.12
+  supports `unplug` for headless, Wayland and X11 outputs), the next output is
+  `HEADLESS-4`, not `HEADLESS-3` again, and its description's number
+  (`Headless output N`) need not match its connector's. A profile for a
+  hotplugged headless output names it by the description's first words
+  (`Headless output`), and `sway_e2e.rs` runs `dsplr watch` on a sway of its own
+  so the harness's outputs keep the names other tests use.
 
 - **Headless sway needs one keyboard held for the whole session, or keys are
   lost** (a harness requirement, cause found by the crcbl session, 2026-11-10).

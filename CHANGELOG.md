@@ -31,6 +31,26 @@ and this project adheres to
 
 ### Added
 
+- `dsplr watch`, the hotplug profile daemon: it stays running and, each time the
+  set of connected outputs changes (and once when it starts), applies the
+  profile `dsplr restore` would pick for them, kept without asking as
+  `dsplr restore --yes` keeps one, with the revert point and watchdog every
+  change has. Mode, position and other changes, its own applies included,
+  restore nothing; bursts of changes (a dock) are read once they are quiet, or
+  after a few seconds at most; a profile already on screen is not applied again;
+  with no profile for the outputs it says so and changes nothing. While another
+  change waits to be kept (a `dsplr apply` at its prompt, the GUI's confirm
+  dialog) it does not restore over it, and restores once that change is kept or
+  reverted. When the compositor goes away it reconnects with backoff, giving up
+  on a watch that cannot stay open, and SIGINT or SIGTERM stops it (exit `0`),
+  after a restore under way has finished. On KDE Plasma and GNOME, which restore
+  their own layouts, it is refused (exit `3`) unless `--force`. Start it from
+  the compositor's autostart, for example `exec dsplr watch` in sway's config;
+  its messages go to stderr.
+- The revert point (`$XDG_STATE_HOME/dsplr/revert.json`) now also records, while
+  its change waits to be kept, when its watchdog reverts it
+  (`revert_guarded_until_unix_ms`); the field is removed once the change is
+  kept.
 - `dsplr` with no command opens the GUI: a window showing every enabled output
   as a rectangle at its logical size, scaled to fit, labelled with its
   connector, description and mode, with disabled outputs in a tray below and the

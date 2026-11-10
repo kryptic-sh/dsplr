@@ -230,7 +230,7 @@ pub fn load(dir: &Path, name: &ProfileName) -> Result<Option<Profile>, ProfileEr
         path: path.clone(),
         reason,
     };
-    let (layout, saved) = layout_json::read(&text, SAVED_KEY).map_err(invalid)?;
+    let (layout, [saved]) = layout_json::read(&text, [SAVED_KEY]).map_err(invalid)?;
     let saved_unix_ms = match saved {
         Some(saved) => saved
             .as_u64()
@@ -300,11 +300,14 @@ pub fn list(dir: &Path) -> Result<Vec<Result<Profile, ProfileError>>, ProfileErr
 pub fn save(dir: &Path, profile: &Profile) -> Result<PathBuf, ProfileError> {
     let path = path(dir, &profile.name);
     refuse_symlink(&path)?;
-    let text = layout_json::write(&profile.layout, SAVED_KEY, profile.saved_unix_ms.into())
-        .map_err(|reason| ProfileError::Invalid {
-            path: path.clone(),
-            reason,
-        })?;
+    let text = layout_json::write(
+        &profile.layout,
+        &[(SAVED_KEY, profile.saved_unix_ms.into())],
+    )
+    .map_err(|reason| ProfileError::Invalid {
+        path: path.clone(),
+        reason,
+    })?;
     fs::create_dir_all(dir).map_err(ProfileError::io(dir))?;
     write_atomic(&path, &text).map_err(ProfileError::io(&path))?;
     Ok(path)

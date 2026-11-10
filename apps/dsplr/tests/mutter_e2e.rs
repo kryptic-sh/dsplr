@@ -1,5 +1,6 @@
 //! `dsplr backend`, `dsplr list`, `dsplr apply` (with and without
-//! `--dry-run`), `dsplr restore --revert` and `dsplr save` against a real
+//! `--dry-run`), `dsplr restore --revert`, `dsplr save` and the refusal of
+//! `dsplr watch` without `--force` against a real
 //! Mutter on its headless backend, which tests a layout (`verify`) and
 //! saves `monitors.xml` on a `persistent` apply.
 //!
@@ -84,6 +85,15 @@ async fn dsplr_lists_tests_applies_reverts_and_saves_on_mutter() {
     assert!(text.contains("native persistence"), "{text}");
     assert!(!text.contains("saves on every apply"), "{text}");
     assert!(!text.contains("gaps allowed"), "{text}");
+
+    // Mutter restores its own layouts when outputs are plugged in, so
+    // `dsplr watch` is refused without --force, before it changes anything.
+    let (code, text) = dsplr(&["watch"]);
+    assert_eq!(code, Some(3), "{text}");
+    assert!(
+        text.contains("gnome restores its own saved layouts") && text.contains("--force"),
+        "{text}"
+    );
 
     let (code, text) = dsplr(&["list", "--json"]);
     assert_eq!(code, Some(0), "{text}");

@@ -18,7 +18,7 @@ dsplr-core.workspace = true
 dsplr-gui.workspace = true
 dsplr-model.workspace = true
 dsplr-persist.workspace = true
-tokio = { version = "1.54.1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.54.1", features = ["macros", "rt", "signal", "sync", "time"] }
 
 [lints]
 workspace = true

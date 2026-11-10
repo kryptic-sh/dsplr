@@ -9,6 +9,11 @@
 //! Keeping a change gives the file a new token, so the watchdog stands down
 //! while `dsplr restore --revert` can still go back by hand; reverting
 //! removes it.
+//!
+//! While its change waits to be kept, a revert point also says when the
+//! watchdog reverts it ([`RevertPoint::guarded_until_unix_ms`]), so another
+//! change made meanwhile (`dsplr watch`'s) can tell one is in flight and
+//! wait, rather than replace the revert point and disarm that watchdog.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,6 +30,9 @@ use crate::managed::write_atomic;
 pub struct RevertPoint {
     pub token: String,
     pub layout: Layout,
+    /// While the change waits to be kept or reverted: when its watchdog
+    /// reverts it, in milliseconds since the Unix epoch. `None` once kept.
+    pub guarded_until_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,10 +52,32 @@ pub enum RevertError {
 /// The field the token is kept in, beside the layout's own fields.
 const TOKEN_KEY: &str = "revert_token";
 
+/// The field [`RevertPoint::guarded_until_unix_ms`] is kept in; absent once
+/// the change is kept.
+const GUARDED_KEY: &str = "revert_guarded_until_unix_ms";
+
 impl RevertPoint {
-    /// A revert point for `layout` with a new token: the process id and the
-    /// time tell processes apart, and a counter tells apart two made in one
-    /// process within the clock's resolution.
+    /// A revert point for `layout` whose change waits to be kept, which its
+    /// watchdog reverts at `until_unix_ms`, with a new token
+    /// ([`RevertPoint::new`]).
+    pub fn guarding(layout: Layout, until_unix_ms: u64) -> Self {
+        Self {
+            guarded_until_unix_ms: Some(until_unix_ms),
+            ..Self::new(layout)
+        }
+    }
+
+    /// Whether its change still waits to be kept at `now_unix_ms`: guarded,
+    /// and its watchdog's time not yet come.
+    pub fn waiting(&self, now_unix_ms: u64) -> bool {
+        self.guarded_until_unix_ms
+            .is_some_and(|until| now_unix_ms < until)
+    }
+
+    /// A revert point for `layout` with a new token, for a change that is
+    /// kept (no longer guarded): the process id and the time tell processes
+    /// apart, and a counter tells apart two made in one process within the
+    /// clock's resolution.
     pub fn new(layout: Layout) -> Self {
         static MADE: AtomicU64 = AtomicU64::new(0);
         let nanos = SystemTime::now()
@@ -57,6 +87,7 @@ impl RevertPoint {
         Self {
             token: format!("{}-{nanos}-{count}", std::process::id()),
             layout,
+            guarded_until_unix_ms: None,
         }
     }
 }
@@ -86,8 +117,11 @@ pub fn save(path: &Path, point: &RevertPoint) -> Result<(), RevertError> {
         path: path.to_owned(),
         reason,
     };
-    let text = layout_json::write(&point.layout, TOKEN_KEY, point.token.clone().into())
-        .map_err(invalid)?;
+    let mut extra = vec![(TOKEN_KEY, point.token.clone().into())];
+    if let Some(until) = point.guarded_until_unix_ms {
+        extra.push((GUARDED_KEY, until.into()));
+    }
+    let text = layout_json::write(&point.layout, &extra).map_err(invalid)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(io_error)?;
     }
@@ -114,17 +148,29 @@ pub fn load(path: &Path) -> Result<Option<RevertPoint>, RevertError> {
         path: path.to_owned(),
         reason,
     };
-    let (layout, token) = layout_json::read(&text, TOKEN_KEY).map_err(invalid)?;
+    let (layout, [token, guarded]) =
+        layout_json::read(&text, [TOKEN_KEY, GUARDED_KEY]).map_err(invalid)?;
     let Some(serde_json::Value::String(token)) = token else {
         return Err(invalid(format!("no `{TOKEN_KEY}`")));
     };
-    Ok(Some(RevertPoint { token, layout }))
+    let guarded_until_unix_ms = guarded
+        .map(|until| {
+            until
+                .as_u64()
+                .ok_or_else(|| invalid(format!("`{GUARDED_KEY}` is not a whole number: {until}")))
+        })
+        .transpose()?;
+    Ok(Some(RevertPoint {
+        token,
+        layout,
+        guarded_until_unix_ms,
+    }))
 }
 
 /// Marks the change `token` guards as kept: if the revert point at `path`
-/// still holds `token`, it is saved again under a new one, so the watchdog
-/// holding `token` does not revert, and the layout stays for a revert by
-/// hand. Returns whether it held `token`.
+/// still holds `token`, it is saved again under a new one and no longer
+/// guarded, so the watchdog holding `token` does not revert, and the layout
+/// stays for a revert by hand. Returns whether it held `token`.
 ///
 /// # Errors
 ///
@@ -188,9 +234,22 @@ mod tests {
     fn a_saved_revert_point_loads_back_with_its_token() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state").join("dsplr").join("revert.json");
-        let point = RevertPoint::new(layout());
-        save(&path, &point).unwrap();
-        assert_eq!(load(&path).unwrap(), Some(point));
+        for point in [
+            RevertPoint::new(layout()),
+            RevertPoint::guarding(layout(), 1_000),
+        ] {
+            save(&path, &point).unwrap();
+            assert_eq!(load(&path).unwrap(), Some(point));
+        }
+    }
+
+    #[test]
+    fn a_change_waits_until_its_watchdog_s_time_unless_kept() {
+        let point = RevertPoint::guarding(layout(), 1_000);
+        assert!(point.waiting(0));
+        assert!(point.waiting(999));
+        assert!(!point.waiting(1_000), "the watchdog's time has come");
+        assert!(!RevertPoint::new(layout()).waiting(0), "kept");
     }
 
     #[test]
@@ -224,7 +283,7 @@ mod tests {
     fn keeping_a_change_keeps_its_layout_under_a_new_token() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("revert.json");
-        let point = RevertPoint::new(layout());
+        let point = RevertPoint::guarding(layout(), u64::MAX);
         save(&path, &point).unwrap();
         assert!(!keep(&path, "someone-else").unwrap());
         assert_eq!(load(&path).unwrap().as_ref(), Some(&point));
@@ -232,6 +291,8 @@ mod tests {
         let kept = load(&path).unwrap().expect("still there");
         assert_eq!(kept.layout, point.layout);
         assert_ne!(kept.token, point.token);
+        assert_eq!(kept.guarded_until_unix_ms, None, "no longer guarded");
+        assert!(!kept.waiting(0));
         assert!(
             !remove_if(&path, &point.token).unwrap(),
             "the watchdog's token is spent"
@@ -249,6 +310,12 @@ mod tests {
             .unwrap()
             .replace("revert_token", "something_else");
         fs::write(&path, without_token).unwrap();
+        assert!(matches!(load(&path), Err(RevertError::Invalid { .. })));
+        save(&path, &RevertPoint::guarding(layout(), 5)).unwrap();
+        let guarded_text = fs::read_to_string(&path)
+            .unwrap()
+            .replace("_unix_ms\": 5", "_unix_ms\": \"soon\"");
+        fs::write(&path, guarded_text).unwrap();
         assert!(matches!(load(&path), Err(RevertError::Invalid { .. })));
         fs::write(&path, "not json").unwrap();
         assert!(matches!(load(&path), Err(RevertError::Invalid { .. })));
