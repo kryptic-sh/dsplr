@@ -1,9 +1,13 @@
 //! A [`Layout`] as the requests of one `zwlr_output_configuration_v1`: what
 //! each head is set to, decided before anything is sent.
 
-use dsplr_model::{AdaptiveSync, Layout, Mode, ModeHandle, OutputEntry, OutputId};
+use dsplr_model::{AdaptiveSync, Layout, OutputEntry};
 
-use super::heads::{ADAPTIVE_SYNC_DISABLED, ADAPTIVE_SYNC_ENABLED, Head, HeadMode, scale_to_fixed};
+use crate::wayland::heads::{ADAPTIVE_SYNC_DISABLED, ADAPTIVE_SYNC_ENABLED, Head, scale_to_fixed};
+use crate::wayland::plan::{ModeChoice, PlanError, assign, choose_mode};
+
+/// The protocol named in a [`PlanError::Unsupported`].
+const PROTOCOL: &str = "wlr-output-management";
 
 /// The first manager version with adaptive sync.
 pub const ADAPTIVE_SYNC_SINCE: u32 = 4;
@@ -22,6 +26,7 @@ pub enum HeadConfig {
 /// The settings of an enabled head.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
+    /// `set_mode` with a listed mode's object, or `set_custom_mode`.
     pub mode: ModeChoice,
     pub position: (i32, i32),
     /// A `wl_output.transform` value.
@@ -32,46 +37,6 @@ pub struct Settings {
     pub adaptive_sync: Option<u32>,
 }
 
-/// How a head's mode is set.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ModeChoice {
-    /// `set_mode` with the mode object of this [`HeadMode::handle`].
-    Listed(u64),
-    /// `set_custom_mode`, for a mode no object of the head has.
-    Custom {
-        width: i32,
-        height: i32,
-        refresh_mhz: i32,
-    },
-}
-
-/// Why a layout cannot be put into a configuration. Nothing is sent.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum PlanError {
-    #[error("{0}: no head is on its connector")]
-    NotConnected(OutputId),
-    #[error("{0} is in the layout more than once")]
-    Twice(String),
-    #[error("{0}: enabled without a mode")]
-    NoMode(String),
-    #[error(
-        "{connector}: mode {width}x{height} at {refresh_mhz} mHz is out of the protocol's range"
-    )]
-    ModeRange {
-        connector: String,
-        width: u32,
-        height: u32,
-        refresh_mhz: u32,
-    },
-    #[error("{connector}: scale {scale} is not a scale a wl_fixed can hold")]
-    Scale { connector: String, scale: String },
-    #[error("{connector}: {what} cannot be set through wlr-output-management")]
-    Unsupported {
-        connector: String,
-        what: &'static str,
-    },
-}
-
 /// The configuration for `layout`, one [`HeadConfig`] per head of `heads`,
 /// in their order, for a manager of `version`.
 ///
@@ -80,29 +45,15 @@ pub enum PlanError {
 /// output, colour preset, bit depth, overscan, RGB range, automatic adaptive
 /// sync, or adaptive sync before version 4) is refused rather than dropped.
 pub fn plan(layout: &Layout, heads: &[Head], version: u32) -> Result<Vec<HeadConfig>, PlanError> {
-    let mut configs: Vec<Option<HeadConfig>> = vec![None; heads.len()];
-    for entry in &layout.entries {
-        let index = entry
-            .connector()
-            .and_then(|connector| heads.iter().position(|head| head.name == connector))
-            .ok_or_else(|| PlanError::NotConnected(entry.id.clone()))?;
-        let head = &heads[index];
-        if configs[index].is_some() {
-            return Err(PlanError::Twice(head.name.clone()));
-        }
-        configs[index] = Some(config(entry, head, version)?);
-    }
-    Ok(configs
+    assign(layout, heads)?
         .into_iter()
         .zip(heads)
-        .map(|(config, head)| {
-            config.unwrap_or(if head.enabled {
-                HeadConfig::Unchanged
-            } else {
-                HeadConfig::Disable
-            })
+        .map(|(entry, head)| match entry {
+            Some(entry) => config(entry, head, version),
+            None if head.enabled => Ok(HeadConfig::Unchanged),
+            None => Ok(HeadConfig::Disable),
         })
-        .collect())
+        .collect()
 }
 
 fn config(entry: &OutputEntry, head: &Head, version: u32) -> Result<HeadConfig, PlanError> {
@@ -110,6 +61,7 @@ fn config(entry: &OutputEntry, head: &Head, version: u32) -> Result<HeadConfig, 
     let unsupported = |what| PlanError::Unsupported {
         connector: head.name.clone(),
         what,
+        protocol: PROTOCOL,
     };
     let refused = [
         (state.mirror_of.is_some(), "mirroring"),
@@ -155,75 +107,6 @@ fn config(entry: &OutputEntry, head: &Head, version: u32) -> Result<HeadConfig, 
     }))
 }
 
-/// The mode object `mode` names on `head`, or a custom mode when none does.
-///
-/// A head may list one size and refresh more than once (interlaced and
-/// progressive variants), so a mode read from this compositor carries its
-/// ordinal among its head's modes ([`HeadMode::handle`]), and `head` (the
-/// same connector, read again on this connection) gives back the object at
-/// that ordinal as long as it still has that size and refresh. A mode
-/// without one (from a file), or whose ordinal now names another size,
-/// takes the
-/// object the head is driven at when that matches, else the first that
-/// matches within the refresh tolerance. With no match at all it is a custom
-/// mode, which the compositor's own `test` is the check for.
-fn choose_mode(head: &Head, mode: &Mode) -> Result<ModeChoice, PlanError> {
-    let exact = |listed: &&HeadMode| {
-        u32::try_from(listed.width) == Ok(mode.width)
-            && u32::try_from(listed.height) == Ok(mode.height)
-            && u32::try_from(listed.refresh_mhz) == Ok(mode.refresh_mhz)
-    };
-    if let Some(ModeHandle(handle)) = mode.handle
-        && let Some(listed) = head
-            .modes
-            .iter()
-            .filter(exact)
-            .find(|listed| listed.handle == handle)
-    {
-        return Ok(ModeChoice::Listed(listed.handle));
-    }
-
-    let matching: Vec<&HeadMode> = head
-        .modes
-        .iter()
-        .filter(|listed| {
-            let (Ok(width), Ok(height), Ok(refresh_mhz)) = (
-                u32::try_from(listed.width),
-                u32::try_from(listed.height),
-                u32::try_from(listed.refresh_mhz),
-            ) else {
-                return false;
-            };
-            mode.matches(&Mode::new(width, height, refresh_mhz))
-        })
-        .collect();
-    let chosen = matching
-        .iter()
-        .find(|listed| Some(listed.handle) == head.current_mode)
-        .or_else(|| matching.first());
-    if let Some(listed) = chosen {
-        return Ok(ModeChoice::Listed(listed.handle));
-    }
-
-    match (
-        i32::try_from(mode.width),
-        i32::try_from(mode.height),
-        i32::try_from(mode.refresh_mhz),
-    ) {
-        (Ok(width), Ok(height), Ok(refresh_mhz)) => Ok(ModeChoice::Custom {
-            width,
-            height,
-            refresh_mhz,
-        }),
-        _ => Err(PlanError::ModeRange {
-            connector: head.name.clone(),
-            width: mode.width,
-            height: mode.height,
-            refresh_mhz: mode.refresh_mhz,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
@@ -231,8 +114,8 @@ mod tests {
         Transform,
     };
 
-    use super::super::heads::{layout, tests::owner};
     use super::{HeadConfig, ModeChoice, PlanError, Settings, plan};
+    use crate::wayland::heads::{layout, tests::owner};
 
     const V4: u32 = 4;
 
@@ -397,7 +280,8 @@ mod tests {
                 plan(&layout, &heads, V4),
                 Err(PlanError::Unsupported {
                     connector: "HDMI-A-1".into(),
-                    what: expected
+                    what: expected,
+                    protocol: "wlr-output-management",
                 })
             );
         }

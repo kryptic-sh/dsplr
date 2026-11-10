@@ -7,10 +7,11 @@ verified. Delete an entry when it ships; `git log` keeps the history.
 
 M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
-field with `hyprctl -j monitors all` and matched. Detection knows Hyprland and
-wlroots compositors (`wlr`, over `zwlr_output_manager_v1`, which reads, tests
-and applies; its e2e runs on headless sway). Build order is
-`docs/plan/11-milestones.md`.
+field with `hyprctl -j monitors all` and matched. Detection knows Hyprland, KDE
+Plasma (`kde`, over KWin's own protocols, which reads and applies; built at M5,
+its e2e not yet run, below) and wlroots compositors (`wlr`, over
+`zwlr_output_manager_v1`, which reads, tests and applies; its e2e runs on
+headless sway). Build order is `docs/plan/11-milestones.md`.
 
 M2 is under way. `Backend::apply` sets a whole layout on Hyprland in one `eval`
 (`Hyprland::apply`, built on `dsplr_persist::hyprland::monitor_calls`), and the
@@ -230,6 +231,58 @@ milestone:
 
 ## Open work in the Linux-owned crates
 
+- **The KDE e2e has not run anywhere** (`crates/dsplr-backend/tests/kwin_e2e.rs`
+  and `apps/dsplr/tests/kwin_e2e.rs`, under `tests/e2e/headless-kwin.sh`): the
+  owner's machine has no `kwin_wayland`, so their first run is CI's `kwin`
+  entry. Everything the `kde` backend does against a live KWin is unchecked
+  until then; what it rests on was read in KWin 6.8.2's source
+  (`docs/plan/04-backends.md#kde-plasma-6-kde`), not observed. The assumptions
+  most likely to fail first: that `--virtual --output-count 3` gives three
+  outputs named `Virtual-*` with one 1920x1080@60 mode each and one of them
+  primary; that KWin offers its globals soon after its socket appears (the tests
+  retry detection for `KWIN_WAIT`); that a mirror of a virtual output reads back
+  as one; that `failure_reason` is English with no translations installed
+  ("negative"); that a priority change alone emits a new output order; and that
+  `kwin_wayland --version` prints without a session (the harness gives it a time
+  limit). The GUI e2e was not run either.
+- **KDE custom modes**: KWin 6.8 takes them as a mode list per output
+  (`create_mode_list`, `set_resolution`, `set_refresh_rate`, `add_mode`, then
+  `set_custom_modes` on the configuration, from management version 18), which
+  adds the modes rather than switching to one: the apply would have to send the
+  list, then pick the new mode object in a second configuration once the device
+  announces it. Until then `Capabilities::custom_modes` is off on KDE and a mode
+  the output does not list is refused before sending. Virtual outputs have the
+  `custom_modes` capability, so the e2e could cover it.
+- **KWin before the device registry**: KWin offers devices only through
+  `kde_output_device_registry_v2` (version 21 or later) in 6.8; older Plasma 6
+  releases published each `kde_output_device_v2` as a global instead, which
+  dsplr does not bind, so on those `dsplr backend` reports the registry missing
+  or too old. Supporting them means binding each device global and following
+  `wl_registry.global_remove`, tested against a KWin that old. Which KWin
+  release first shipped the registry was not checked.
+- **KDE hotplug is not tested**: `kwin_wayland --virtual` makes its outputs at
+  start, and nothing outside KWin adds one, so the KDE watch test covers changes
+  made by another client and a new output order, not an output plugged in or
+  removed (`removed` and a new registry `output`).
+- **The GUI does not warn before an apply on KDE** that KWin saves it (plan 02,
+  step 7, and `Capabilities::saves_on_apply`); `dsplr backend` lists "saves on
+  every apply", and `dsplr save` says the layout is already saved.
+- **KWin's other output fields are not read**: EDID, EISA id, HDR, wide colour
+  gamut, ICC profile, brightness, max bits per colour and the rest. The EISA id
+  is the PNP vendor code plan 03 wants `make` normalised to, so it is the first
+  candidate once that normalisation is built.
+- **An output KWin added or removed while a configuration was made** fails it
+  with "One of the relevant outputs is no longer available", reported as a
+  refusal (`Error::is_refusal`), not as stale: the reason is translated
+  (`i18n`), so dsplr cannot tell it from another refusal by its text.
+- **`crcbl-wl-scanner` refuses CDATA**, which every KDE protocol file uses for
+  its copyright, so `crates/dsplr-backend/build.rs` turns each CDATA section
+  into escaped text before parsing (`without_cdata`) and the vendored files stay
+  unmodified. Teaching the scanner's reader CDATA would remove that step; it is
+  crcbl's call.
+- **Detection opens a Wayland connection for the KDE check** on every desktop
+  that is not Hyprland, before the wlroots check opens its own: one more
+  connection and roundtrip per command on wlroots compositors. Not measured.
 - **Hyprland adaptive sync**: the model now says "not known" (`None`) and the
   writer writes `vrr = 0` for off, so `Backend::capabilities` can list
   `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
@@ -632,12 +685,11 @@ From the plan review (2026-11-04), each checked against its source:
 
 - Hyprland's `wlr-output-management` `test` is a stub that always succeeds
   (`src/protocols/OutputManagement.cpp`, main).
-- KDE's `kde_output_management_v2` (v12) has no test request, requires no gaps
-  or overlaps, and the priority order is `kde_output_order_v1`
-  (`plasma-wayland-protocols` in `wayland-protocols-plasma` 0.3.12).
-- KWin 6.8.2 (`libkwin.so.6.8.2`) contains `set_custom_modes`,
-  `set_replication_source` and `applyMirroring`, which the crate's protocol
-  files lack.
+- KDE's `kde_output_management_v2` has no test request, and the priority order
+  is `kde_output_order_v1`. Rechecked at M5 against `plasma-wayland-protocols`
+  v1.23.0 and KWin 6.8.2's source: its `position` request's "no gaps or
+  overlaps" is not enforced by KWin, and KWin 6.8 lists devices only through
+  `kde_output_device_registry_v2` (`docs/plan/04-backends.md`).
 - Mutter's `ApplyMonitorsConfig`: `temporary` never reverts; `persistent` starts
   GNOME Shell's confirm and saves only when kept; the timeout is
   `DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT`; stale serials and a policy switch
@@ -661,13 +713,16 @@ sway's `include` was checked on headless sway 1.12 (2026-11-10): a relative
 path, `~`, `$HOME`, `$XDG_CONFIG_HOME` and an absolute path load; a quoted
 absolute path with a space in it does not.
 
-Not verified by anyone: that KWin saves on every protocol apply; that Mutter
-reports `vendor` as a PNP code (why `OutputId` normalises make from the EDID);
-COSMIC's protocol offer and whether it persists outputs itself; GNOME Shell
-accepting `ShowMonitorLabels` from another client; the Xorg dummy driver giving
-several RandR outputs; whether an `eval` of `hl.monitor` survives a protocol
-apply; KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
-backend's milestone.
+Read in KWin 6.8.2's source but not yet observed: that KWin saves
+`kwinoutputconfig.json` on every successful protocol apply
+(`Workspace::applyOutputConfiguration` calls
+`OutputConfigurationStore::storeConfig`); the KDE e2e checks it, and has not
+run. Not verified by anyone: that Mutter reports `vendor` as a PNP code (why
+`OutputId` normalises make from the EDID); COSMIC's protocol offer and whether
+it persists outputs itself; GNOME Shell accepting `ShowMonitorLabels` from
+another client; the Xorg dummy driver giving several RandR outputs; whether an
+`eval` of `hl.monitor` survives a protocol apply; KDE's confirm timeout; the
+RandR 1.5 details. Each is checked in its backend's milestone.
 
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off

@@ -323,7 +323,10 @@ async fn a_saved_layout_is_what_sway_reads_back_after_a_reload(backend: &Backend
             .expect("sway applies it");
         saved = snapshot(backend).await;
         assert_eq!(entry(&saved, "HEADLESS-2").state.transform, transform);
-        let Persisted::File(file) = backend.persist(&saved, None).await.expect("saved");
+        let persisted = backend.persist(&saved, None).await.expect("saved");
+        let Persisted::File(file) = persisted else {
+            panic!("not saved to a file: {persisted:?}");
+        };
         assert_eq!(file.path, outputs);
         assert_eq!(file.main_config, sway_config());
         assert_eq!(file.created, round == 0, "{transform}");

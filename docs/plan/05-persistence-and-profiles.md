@@ -210,9 +210,12 @@ second niri on the saved file, and by `niri validate` on what was written.
 
 ## KDE and GNOME
 
-The desktop saves it. `persist` on KDE is a no-op returning
-`Persisted::ByDesktop` (KWin stores applied configs). On GNOME it is the
-`persistent` method of `ApplyMonitorsConfig`, which writes `monitors.xml`.
+The desktop saves it. `persist` on KDE writes nothing and returns
+`Persisted::ByDesktop`: KWin writes every configuration it applies to
+`kwinoutputconfig.json` ([04](04-backends.md#kde-plasma-6-kde)). Since KWin has
+saved only what it applied, a layout other than the one on screen is
+`Unsupported`, as on niri. On GNOME it is the `persistent` method of
+`ApplyMonitorsConfig`, which writes `monitors.xml`.
 
 ## X11
 

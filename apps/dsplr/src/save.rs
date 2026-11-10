@@ -152,7 +152,10 @@ fn saved(persisted: &Persisted) -> Exit {
 /// Where the layout went, and what is left for the user to do, one message
 /// each.
 pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
-    let Persisted::File(saved) = persisted;
+    let saved = match persisted {
+        Persisted::File(saved) => saved,
+        Persisted::ByDesktop { by } => return vec![format!("already saved, by {by}")],
+    };
     let mut messages = vec![format!("saved to {}", saved.path.display())];
     messages.extend(
         saved
@@ -245,6 +248,17 @@ mod tests {
             included,
             kept: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_layout_the_desktop_saved_says_so_and_names_no_file() {
+        let messages = super::saved_messages(&dsplr_backend::Persisted::ByDesktop {
+            by: "KWin, in its kwinoutputconfig.json, when it applied it",
+        });
+        assert_eq!(
+            messages,
+            ["already saved, by KWin, in its kwinoutputconfig.json, when it applied it"]
+        );
     }
 
     #[test]

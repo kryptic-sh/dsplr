@@ -1,5 +1,6 @@
-//! The heads `zwlr_output_manager_v1` describes, as plain data, and those as
-//! dsplr's [`Layout`].
+//! The outputs a Wayland output-management protocol describes, as plain
+//! data, and those as dsplr's [`Layout`]: `zwlr_output_manager_v1`'s heads,
+//! and the part of KDE's output devices they have in common.
 
 use dsplr_model::{
     AdaptiveSync, Layout, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState, Transform,
@@ -100,6 +101,12 @@ pub enum SnapshotError {
     AdaptiveSync { connector: String, value: u32 },
     #[error("{connector} is enabled, but the compositor named no current mode for it")]
     NoCurrentMode { connector: String },
+    #[error("{connector}: VRR policy {value} is not one KDE's protocol defines")]
+    VrrPolicy { connector: String, value: u32 },
+    #[error("{connector}: overscan {value}% is more than dsplr can hold")]
+    Overscan { connector: String, value: u32 },
+    #[error("{connector}: RGB range {value} is not one KDE's protocol defines")]
+    RgbRange { connector: String, value: u32 },
 }
 
 /// The scale a `wl_fixed` holds.
@@ -130,7 +137,8 @@ pub fn layout(heads: &[Head]) -> Result<Layout, SnapshotError> {
     Ok(Layout { entries })
 }
 
-fn entry(head: &Head) -> Result<OutputEntry, SnapshotError> {
+/// One head as an entry of [`layout`].
+pub fn entry(head: &Head) -> Result<OutputEntry, SnapshotError> {
     let connector = || head.name.clone();
     let modes = head
         .modes
@@ -237,7 +245,7 @@ fn mode_error(connector: &str, mode: &HeadMode) -> SnapshotError {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use dsplr_model::{AdaptiveSync, Mode, ModeHandle, OutputId, Transform};
 
     use super::{

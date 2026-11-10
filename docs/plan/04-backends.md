@@ -30,7 +30,7 @@ empty canvas.
 ## The seam
 
 ```rust
-pub enum Backend { Hyprland(..), Wlr(..), Kde(..), Gnome(..), Randr(..) }
+pub enum Backend { Hyprland(..), Kde(..), Wlr(..), Gnome(..), Randr(..) }
 
 impl Backend {
     pub fn capabilities(&self) -> Capabilities;
@@ -152,44 +152,76 @@ compositor-specific path is added later.
 
 ## KDE Plasma 6 (`Kde`)
 
-KWin's own Wayland protocols, read in `plasma-wayland-protocols` as shipped in
-the `wayland-protocols-plasma` crate (0.3.12):
+Built in M5 (`crates/dsplr-backend/src/kde/`). KWin's own Wayland protocols,
+from KDE's `plasma-wayland-protocols` at tag `v1.23.0`, vendored in
+`crates/dsplr-backend/protocols/` (origin and licence, MIT-CMU, in its
+`build.rs`). KWin 6.8.2, Arch's package on 2026-11-10, builds against that
+release (its `CMakeLists.txt` asks for 1.23.0). Read in KWin 6.8.2's source:
 
-- `kde_output_device_v2` (v11): one per output, with modes (refresh in mHz),
-  geometry, scale, transform, VRR policy, overscan, RGB range, HDR, EDID and
-  EISA id.
-- `kde_output_order_v1`: the output **priority** order (KDE's primary output is
-  the first), announced as output names. Set with the configuration's
-  `set_priority` (since v3).
-- `kde_output_management_v2` (v12): a configuration object with per-device
-  setters and `apply`, answered `applied` / `failed`, with a `failure_reason`
-  event since v12. **No test request.** Its `position` request requires "no gaps
-  or overlaps between outputs", which validation enforces on KDE
-  ([03](03-display-model.md#validation)).
+- `kde_output_device_v2` (v26) is no longer a global: since protocol version 21
+  each output device arrives as an `output` event of the
+  `kde_output_device_registry_v2` global, which KWin refuses to bind below
+  version 21 (`unsupported_version`, in `src/wayland/outputdevice_v2.cpp`). The
+  `wayland-protocols-plasma` 0.3.12 files the plan first read (device v11,
+  management v12, devices as globals) cannot talk to it. So dsplr needs the
+  registry at version 21 or later, and refuses an older KWin with that reason; a
+  KWin from before the registry is not supported (backlog).
+- Each device sends its modes (refresh in mHz), geometry (position, physical
+  size, make, model, transform), scale, name (the connector), serial, uuid,
+  capability flags, overscan, VRR policy, RGB range, replication source,
+  priority and more, then `done`; later changes end with a `done` sent on KWin's
+  next event-loop turn, which can come after it answered an apply.
+- `kde_output_order_v1` (v1): the output names in priority order; the first is
+  the primary output. Set with the configuration's `set_priority`.
+- `kde_output_management_v2` (v22): a configuration object with per-device
+  setters and `apply`, answered `applied` or `failure_reason` then `failed`.
+  **No test request.** It has no serial: an output added or removed while a
+  configuration is being made fails it ("One of the relevant outputs is no
+  longer available"). Before applying, KWin refuses an enabled output at a
+  negative position, a position past 1,000,000, a mirror of itself and an output
+  turned off that lacks the `disable` capability
+  (`src/wayland/outputmanagement_v2.cpp`, `src/workspace.cpp`). It does **not**
+  check the "no gaps or overlaps" its `position` request describes; dsplr's
+  validation still refuses gaps on KDE (`gaps_allowed` off).
+- KWin keeps scales in 120ths, ignores an overscan above 100 and a VRR policy or
+  RGB range it does not define, and accepts `set_primary_output` but ignores it.
 
-The installed KWin is ahead of that crate: `libkwin.so.6.8.2` on the owner's
-machine contains `set_custom_modes`, `set_replication_source` and
-`applyMirroring`, so **custom modes and mirroring exist in KWin 6.8** but not in
-the crate's protocol files. Using them needs newer bindings or bindings
-generated from KWin's own XML (open question). The protocol files also warn that
-backward-incompatible changes may land without a version bump, so the KDE
-backend checks the versions it gets and refuses ones it was not tested against.
+As built:
 
-- Plasma 6 KWin saves output configurations itself: `kwinoutputconfig.json` is a
-  string in `libkwin` (seen), and that it saves on **every** protocol apply is
-  expected but not verified (M5). If it does, `persist` is a no-op that reports
-  `Persisted::ByDesktop`, `Capabilities` says the desktop saves on apply, and a
-  change that is not kept is undone only by dsplr's revert
+- **Read**: every device and the output order, on a connection of its own.
+  Adaptive sync (the VRR policy: never, always, automatic), overscan and RGB
+  range are read only for an output whose capabilities include them, and a
+  disabled output has none of them and no mode, as on wlroots. A mirror's source
+  is the device whose uuid its replication source names, while that one is on
+  (KWin's `applyMirroring` in `src/outputconfigurationstore.cpp`).
+- **Test**: the layout is checked against the devices and refused if it cannot
+  be sent; then `Unsupported`, and the apply flow skips step 2.
+- **Apply**: one configuration naming every output the layout names (KWin
+  changes only those): enabled, mode object, transform, position, scale, and
+  overscan, VRR policy and RGB range where set; the replication source from
+  management version 13 (empty for none); and, when the layout names a primary
+  output, `set_priority` for every output that will be on: the primary first,
+  the rest in KWin's order now. Refused before sending: a custom mode (KWin's
+  take a mode list per output, not written yet), colour preset, bit depth, a
+  setting the output's capabilities lack, a second primary output, one that is
+  off, and turning off an output that says it cannot be (device version 25 on).
+- **Persist**: KWin saves on **every** successful apply, whoever sent it:
+  `Workspace::applyOutputConfiguration` calls
+  `OutputConfigurationStore::storeConfig`, which writes `kwinoutputconfig.json`
+  in `QStandardPaths::ConfigLocation` (`$XDG_CONFIG_HOME`) before the protocol
+  answers. So `persist` writes nothing and reports `Persisted::ByDesktop`, for
+  the layout on screen only, `Capabilities` says the desktop saves on apply, and
+  a change that is not kept is undone only by dsplr's revert
   ([02](02-architecture.md#apply-confirm-revert)).
+- **Watch**: a connection of its own; each device's `done` and `removed` and
+  each new output order is a change.
+- **Capabilities**: mirroring from management version 13; adaptive sync off, on
+  and automatic; fractional and per-output scale; overscan; RGB range; the
+  primary output when KWin offers `kde_output_order_v1`; native persistence and
+  saves on apply; no test, no gaps, no custom modes.
 - **KDE on X11** keeps KScreen's own daemon, which re-applies its saved config
   and would fight dsplr's `Randr` backend. `--backend randr` under a KDE session
   warns about this, and `dsplr watch` refuses it there too.
-- KDE's extra fields (overscan, RGB range, VRR policy "automatic", output
-  priority) are optional fields of the shared `OutputState`
-  ([03](03-display-model.md#one-struct-many-formats)), shown in the property
-  panel when `Capabilities` says KDE is active.
-- The protocol versions KWin offers are read from the registry at M5 and the
-  supported range written into this section.
 
 ## GNOME (`Gnome`)
 

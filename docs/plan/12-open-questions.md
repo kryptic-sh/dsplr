@@ -32,12 +32,14 @@ pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
    crcbl's Win32 and AppKit shells make a port nearly free and someone asks.
 7. **HDR and colour management.** Default: read-only display of what Hyprland
    and KDE report; setting them is post-MVP.
-8. **KDE protocol bindings.** KWin 6.8 has custom modes and mirroring
-   (`set_custom_modes`, `set_replication_source`) that
-   `wayland-protocols-plasma` 0.3.12 does not carry. Default: ship KDE without
-   both in the MVP and mark them `Unsupported`; the alternative is generating
-   bindings from KWin's own protocol XML, which tracks KWin but takes on its
-   unversioned changes.
+8. **KDE protocol bindings.** Settled by M5: KWin 6.8 lists its outputs only
+   through `kde_output_device_registry_v2` (version 21 or later), which
+   `wayland-protocols-plasma` 0.3.12 does not carry, so dsplr generates its
+   bindings from `plasma-wayland-protocols` v1.23.0's XML, the release KWin 6.8
+   builds against, and binds at most those versions. Mirroring
+   (`set_replication_source`) is supported; custom modes (`set_custom_modes`, a
+   mode list per output applied with the configuration) are `Unsupported` until
+   written (backlog).
 9. **MVP scope.** The owner put X11 in the MVP (2026-11-04), so M0–M7 is the
    MVP: five backends, an EDID parser and the xrandr CRTC algorithm. The owner's
    own need is met at M3. Raised in review as a scope risk; the owner's decision

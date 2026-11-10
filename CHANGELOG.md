@@ -83,9 +83,29 @@ and this project adheres to
   the versioned JSON form profiles will use (refresh in millihertz).
 - `dsplr backend` prints what detection checked, the backend it found and that
   backend's capabilities.
-- Two backends so far: Hyprland, and wlroots compositors (`wlr`). With no
-  backend found, both commands exit with code 6; on targets other than Linux,
-  detection says dsplr supports Linux only.
+- Three backends so far: Hyprland, KDE Plasma 6 on Wayland (`kde`), and wlroots
+  compositors (`wlr`). With no backend found, both commands exit with code 6; on
+  targets other than Linux, detection says dsplr supports Linux only.
+- The `kde` backend reads and applies layouts over KWin's own protocols:
+  `kde_output_device_v2` through `kde_output_device_registry_v2` (version 21 or
+  later, which KWin 6.8 requires), `kde_output_order_v1` for the primary output,
+  and `kde_output_management_v2`. Detection tries it after Hyprland and before
+  wlroots, when `WAYLAND_DISPLAY` names a compositor that offers KWin's output
+  management. It applies a whole layout in one configuration: mode, position,
+  fractional per-output scale, transform, enabled, adaptive sync as KWin's VRR
+  policy (off, on or automatic), overscan, RGB range, the primary output (the
+  first in KWin's output order) and, from management version 13, mirroring.
+  Adaptive sync, overscan and RGB range are read and set only on outputs whose
+  capabilities say they have them. KWin's own reason for a refusal is shown
+  (`KWin refused the configuration: Position of enabled output … is negative`).
+  KWin has no test request, so `dsplr apply --dry-run` validates locally and
+  checks the layout can be sent, then says KWin cannot test it; and its protocol
+  allows no gaps between outputs, so validation refuses one. Custom modes are
+  not written for KDE yet, and a mode the output does not list is refused (exit
+  `3`).
+- `dsplr save` on KDE writes nothing and says the layout is already saved: KWin
+  saves every layout it applies in its `kwinoutputconfig.json`. A layout other
+  than the one on screen is refused, as on niri.
 - The `wlr` backend reads, tests and applies layouts over
   `zwlr_output_manager_v1`: tested against sway and niri, and meant for any
   compositor offering it (river, labwc, Wayfire). Detection picks it after

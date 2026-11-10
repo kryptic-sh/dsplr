@@ -167,7 +167,8 @@ jobs:
   # an Arch cloud image: Ubuntu's Hyprland predates the Lua config. sway
   # needs no GPU (pixman), but runs in the same VM so it is the current sway,
   # through the same steps. niri has no headless backend, so it runs nested
-  # (winit) in a headless sway, rendering through Mesa's software EGL.
+  # (winit) in a headless sway, rendering through Mesa's software EGL. KWin
+  # runs on its own virtual backend, which still renders with OpenGL.
   e2e:
     name: e2e ${{ matrix.desktop }}
     runs-on: ubuntu-latest
@@ -184,6 +185,9 @@ jobs:
             tests: dsplr-backend dsplr
           - desktop: niri
             packages: sway niri mesa
+            tests: dsplr-backend dsplr
+          - desktop: kwin
+            packages: kwin mesa
             tests: dsplr-backend dsplr
     env:
       IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2

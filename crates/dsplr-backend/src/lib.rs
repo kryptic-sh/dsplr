@@ -2,11 +2,12 @@
 //! compositors, KDE Plasma, GNOME and X11 (`docs/plan/04-backends.md`).
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
-//! looked at. So far Hyprland and wlroots compositors exist; both read and
-//! apply, wlroots tests, Hyprland persists to its Lua config, sway to its
-//! `outputs` file and niri to its `outputs.kdl`; other wlroots compositors
-//! have no native persistence and use dsplr's profile store
-//! (`dsplr save --profile`), and the other desktops are not written yet.
+//! looked at. So far Hyprland, KDE Plasma and wlroots compositors exist; all
+//! read and apply, wlroots tests, Hyprland persists to its Lua config, sway
+//! to its `outputs` file and niri to its `outputs.kdl`, and KWin saves each
+//! layout it applies itself; other wlroots compositors have no native
+//! persistence and use dsplr's profile store (`dsplr save --profile`), and
+//! GNOME and X11 are not written yet.
 //! Every backend is Linux-only; on other targets [`Backend`] has no variants
 //! and detection says why.
 
@@ -19,6 +20,10 @@ mod detect;
 #[cfg(target_os = "linux")]
 pub mod hyprland;
 #[cfg(target_os = "linux")]
+pub mod kde;
+#[cfg(target_os = "linux")]
+pub mod wayland;
+#[cfg(target_os = "linux")]
 pub mod wlr;
 
 pub use detect::{Check, Detection, detect};
@@ -30,6 +35,8 @@ pub enum Backend {
     #[cfg(target_os = "linux")]
     Hyprland(hyprland::Hyprland),
     #[cfg(target_os = "linux")]
+    Kde(kde::Kde),
+    #[cfg(target_os = "linux")]
     Wlr(wlr::Wlr),
 }
 
@@ -39,6 +46,8 @@ pub enum Backend {
 pub enum Watch {
     #[cfg(target_os = "linux")]
     Hyprland(hyprland::Events),
+    #[cfg(target_os = "linux")]
+    Kde(Box<kde::Connection>),
     #[cfg(target_os = "linux")]
     Wlr(Box<wlr::Connection>),
 }
@@ -52,6 +61,8 @@ impl Watch {
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref mut events) => Ok(events.changed().await?),
             #[cfg(target_os = "linux")]
+            Self::Kde(ref mut connection) => Ok(connection.changed().await?),
+            #[cfg(target_os = "linux")]
             Self::Wlr(ref mut connection) => Ok(connection.changed().await?),
         }
     }
@@ -64,6 +75,9 @@ pub enum Error {
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Hyprland(#[from] hyprland::Error),
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Kde(#[from] kde::Error),
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Wlr(#[from] wlr::Error),
@@ -84,18 +98,28 @@ pub enum Error {
 pub enum Persisted {
     /// Written to a file the desktop reads when it starts.
     File(Saved),
+    /// The desktop saved it itself when it applied it, so nothing was
+    /// written.
+    ByDesktop {
+        /// Who saved it and where, for the user: "KWin, in its
+        /// kwinoutputconfig.json".
+        by: &'static str,
+    },
 }
 
 impl Error {
     /// Whether the desktop itself refused the layout, and nothing changed:
-    /// wlroots' `failed`, a rule Hyprland rejected. Not a layout dsplr
+    /// wlroots' `failed`, KWin's `failed`, a rule Hyprland rejected. Not a
+    /// layout dsplr
     /// refused before sending it ([`Error::is_refused_before_sending`]), a
     /// connection that failed or timed out, or [`Error::is_stale`].
     #[must_use]
     pub const fn is_refusal(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
-            Self::Wlr(wlr::Error::Failed) | Self::Hyprland(hyprland::Error::Refused { .. }) => true,
+            Self::Wlr(wlr::Error::Failed)
+            | Self::Kde(kde::Error::Failed { .. })
+            | Self::Hyprland(hyprland::Error::Refused { .. }) => true,
             _ => false,
         }
     }
@@ -106,7 +130,10 @@ impl Error {
     /// output named twice, one enabled without a mode, a mode or scale out
     /// of the protocol's range, or a setting the protocol cannot express (a
     /// mirror, a primary output, colour settings, automatic adaptive sync).
-    /// On Hyprland, a [`hyprland::Error::Write`]: an output with no name,
+    /// On KDE, a [`kde::PlanError`] too: the same, or a custom mode, colour
+    /// settings, a setting the output says it has not, or more than one
+    /// primary output. On Hyprland, a [`hyprland::Error::Write`]: an output
+    /// with no name,
     /// enabled without a mode or with an unusable scale, or mirroring one
     /// with no name. An output that is no longer connected is
     /// [`Error::is_stale`] instead.
@@ -114,9 +141,12 @@ impl Error {
     pub const fn is_refused_before_sending(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
-            Self::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(_))) => false,
+            Self::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(_)))
+            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_))) => false,
             #[cfg(target_os = "linux")]
-            Self::Wlr(wlr::Error::Plan(_)) | Self::Hyprland(hyprland::Error::Write(_)) => true,
+            Self::Wlr(wlr::Error::Plan(_))
+            | Self::Kde(kde::Error::Plan(_))
+            | Self::Hyprland(hyprland::Error::Write(_)) => true,
             _ => false,
         }
     }
@@ -126,14 +156,18 @@ impl Error {
     /// or an output in the layout that is no longer connected (unplugged
     /// between the snapshot and the request), which dsplr finds before
     /// sending. Read the state again before deciding anything; never retry
-    /// the same request blindly.
+    /// the same request blindly. KWin's configurations carry no serial, so
+    /// on KDE only the second is found here; an output KWin added or removed
+    /// while the request was being made is its `failed`
+    /// ([`Error::is_refusal`]).
     #[must_use]
     pub const fn is_stale(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
             Self::Wlr(
                 wlr::Error::Cancelled | wlr::Error::Plan(wlr::PlanError::NotConnected(_)),
-            ) => true,
+            )
+            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_))) => true,
             _ => false,
         }
     }
@@ -146,6 +180,8 @@ impl Backend {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => "hyprland",
+            #[cfg(target_os = "linux")]
+            Self::Kde(_) => "kde",
             #[cfg(target_os = "linux")]
             Self::Wlr(_) => "wlr",
         }
@@ -160,6 +196,8 @@ impl Backend {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => hyprland::REQUEST_TIMEOUT,
+            #[cfg(target_os = "linux")]
+            Self::Kde(_) => kde::OPERATION_TIMEOUT,
             #[cfg(target_os = "linux")]
             Self::Wlr(_) => wlr::OPERATION_TIMEOUT,
         }
@@ -180,6 +218,13 @@ impl Backend {
     /// `outputs.kdl`; here that is whether `SWAYSOCK` or `NIRI_SOCKET` names
     /// a socket, asking nothing, since every command reads capabilities.
     /// [`Backend::native_persistence`] asks the sockets.
+    ///
+    /// KWin takes every adaptive sync value (its VRR policy), overscan, RGB
+    /// range and the primary output (when it offers `kde_output_order_v1`),
+    /// mirroring from management version 13, and saves each layout it
+    /// applies; it has no test request, and its management protocol says
+    /// outputs may have no gaps between them. Custom modes are not written
+    /// for it yet.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         match *self {
@@ -190,6 +235,23 @@ impl Backend {
                 per_output_scale: true,
                 gaps_allowed: true,
                 native_persistence: true,
+                ..Capabilities::default()
+            },
+            #[cfg(target_os = "linux")]
+            Self::Kde(ref kde) => Capabilities {
+                mirroring: kde.management_version() >= kde::REPLICATION_SINCE,
+                adaptive_sync: vec![
+                    dsplr_model::AdaptiveSync::Off,
+                    dsplr_model::AdaptiveSync::On,
+                    dsplr_model::AdaptiveSync::Automatic,
+                ],
+                fractional_scale: true,
+                per_output_scale: true,
+                native_persistence: true,
+                saves_on_apply: true,
+                primary: kde.has_order(),
+                overscan: true,
+                rgb_range: true,
                 ..Capabilities::default()
             },
             #[cfg(target_os = "linux")]
@@ -221,7 +283,7 @@ impl Backend {
     pub async fn native_persistence(&self) -> bool {
         match *self {
             #[cfg(target_os = "linux")]
-            Self::Hyprland(_) => self.capabilities().native_persistence,
+            Self::Hyprland(_) | Self::Kde(_) => self.capabilities().native_persistence,
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => matches!(
                 wlr.compositor().await,
@@ -232,12 +294,15 @@ impl Backend {
 
     /// A way to follow the desktop's changes to its outputs: on wlroots a
     /// connection of its own that dispatches the output manager's `done`
-    /// events, on Hyprland its event socket. Read the state again after each
-    /// [`Watch::changed`].
+    /// events, on KDE one that dispatches each output device's `done` and
+    /// the output order, on Hyprland its event socket. Read the state again
+    /// after each [`Watch::changed`].
     pub async fn watch(&self) -> Result<Watch, Error> {
         match *self {
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(Watch::Hyprland(hyprland.events().await?)),
+            #[cfg(target_os = "linux")]
+            Self::Kde(ref kde) => Ok(Watch::Kde(Box::new(kde.connect().await?))),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(Watch::Wlr(Box::new(wlr.connect().await?))),
         }
@@ -249,6 +314,8 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(hyprland.snapshot().await?),
             #[cfg(target_os = "linux")]
+            Self::Kde(ref kde) => Ok(kde.snapshot().await?),
+            #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.snapshot().await?),
         }
     }
@@ -258,7 +325,8 @@ impl Backend {
     /// [`apply`](Self::apply) ([`Error::is_refused_before_sending`]).
     ///
     /// [`Error::Unsupported`] on a backend with no real test (Hyprland's is a
-    /// stub that always succeeds) once the layout is known to be sendable;
+    /// stub that always succeeds, KDE's management protocol has none) once
+    /// the layout is known to be sendable;
     /// the apply flow then skips the step rather than pretend it ran
     /// (`docs/plan/02-architecture.md`, step 2).
     #[cfg_attr(
@@ -273,6 +341,14 @@ impl Backend {
                 Err(Error::Unsupported {
                     what: "testing a layout",
                     reason: "Hyprland's wlr-output-management test is a stub that always succeeds",
+                })
+            }
+            #[cfg(target_os = "linux")]
+            Self::Kde(ref kde) => {
+                kde.check(layout).await?;
+                Err(Error::Unsupported {
+                    what: "testing a layout",
+                    reason: "KWin's kde-output-management-v2 has no test request",
                 })
             }
             #[cfg(target_os = "linux")]
@@ -291,6 +367,8 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(hyprland.apply(layout).await?),
             #[cfg(target_os = "linux")]
+            Self::Kde(ref kde) => Ok(kde.apply(layout).await?),
+            #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.apply(layout).await?),
         }
     }
@@ -300,7 +378,10 @@ impl Backend {
     /// config ([`dsplr_persist::hyprland::save`]); on sway, the `outputs`
     /// file beside its config ([`dsplr_persist::sway::save`]); on niri, the
     /// `outputs.kdl` beside its config ([`dsplr_persist::niri::save`]),
-    /// which niri reloads, and so applies, as soon as it is written.
+    /// which niri reloads, and so applies, as soon as it is written. On KDE
+    /// nothing is written: KWin saved the layout in its
+    /// `kwinoutputconfig.json` when it applied it, so this is
+    /// [`Persisted::ByDesktop`].
     ///
     /// Because writing it applies it, on niri `layout` must be the outputs as
     /// they are now: they are read again and compared
@@ -308,6 +389,7 @@ impl Backend {
     /// back with), and any other layout is [`Error::Unsupported`], nothing
     /// written, so a save never changes the screen past the apply flow's
     /// test, revert point and confirm. Apply a layout first, then save it.
+    /// The same holds on KDE, where KWin has saved only what is on screen.
     ///
     /// A file there that dsplr may not overwrite unasked is
     /// [`Error::Conflict`], and nothing is written; once the user has seen it
@@ -343,6 +425,13 @@ impl Backend {
                 }
             }
             #[cfg(target_os = "linux")]
+            Self::Kde(_) => {
+                self.on_screen(layout, "KWin keeps only the layout it last applied, so dsplr saves only the outputs as they are now; apply the layout first (dsplr apply asks to keep it), and KWin saves it then").await?;
+                Ok(Persisted::ByDesktop {
+                    by: "KWin, in its kwinoutputconfig.json, when it applied it",
+                })
+            }
+            #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => {
                 use dsplr_persist::managed::FileError;
                 use dsplr_persist::{niri, sway};
@@ -362,13 +451,7 @@ impl Backend {
                         Err(error) => Err(Error::Wlr(wlr::Error::Save(error))),
                     },
                     wlr::Compositor::Niri => {
-                        let now = wlr.snapshot().await?;
-                        if !layout.differences(&now, &self.capabilities()).is_empty() {
-                            return Err(Error::Unsupported {
-                                what: "saving a layout other than the one on screen",
-                                reason: "niri applies its outputs.kdl as soon as it is written, so dsplr saves only the outputs as they are now; apply the layout first (dsplr apply tests it and asks to keep it), then save",
-                            });
-                        }
+                        self.on_screen(layout, "niri applies its outputs.kdl as soon as it is written, so dsplr saves only the outputs as they are now; apply the layout first (dsplr apply tests it and asks to keep it), then save").await?;
                         match niri::save(var, layout, approved) {
                             Ok(saved) => Ok(Persisted::File(saved)),
                             Err(niri::SaveError::File(FileError::Conflict(conflict))) => {
@@ -390,6 +473,24 @@ impl Backend {
                     }),
                 }
             }
+        }
+    }
+}
+
+impl Backend {
+    /// [`Error::Unsupported`] for saving, with `reason`, unless `layout` is
+    /// what the desktop shows now ([`Layout::differences`], within the
+    /// tolerance the apply flow reads back with).
+    #[cfg(target_os = "linux")]
+    async fn on_screen(&self, layout: &Layout, reason: &'static str) -> Result<(), Error> {
+        let now = self.snapshot().await?;
+        if layout.differences(&now, &self.capabilities()).is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Unsupported {
+                what: "saving a layout other than the one on screen",
+                reason,
+            })
         }
     }
 }
@@ -423,7 +524,9 @@ mod tests {
             ))),
         ];
         let neither = [
-            Error::Wlr(wlr::Error::Timeout { what: "apply" }),
+            Error::Wlr(wlr::Error::Wayland(crate::wayland::Error::Timeout {
+                what: "apply",
+            })),
             Error::Unsupported {
                 what: "testing a layout",
                 reason: "a stub",

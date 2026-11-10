@@ -130,7 +130,10 @@ async fn a_saved_layout_is_applied_and_read_at_startup(
         shows(layout, 1.25, 30, 40)
     })
     .await;
-    let Persisted::File(file) = backend.persist(&saved, None).await.expect("saved");
+    let persisted = backend.persist(&saved, None).await.expect("saved");
+    let Persisted::File(file) = persisted else {
+        panic!("not saved to a file: {persisted:?}");
+    };
     assert_eq!(file.path, outputs);
     assert_eq!(file.main_config, niri_config());
     assert!(file.created);

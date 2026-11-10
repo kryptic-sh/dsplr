@@ -11,58 +11,31 @@
 //! a layout asking for any of them is refused, not applied without them.
 
 mod connection;
-mod heads;
 mod ipc;
 mod niri;
 mod plan;
 mod sway;
 
-#[allow(
-    dead_code,
-    reason = "every interface in the XML is generated; dsplr uses a few"
-)]
-mod protocol {
-    include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
-}
-
 use std::ffi::OsString;
-use std::future::Future;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crcbl_wayland::{ConnectError, Disconnected};
 use dsplr_model::Layout;
 
-pub use connection::{Connection, REQUEST_TIMEOUT};
-pub use heads::{Head, HeadMode, SnapshotError};
-pub use plan::{ADAPTIVE_SYNC_SINCE, PlanError};
+pub use crate::wayland::heads::{Head, HeadMode, SnapshotError};
+pub use crate::wayland::plan::PlanError;
+pub use crate::wayland::{OPERATION_TIMEOUT, REQUEST_TIMEOUT};
+use crate::wayland::{bounded, socket_path};
+pub use connection::Connection;
+pub use plan::ADAPTIVE_SYNC_SINCE;
 
 /// What went wrong talking to the compositor.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no Wayland compositor here: WAYLAND_DISPLAY is not set")]
-    NotRunning,
-    #[error("XDG_RUNTIME_DIR is not set, so the Wayland socket {display:?} cannot be found")]
-    NoRuntimeDir { display: OsString },
-    #[error("{what} {path}: {source}")]
-    Io {
-        what: &'static str,
-        path: PathBuf,
-        source: io::Error,
-    },
-    #[error("cannot speak Wayland: {0}")]
-    Connect(ConnectError),
-    #[error("the connection to the compositor failed: {0}")]
-    Disconnected(Disconnected),
+    #[error(transparent)]
+    Wayland(#[from] crate::wayland::Error),
     #[error("the compositor offers no zwlr_output_manager_v1")]
     NoManager,
-    #[error("the compositor stopped its output manager")]
-    Finished,
-    #[error("libwayland would not route a {0}'s events to dsplr")]
-    Dispatcher(&'static str),
-    #[error("the compositor did not {what} in time")]
-    Timeout { what: &'static str },
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
     #[error("the layout cannot be sent: {0}")]
@@ -77,20 +50,6 @@ pub enum Error {
     Save(#[source] dsplr_persist::sway::SaveError),
     #[error("cannot save the layout: {0}")]
     NiriSave(#[source] dsplr_persist::niri::SaveError),
-}
-
-/// The longest one read, test or apply takes, connecting included: each
-/// wait inside it has [`REQUEST_TIMEOUT`], and the whole of it this.
-pub const OPERATION_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_mul(2);
-
-/// `operation` cut off at [`OPERATION_TIMEOUT`].
-async fn bounded<T>(
-    what: &'static str,
-    operation: impl Future<Output = Result<T, Error>>,
-) -> Result<T, Error> {
-    tokio::time::timeout(OPERATION_TIMEOUT, operation)
-        .await
-        .map_err(|_| Error::Timeout { what })?
 }
 
 /// A wlroots compositor with an output manager: where its socket is, the
@@ -232,64 +191,12 @@ impl Wlr {
     }
 }
 
-/// Where the Wayland socket is, by libwayland's rule: `WAYLAND_DISPLAY`
-/// itself when absolute, else under `XDG_RUNTIME_DIR`.
-fn socket_path(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
-    let display = var("WAYLAND_DISPLAY")
-        .filter(|display| !display.is_empty())
-        .ok_or(Error::NotRunning)?;
-    if Path::new(&display).is_absolute() {
-        return Ok(display.into());
-    }
-    let runtime = var("XDG_RUNTIME_DIR").ok_or_else(|| Error::NoRuntimeDir {
-        display: display.clone(),
-    })?;
-    Ok(Path::new(&runtime).join(display))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    use super::{Compositor, Error, Wlr, socket_path};
-
-    fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
-        move |name| {
-            pairs
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| value.into())
-        }
-    }
-
-    #[test]
-    fn the_environment_names_the_socket() {
-        let env = [
-            ("WAYLAND_DISPLAY", "wayland-1"),
-            ("XDG_RUNTIME_DIR", "/run/user/1000"),
-        ];
-        assert_eq!(
-            socket_path(vars(&env)).expect("found"),
-            Path::new("/run/user/1000/wayland-1")
-        );
-        assert_eq!(
-            socket_path(vars(&[("WAYLAND_DISPLAY", "/tmp/w/wayland-9")])).expect("absolute"),
-            Path::new("/tmp/w/wayland-9")
-        );
-        assert!(matches!(
-            socket_path(vars(&env[1..])),
-            Err(Error::NotRunning)
-        ));
-        assert!(matches!(
-            socket_path(vars(&[("WAYLAND_DISPLAY", ""), env[1]])),
-            Err(Error::NotRunning)
-        ));
-        assert!(matches!(
-            socket_path(vars(&env[..1])),
-            Err(Error::NoRuntimeDir { .. })
-        ));
-    }
+    use super::{Compositor, Error, Wlr};
+    use crate::wayland::tests::vars;
 
     /// Detection does not ask sway's socket: one that never answers costs
     /// it nothing (it used to wait out the request timeout on every
@@ -308,7 +215,13 @@ mod tests {
         ];
         let started = std::time::Instant::now();
         let result = Wlr::from_vars(vars(&env)).await;
-        assert!(matches!(result, Err(Error::Io { .. })), "{result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(Error::Wayland(crate::wayland::Error::Io { .. }))
+            ),
+            "{result:?}"
+        );
         assert!(
             started.elapsed() < super::REQUEST_TIMEOUT / 2,
             "{:?}",
@@ -379,7 +292,8 @@ mod tests {
         ];
         assert!(matches!(
             Wlr::from_vars(vars(&env)).await,
-            Err(Error::Io { path, .. }) if path == dir.path().join("wayland-0")
+            Err(Error::Wayland(crate::wayland::Error::Io { path, .. }))
+                if path == dir.path().join("wayland-0")
         ));
     }
 }

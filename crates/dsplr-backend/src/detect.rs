@@ -29,11 +29,12 @@ impl Check {
 
 /// What detection says about the desktops whose backends do not exist yet.
 #[cfg(target_os = "linux")]
-const NOT_WRITTEN: &str = "not written yet (planned for M5 to M7)";
+const NOT_WRITTEN: &str = "not written yet (planned for M6 and M7)";
 
 /// Finds the backend for the running desktop, in the plan's order: Hyprland,
-/// then KDE and GNOME (not written yet), then a wlroots compositor's output
-/// manager, then X11 (not written yet). When Hyprland's variable is set but
+/// then KWin's output management, then GNOME (not written yet), then a
+/// wlroots compositor's output manager, then X11 (not written yet). When
+/// Hyprland's variable is set but
 /// its socket does not answer, detection stops there: this is Hyprland, and
 /// its own `wlr-output-management` would pass for a wlroots compositor. On
 /// other targets than Linux nothing is found.
@@ -74,7 +75,13 @@ async fn detect_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Detect
         }
         Hyprland::NotRunning => {}
     }
-    checks.push(Check::new("KDE, GNOME", NOT_WRITTEN));
+    if let Some(backend) = kde(&var, &mut checks).await {
+        return Detection {
+            checks,
+            backend: Some(backend),
+        };
+    }
+    checks.push(Check::new("GNOME", NOT_WRITTEN));
     if let Some(backend) = wlr(&var, &mut checks).await {
         return Detection {
             checks,
@@ -140,6 +147,37 @@ async fn hyprland(
         }
     }
 }
+
+/// KWin, when `WAYLAND_DISPLAY` names a compositor that offers
+/// `kde_output_management_v2` and a device registry dsplr can bind, and
+/// describes its outputs.
+#[cfg(target_os = "linux")]
+async fn kde(
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    checks: &mut Vec<Check>,
+) -> Option<Backend> {
+    match crate::kde::Kde::from_vars(var).await {
+        Ok(kde) => {
+            checks.push(Check::new(
+                KDE_CHECK,
+                format!(
+                    "kde_output_management_v2 version {} at {}",
+                    kde.management_version(),
+                    kde.socket().display()
+                ),
+            ));
+            Some(Backend::Kde(kde))
+        }
+        Err(error) => {
+            checks.push(Check::new(KDE_CHECK, error.to_string()));
+            None
+        }
+    }
+}
+
+/// What the KDE check is called in [`Detection::checks`].
+#[cfg(target_os = "linux")]
+const KDE_CHECK: &str = "KDE";
 
 /// A wlroots compositor, when `WAYLAND_DISPLAY` names a compositor that
 /// offers `zwlr_output_manager_v1` and describes its heads.
@@ -233,7 +271,7 @@ mod tests {
     #[tokio::test]
     async fn a_hyprland_that_does_not_answer_is_not_driven_as_a_wlroots_compositor() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // A Wayland socket that would answer as wlroots if it were tried:
+        // A Wayland socket that would answer as KWin or wlroots if it were tried:
         // anything listening counts, since trying it is what must not happen.
         let _wayland = UnixListener::bind(runtime.path().join("wayland-1")).expect("bind");
         let detection = detect_with(|name| match name {
@@ -245,7 +283,10 @@ mod tests {
         .await;
         assert!(detection.backend.is_none());
         assert!(
-            detection.checks.iter().all(|check| check.what != "wlroots"),
+            detection
+                .checks
+                .iter()
+                .all(|check| check.what != "wlroots" && check.what != "KDE"),
             "{:?}",
             detection.checks
         );
@@ -268,9 +309,11 @@ mod tests {
     async fn no_wayland_compositor_in_the_environment_is_reported() {
         let detection = detect_with(|_| None).await;
         assert!(detection.backend.is_none());
-        let wlr = &detection.checks[2];
-        assert_eq!(wlr.what, "wlroots");
-        assert!(wlr.found.contains("WAYLAND_DISPLAY"), "{}", wlr.found);
+        let order: Vec<_> = detection.checks.iter().map(|c| c.what).collect();
+        assert_eq!(order, ["Hyprland", "KDE", "GNOME", "wlroots", "X11"]);
+        for wayland in [&detection.checks[1], &detection.checks[3]] {
+            assert!(wayland.found.contains("WAYLAND_DISPLAY"), "{wayland:?}");
+        }
     }
 
     #[tokio::test]
@@ -283,8 +326,9 @@ mod tests {
         })
         .await;
         assert!(detection.backend.is_none());
-        let wlr = &detection.checks[2];
-        assert!(wlr.found.contains("wayland-7"), "{}", wlr.found);
+        for wayland in [&detection.checks[1], &detection.checks[3]] {
+            assert!(wayland.found.contains("wayland-7"), "{wayland:?}");
+        }
     }
 
     #[tokio::test]

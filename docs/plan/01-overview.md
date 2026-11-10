@@ -70,9 +70,9 @@ machine, **plus** working backends for the other desktops. In scope:
 
 - **Hyprland workspace rules**: assign workspaces to monitors, as nwg-displays'
   second window does, written to `workspaces.lua`.
-- **Mirroring on KDE and Hyprland.** GNOME and X11 mirroring are in the MVP (M6,
-  M7); KDE's needs newer protocol bindings, and Hyprland's depends on the M2
-  check of `eval` against protocol applies ([04](04-backends.md)).
+- **Mirroring on Hyprland.** GNOME and X11 mirroring are in the MVP (M6, M7),
+  and KDE's is built (M5, from KWin's management version 13); Hyprland's depends
+  on the M2 check of `eval` against protocol applies ([04](04-backends.md)).
 
 ## Non-goals (for now)
 
