@@ -82,8 +82,13 @@ impl Editor {
 
     /// Changes output `index`'s pending settings with `change`, recording an
     /// undo step and dropping the redo history when it changed anything.
-    /// Returns whether it did; an index with no output, or an edit during a
-    /// drag, changes nothing.
+    /// Where the backend needs the layout at the origin
+    /// ([`Capabilities::origin_required`]), the layout is moved there
+    /// after the change ([`Layout::normalise`]), so turning off the output
+    /// at the origin moves the others up to it, and nudging it away moves
+    /// the others instead. Returns whether the layout changed; an index with
+    /// no output, an edit during a drag, and one that would put a position
+    /// outside `i32` change nothing.
     pub fn edit(&mut self, index: usize, change: impl FnOnce(&mut OutputState)) -> bool {
         if self.drag.is_some() {
             return false;
@@ -96,10 +101,22 @@ impl Editor {
         if state == entry.state {
             return false;
         }
-        self.undo.push(self.pending.clone());
+        let mut pending = self.pending.clone();
+        pending.entries[index].state = state;
+        if !self.place(&mut pending) || pending == self.pending {
+            return false;
+        }
+        self.undo
+            .push(std::mem::replace(&mut self.pending, pending));
         self.redo.clear();
-        self.pending.entries[index].state = state;
         true
+    }
+
+    /// Moves `layout` to the origin where the backend needs it there.
+    /// Returns `false`, `layout` unchanged, when a position would leave
+    /// `i32`.
+    fn place(&self, layout: &mut Layout) -> bool {
+        !self.snapshot.capabilities.origin_required || layout.normalise().is_ok()
     }
 
     /// Goes back one edit. Returns whether there was one; during a drag

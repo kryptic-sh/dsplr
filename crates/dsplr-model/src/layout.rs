@@ -27,10 +27,22 @@ pub fn is_valid_scale(scale: f64) -> bool {
 pub struct Layout {
     pub entries: Vec<OutputEntry>,
     /// How big an output is on the canvas, which is what its position is
-    /// measured against. Logical everywhere but where GNOME says otherwise,
-    /// so the JSON form leaves the logical mode out.
-    #[serde(default, skip_serializing_if = "LayoutMode::is_logical")]
-    pub layout_mode: LayoutMode,
+    /// measured against, when the desktop or file says: GNOME's snapshots
+    /// always do. `None` where the desktop has no layout modes (every other
+    /// one, whose outputs are as big as [`LayoutMode::Logical`] says) and in
+    /// a file that does not say, so a file read for another desktop takes
+    /// that desktop's mode rather than asking for the logical one
+    /// ([`Layout::extent_mode`]). The JSON form leaves `None` out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_mode: Option<LayoutMode>,
+}
+
+impl Layout {
+    /// The layout mode outputs are sized by: the one it names, else the
+    /// logical one.
+    pub fn extent_mode(&self) -> LayoutMode {
+        self.layout_mode.unwrap_or_default()
+    }
 }
 
 /// What an output's extent on the canvas is, and so what its position
@@ -45,13 +57,6 @@ pub enum LayoutMode {
     /// Its mode's size, turned by its transform, whatever its scale: the
     /// scale makes what it shows bigger, not the space it takes.
     Physical,
-}
-
-impl LayoutMode {
-    /// Whether this is [`LayoutMode::Logical`].
-    pub const fn is_logical(&self) -> bool {
-        matches!(self, Self::Logical)
-    }
 }
 
 /// `logical` or `physical`.
@@ -362,10 +367,14 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_is_logical_unless_it_says_otherwise() {
-        assert_eq!(Layout::default().layout_mode, LayoutMode::Logical);
-        assert!(LayoutMode::Logical.is_logical());
-        assert!(!LayoutMode::Physical.is_logical());
+    fn a_layout_is_sized_logically_unless_it_says_otherwise() {
+        assert_eq!(Layout::default().layout_mode, None);
+        assert_eq!(Layout::default().extent_mode(), LayoutMode::Logical);
+        let physical = Layout {
+            layout_mode: Some(LayoutMode::Physical),
+            ..Layout::default()
+        };
+        assert_eq!(physical.extent_mode(), LayoutMode::Physical);
         assert_eq!(LayoutMode::Physical.to_string(), "physical");
     }
 

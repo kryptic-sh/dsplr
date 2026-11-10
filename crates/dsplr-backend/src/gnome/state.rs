@@ -175,7 +175,7 @@ impl State {
             .collect::<Result<_, _>>()?;
         Ok(Layout {
             entries,
-            layout_mode: self.layout_mode,
+            layout_mode: Some(self.layout_mode),
         })
     }
 
@@ -522,7 +522,7 @@ pub mod tests {
         assert!(state.supports_changing_layout_mode);
         assert!(!state.global_scale_required);
         let layout = state.layout().expect("converts");
-        assert_eq!(layout.layout_mode, LayoutMode::Logical);
+        assert_eq!(layout.layout_mode, Some(LayoutMode::Logical));
         assert_eq!(layout.entries.len(), 2);
 
         let dp = &layout.entries[0];
@@ -610,7 +610,7 @@ pub mod tests {
         assert!(!state.supports_changing_layout_mode, "absent means no");
         assert_eq!(
             state.layout().expect("converts").layout_mode,
-            LayoutMode::Physical
+            Some(LayoutMode::Physical)
         );
 
         // Absent, the interface says the mode is the logical one.

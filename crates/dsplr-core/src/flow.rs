@@ -438,7 +438,7 @@ pub fn report(differences: &[Difference]) -> Option<String> {
 
 /// Whether going from `current` to `asked` can hide or move a screen: an
 /// output enabled or disabled, or its mode, position, scale or transform
-/// changed.
+/// changed, or the layout mode, which changes every output's size.
 pub fn needs_confirm(asked: &Layout, current: &Layout, capabilities: &Capabilities) -> bool {
     asked
         .differences(current, capabilities)
@@ -452,7 +452,7 @@ pub fn needs_confirm(asked: &Layout, current: &Layout, capabilities: &Capabiliti
                     | Setting::Scale
                     | Setting::Transform
             ),
-            Difference::Missing(_) | Difference::Added(_) => true,
+            Difference::Missing(_) | Difference::Added(_) | Difference::LayoutMode { .. } => true,
         })
 }
 
@@ -821,5 +821,13 @@ mod tests {
         let mut disabled = current.clone();
         disabled.entries[1].state.enabled = false;
         assert!(needs_confirm(&disabled, &current, &caps));
+
+        // GNOME's layout mode alone resizes every output.
+        let mut logical = current.clone();
+        logical.layout_mode = Some(dsplr_model::LayoutMode::Logical);
+        let mut physical = current.clone();
+        physical.layout_mode = Some(dsplr_model::LayoutMode::Physical);
+        assert!(!needs_confirm(&logical, &logical, &caps));
+        assert!(needs_confirm(&physical, &logical, &caps));
     }
 }

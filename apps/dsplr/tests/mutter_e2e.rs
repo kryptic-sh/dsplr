@@ -135,7 +135,7 @@ async fn dsplr_lists_tests_applies_reverts_and_saves_on_mutter() {
         .find(|scale| scale.fract() != 0.0)
         .unwrap_or_else(|| panic!("a fractional scale in {scales:?}"));
     let physical = edited(&start, |layout| {
-        layout.layout_mode = LayoutMode::Physical;
+        layout.layout_mode = Some(LayoutMode::Physical);
         entry_mut(layout, last).state.scale = fractional;
     });
     let file_physical = layout_file(&runtime, "physical.json", &physical);
@@ -152,8 +152,8 @@ async fn dsplr_lists_tests_applies_reverts_and_saves_on_mutter() {
     }
     shows(&backend, &start).await;
 
-    // A layout away from the origin is refused by dsplr before Mutter is
-    // asked, which would refuse it.
+    // Mutter needs the layout at the origin, so a layout away from it is
+    // moved there first, saying so: here that is the row as it is.
     let offset = edited(&start, |layout| {
         for entry in &mut layout.entries {
             entry.state.y = 10;
@@ -161,8 +161,11 @@ async fn dsplr_lists_tests_applies_reverts_and_saves_on_mutter() {
     });
     let file_offset = layout_file(&runtime, "offset.json", &offset);
     let (code, text) = dsplr(&["apply", "--yes", &file_offset]);
-    assert_eq!(code, Some(REFUSED), "{text}");
-    assert!(text.contains("start at 0,0"), "{text}");
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("moved the layout by 0,-10 so it starts at 0,0"),
+        "{text}"
+    );
     shows(&backend, &start).await;
 
     // --yes applies and keeps it; a revert by hand puts the old layout back.
@@ -189,6 +192,26 @@ async fn dsplr_lists_tests_applies_reverts_and_saves_on_mutter() {
     assert_eq!(code, Some(0), "{text}");
     assert!(text.contains("handed to Mutter"), "{text}");
     saved(last, 0, h1).await;
+    backend.apply(&start).await.expect("Mutter applies it");
+    shows(&backend, &start).await;
+
+    // Turning off the output at the origin leaves the others away from it;
+    // dsplr moves them there, and Mutter takes it.
+    let (code, text) = dsplr(&["set", &names[0], "--disable", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("so it starts at 0,0"), "{text}");
+    let first_width = i32::try_from(first_mode.width).expect("fits");
+    let without_first = edited(&start, |layout| {
+        entry_mut(layout, &names[0]).state.enabled = false;
+        for name in &names[1..] {
+            entry_mut(layout, name).state.x -= first_width;
+        }
+        // Mutter's primary goes with the output turned off; dsplr keeps
+        // none named there, so the first left takes it.
+        entry_mut(layout, &names[0]).state.primary = false;
+        entry_mut(layout, &names[1]).state.primary = true;
+    });
+    shows(&backend, &without_first).await;
 
     backend.apply(&start).await.expect("Mutter applies it");
     shows(&backend, &start).await;

@@ -95,7 +95,7 @@ async fn mutter_tests_applies_and_shows_each_layout() {
     // What the harness asked Mutter for: that many virtual monitors, each on
     // at its one mode, named Meta-N, with a serial, one of them primary.
     let first = snapshot(&backend).await;
-    assert_eq!(first.layout_mode, LayoutMode::Logical, "{first:#?}");
+    assert_eq!(first.layout_mode, Some(LayoutMode::Logical), "{first:#?}");
     assert_eq!(first.entries.len(), harness_outputs(), "{first:#?}");
     for entry in &first.entries {
         let output = entry.output.as_ref().expect("live");

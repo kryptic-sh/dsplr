@@ -285,22 +285,31 @@ As built:
   mode (`Layout::layout_mode`, below).
 - **Test**: `verify`, a real test. **Apply**: `temporary`, so dsplr's own
   confirm and watchdog guard it as elsewhere. Both read the state and send on
-  one connection, with that state's serial. Each output on and mirroring nothing
-  is a logical monitor; a mirror joins its source's. A monitor the layout does
-  not name keeps its current settings. The mode is the one the monitor lists (no
-  custom modes); the scale is sent as the mode lists it, so it reads back as
-  sent (no `scale_steps`). With no primary named, the one Mutter has stays
-  primary while on, else the first logical monitor. `layout-mode` is sent
-  wherever Mutter can change it; elsewhere a layout in the other mode is
-  refused. Underscanning and colour mode go back as read; RGB range as the
-  layout says, else as read.
+  one connection, with that state's serial; and when the last snapshot read
+  another serial, the displays changed since the layout was made from it, so the
+  request is stale, nothing sent (exit `4` from the apply flow, which shows the
+  displays as they are now), as on wlroots. An apply forgets that serial, since
+  Mutter's moves on with it, and the next snapshot takes the new one. Each
+  output on and mirroring nothing is a logical monitor; a mirror joins its
+  source's. A monitor the layout does not name keeps its current settings. The
+  mode is the one the monitor lists (no custom modes); the scale is sent as the
+  mode lists it, so it reads back as sent (no `scale_steps`). With no primary
+  named among the outputs that are on (an output turned off keeps its flag in a
+  layout made from a snapshot), the one Mutter has stays primary while on, else
+  the first logical monitor, and the read-back compares no primary
+  (`Layout::differences`). A layout naming no layout mode is in Mutter's; one
+  naming the other is sent with `layout-mode` wherever Mutter can change it
+  (then its scales are left to Mutter, which lists them for its current mode
+  only), and refused elsewhere. Underscanning and colour mode go back as read;
+  RGB range as the layout says, else as read.
 - **Refused before sending** (`gnome::PlanError`, exit `3`): a mode the monitor
   does not list, a scale its mode does not list, a mirror of another mode size
-  or of an output that is off or a mirror, a second primary output or one that
-  is off, a layout not starting at 0,0, a layout mode Mutter cannot switch to,
-  and colour preset, bit depth, overscan or adaptive sync (Mutter offers
-  variable refresh as modes of their own, not read yet). Gaps are refused by
-  validation (`gaps_allowed` off).
+  or of an output that is off or a mirror, a second primary output, a layout not
+  starting at 0,0 (which the editor and the apply flow move there first,
+  `Capabilities::origin_required`, so only a caller of the backend skipping them
+  meets it), a layout mode Mutter cannot switch to, and colour preset, bit
+  depth, overscan or adaptive sync (Mutter offers variable refresh as modes of
+  their own, not read yet). Gaps are refused by validation (`gaps_allowed` off).
 - **Errors**: Mutter's `InvalidArgs`, and `AccessDenied` other than the stale
   one, are refusals (`Error::is_refusal`); the stale one, and a monitor gone
   since the read, are `Error::is_stale`.
@@ -313,17 +322,26 @@ As built:
   up a reply (zbus stops reading a connection while one of its streams is full).
 - **Capabilities**: test before apply, mirroring, primary output, RGB range,
   fractional scale, per-output scale unless `global-scale-required`, native
-  persistence; no gaps, no custom modes, no adaptive sync, not saved on every
-  apply.
-- **Layout modes**: `Layout::layout_mode` is `logical` everywhere but where
-  Mutter reports `physical`; there an output's extent on the canvas is its mode
-  turned by its transform, whatever its scale (`OutputState::size`), which
-  validation, snapping and the canvas use. The JSON form leaves `logical` out. A
-  layout file keeps its own mode on `dsplr apply`.
+  persistence, the layout at the origin; no gaps, no custom modes, no adaptive
+  sync, not saved on every apply.
+- **Layout modes**: a GNOME snapshot names its mode (`Layout::layout_mode`); in
+  `physical` an output's extent on the canvas is its mode turned by its
+  transform, whatever its scale (`OutputState::size`), which validation,
+  snapping and the canvas use. The JSON form leaves out only a mode not named.
+  `dsplr apply` keeps the desktop's mode unless the file names one, and a change
+  of mode is a difference the confirm asks about
+  ([03](03-display-model.md#types)).
 - **Detection**: after KDE, before wlroots: the session bus the environment
   names (`DBUS_SESSION_BUS_ADDRESS`, else `$XDG_RUNTIME_DIR/bus`), asked whether
   something owns `org.gnome.Mutter.DisplayConfig` (`NameHasOwner`, so nothing is
-  activated), then `GetCurrentState`.
+  activated), then whether it is **this session's** Mutter, since systemd's user
+  bus is shared by a user's sessions: under Wayland the process serving
+  `WAYLAND_DISPLAY`'s socket (`SO_PEERCRED`) must be the one owning the name
+  (`GetConnectionUnixProcessID`), as GNOME Shell is both, so a compositor nested
+  in GNOME (which inherits its bus and `XDG_CURRENT_DESKTOP`) is not taken for
+  it; with no Wayland socket (GNOME on X11) `XDG_CURRENT_DESKTOP` must name
+  GNOME. Then `GetCurrentState`. Behind a Wayland proxy (waypipe, a sandbox) the
+  socket's pid is the proxy's, so GNOME is not found there.
 - Mutter offers no layer-shell (its Wayland protocol list in `src/meson.build`
   has no `wlr-layer-shell`), so dsplr's per-monitor dialogs fall back to one
   toplevel and identify is unsupported there ([06](06-gui.md)).

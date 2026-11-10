@@ -68,6 +68,9 @@ pub enum ProblemKind {
     MirrorSourceDisabled,
     /// The mirrored output is itself a mirror.
     MirrorOfMirror,
+    /// The outputs do not start at the origin, on a backend that needs them
+    /// to; the smallest x and y among them.
+    NotAtOrigin { x: i32, y: i32 },
 }
 
 impl ProblemKind {
@@ -81,7 +84,7 @@ impl ProblemKind {
             | Self::ScaleNotForMode
             | Self::FractionalScale
             | Self::ScalesDiffer => Field::Scale,
-            Self::Overlap { .. } | Self::Gap => Field::Position,
+            Self::Overlap { .. } | Self::Gap | Self::NotAtOrigin { .. } => Field::Position,
             Self::MirrorUnsupported
             | Self::MirrorSourceMissing
             | Self::MirrorSourceDisabled
@@ -132,6 +135,10 @@ impl fmt::Display for Problem {
             }
             ProblemKind::MirrorSourceDisabled => f.write_str("mirrors a disabled output"),
             ProblemKind::MirrorOfMirror => f.write_str("mirrors an output that is a mirror"),
+            ProblemKind::NotAtOrigin { x, y } => write!(
+                f,
+                "this desktop needs the outputs to start at 0,0, and they start at {x},{y}"
+            ),
         }
     }
 }
@@ -168,7 +175,17 @@ impl Layout {
             check_one_scale(&enabled, &mut problems);
         }
         self.check_mirrors(capabilities, &mut problems);
-        check_placement(&enabled, self.layout_mode, capabilities, &mut problems);
+        if capabilities.origin_required
+            && let Some((x, y)) = self.placed_min()
+            && (x, y) != (0, 0)
+        {
+            problems.push(Problem {
+                output: None,
+                kind: ProblemKind::NotAtOrigin { x, y },
+                severity: Severity::Error,
+            });
+        }
+        check_placement(&enabled, self.extent_mode(), capabilities, &mut problems);
         problems
     }
 
@@ -546,13 +563,36 @@ mod tests {
         // still 1920 in the physical one.
         let mut layout = layout(vec![scaled("DP-1", 0), scaled("DP-2", 960)]);
         assert_eq!(kinds(&layout, &permissive()), []);
-        layout.layout_mode = LayoutMode::Physical;
+        layout.layout_mode = Some(LayoutMode::Physical);
         assert_eq!(
             kinds(&layout, &permissive()),
             [(Some(id("DP-2")), ProblemKind::Overlap { with: id("DP-1") })]
         );
         layout.entries[1].state.x = 1920;
         assert_eq!(kinds(&layout, &permissive()), []);
+    }
+
+    #[test]
+    fn a_layout_away_from_the_origin_is_refused_where_the_backend_needs_it() {
+        let layout = layout(vec![monitor("DP-1", 10, 5), monitor("DP-2", 1930, 5)]);
+        assert_eq!(kinds(&layout, &permissive()), []);
+        let origin = Capabilities {
+            origin_required: true,
+            ..permissive()
+        };
+        let problems = layout.validate(&origin);
+        assert_eq!(
+            problems,
+            [Problem {
+                output: None,
+                kind: ProblemKind::NotAtOrigin { x: 10, y: 5 },
+                severity: Severity::Error,
+            }]
+        );
+        assert_eq!(problems[0].kind.field(), Field::Position);
+        let mut at_origin = layout;
+        at_origin.normalise().expect("in range");
+        assert_eq!(kinds(&at_origin, &origin), []);
     }
 
     #[test]

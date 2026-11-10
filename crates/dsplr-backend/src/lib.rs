@@ -280,6 +280,7 @@ impl Backend {
                 fractional_scale: true,
                 per_output_scale: !gnome.global_scale_required(),
                 test_before_apply: true,
+                origin_required: true,
                 native_persistence: true,
                 primary: true,
                 rgb_range: true,

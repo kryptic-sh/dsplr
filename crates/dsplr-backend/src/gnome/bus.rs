@@ -67,7 +67,7 @@ pub trait DisplayConfig {
 /// The session bus, by libdbus's and GLib's rule: `DBUS_SESSION_BUS_ADDRESS`
 /// when set and not empty, else the socket `bus` in `XDG_RUNTIME_DIR`
 /// (which systemd's user bus listens on).
-pub fn session_address(var: impl Fn(&str) -> Option<OsString>) -> Result<Address, Error> {
+pub fn session_address(var: &impl Fn(&str) -> Option<OsString>) -> Result<Address, Error> {
     if let Some(text) = var("DBUS_SESSION_BUS_ADDRESS").filter(|text| !text.is_empty()) {
         let text = text.into_string().map_err(|text| Error::Address {
             text: text.to_string_lossy().into_owned(),
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn the_session_bus_is_the_variable_s_or_the_runtime_dir_s() {
-        let named = session_address(vars(&[
+        let named = session_address(&vars(&[
             ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/b/bus"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
         ]))
@@ -128,16 +128,16 @@ mod tests {
         };
         assert_eq!(path(&named), std::path::Path::new("/tmp/b/bus"));
 
-        let fallback = session_address(vars(&[
+        let fallback = session_address(&vars(&[
             ("DBUS_SESSION_BUS_ADDRESS", ""),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
         ]))
         .expect("an address");
         assert_eq!(path(&fallback), std::path::Path::new("/run/user/1000/bus"));
 
-        assert!(matches!(session_address(vars(&[])), Err(Error::NoBus)));
+        assert!(matches!(session_address(&vars(&[])), Err(Error::NoBus)));
         assert!(matches!(
-            session_address(vars(&[("DBUS_SESSION_BUS_ADDRESS", "nonsense")])),
+            session_address(&vars(&[("DBUS_SESSION_BUS_ADDRESS", "nonsense")])),
             Err(Error::Address { text, error: Some(_) }) if text == "nonsense"
         ));
     }

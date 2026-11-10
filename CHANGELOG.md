@@ -91,24 +91,35 @@ and this project adheres to
   `org.gnome.Mutter.DisplayConfig` on the session bus
   (`DBUS_SESSION_BUS_ADDRESS`, else the `bus` socket in `XDG_RUNTIME_DIR`).
   Detection tries it after KDE and before wlroots, when something owns that name
-  on the bus (asked of the bus, so nothing is started). It reads every monitor,
-  its modes and the scales each mode takes, and sets mode, position, scale (one
-  of the mode's, each output its own unless Mutter requires one for all),
-  transform, enabled, the primary output, RGB range and mirroring (monitors
-  sharing a logical monitor). `dsplr apply --dry-run` has Mutter test the layout
-  (`verify`), and an apply is `temporary`, which Mutter neither saves nor
-  reverts, so dsplr's confirm and watchdog guard it as on other desktops.
-  Mutter's own reason for a refusal is shown (exit `4`); a change between
-  reading the displays and applying is reported as the displays having changed.
+  on the bus (asked of the bus, so nothing is started) and it is this session's
+  Mutter: the process serving `WAYLAND_DISPLAY`'s socket, or, with no Wayland
+  socket, a session whose `XDG_CURRENT_DESKTOP` names GNOME. So another
+  session's GNOME on the user's shared bus, or GNOME around a nested compositor,
+  is not taken for this one. It reads every monitor, its modes and the scales
+  each mode takes, and sets mode, position, scale (one of the mode's, each
+  output its own unless Mutter requires one for all), transform, enabled, the
+  primary output, RGB range and mirroring (monitors sharing a logical monitor).
+  `dsplr apply --dry-run` has Mutter test the layout (`verify`), and an apply is
+  `temporary`, which Mutter neither saves nor reverts, so dsplr's confirm and
+  watchdog guard it as on other desktops. Mutter's own reason for a refusal is
+  shown (exit `4`); a change made between reading the displays and testing or
+  applying is reported as the displays having changed (exit `4`), nothing sent.
   A mode the monitor does not list, a mirror whose mode differs in size from its
-  source's, a second primary output and a layout that does not start at 0,0 are
-  refused before Mutter is asked (exit `3`), and validation refuses gaps, which
-  Mutter does not take. A monitor's underscanning and colour mode are sent back
-  as they are, since Mutter resets them otherwise. Mutter's physical layout
-  mode, where an output is as big as its mode whatever its scale, is read and
-  kept: a layout carries it (`layout_mode` in the JSON form, left out when
-  logical), the canvas and validation size outputs by it, and `dsplr list` says
-  so.
+  source's and a second primary output are refused before Mutter is asked (exit
+  `3`), and validation refuses gaps, which Mutter does not take. Mutter needs
+  the outputs to start at 0,0, so on GNOME the window moves the layout there
+  after every edit and drag, and `dsplr apply`, `set` and `restore` move the
+  layout they apply there first and say how far; `dsplr backend` lists it as
+  "starts at the origin". With no output that is on named primary (turning the
+  primary one off), Mutter's primary stays, else the first output left takes it,
+  and the read-back does not count that as a difference. A monitor's
+  underscanning and colour mode are sent back as they are, since Mutter resets
+  them otherwise. Mutter's physical layout mode, where an output is as big as
+  its mode whatever its scale, is read and kept: a layout from GNOME carries it
+  (`layout_mode` in the JSON form, written only where the desktop has one), the
+  canvas and validation size outputs by it, and `dsplr list` says so. A layout
+  file that names no mode keeps GNOME's; one naming another switches it, which
+  the confirm asks about and the read-back reports when it did not take.
 - `dsplr save` on GNOME sends the layout on screen to Mutter again as
   `persistent`: GNOME Shell asks whether to keep the display settings, and
   Mutter writes `monitors.xml` only once they are kept (Mutter alone keeps them

@@ -32,8 +32,14 @@ impl Bus {
     /// When `dbus-daemon` is not installed or does not say where it
     /// listens: the test cannot run, and passing would hide that.
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// [`Bus::start`], with more arguments for `dbus-daemon`.
+    fn start_with(more: &[&str]) -> Self {
         let mut daemon = Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address"])
+            .args(more)
             .stdout(Stdio::piped())
             .spawn()
             .expect("dbus-daemon runs (these tests need it installed)");
@@ -47,9 +53,17 @@ impl Bus {
         Self { daemon, address }
     }
 
-    /// The backend, found on this bus as detection finds it.
+    /// The backend, found on this bus as detection finds it, in a session
+    /// that says it is GNOME's and has no Wayland socket.
     async fn gnome(&self) -> Result<Gnome, Error> {
-        Gnome::from_vars(vars(&[("DBUS_SESSION_BUS_ADDRESS", &self.address)])).await
+        self.gnome_with(&[("XDG_CURRENT_DESKTOP", "GNOME")]).await
+    }
+
+    /// The backend, found on this bus with the variables `more` set too.
+    async fn gnome_with(&self, more: &[(&str, &str)]) -> Result<Gnome, Error> {
+        let mut pairs = vec![("DBUS_SESSION_BUS_ADDRESS", self.address.as_str())];
+        pairs.extend_from_slice(more);
+        Gnome::from_vars(vars(&pairs)).await
     }
 }
 
@@ -176,6 +190,54 @@ async fn a_bus_without_mutter_is_not_gnome() {
 }
 
 #[tokio::test]
+async fn only_this_session_s_mutter_is_taken() {
+    let bus = Bus::start();
+    let (_seen, _mutter) = mutter(&bus).await;
+    let runtime = tempfile::tempdir().expect("tempdir");
+    let runtime_dir = runtime.path().to_str().expect("UTF-8");
+
+    // The Wayland socket served by the process owning DisplayConfig on the
+    // bus (this one, as GNOME Shell serves both): GNOME, whatever
+    // XDG_CURRENT_DESKTOP says.
+    let _wayland = tokio::net::UnixListener::bind(runtime.path().join("wayland-0")).expect("bind");
+    let ours = [
+        ("WAYLAND_DISPLAY", "wayland-0"),
+        ("XDG_RUNTIME_DIR", runtime_dir),
+        ("XDG_CURRENT_DESKTOP", "sway"),
+    ];
+    bus.gnome_with(&ours).await.expect("this session's Mutter");
+
+    // A Wayland socket served by another process (a compositor nested in
+    // GNOME, which inherits its bus and XDG_CURRENT_DESKTOP): not GNOME.
+    let other = runtime.path().join("wayland-1");
+    let _other = Bus::start_with(&[&format!(
+        "--address=unix:path={}",
+        other.to_str().expect("UTF-8")
+    )]);
+    let nested = [
+        ("WAYLAND_DISPLAY", "wayland-1"),
+        ("XDG_RUNTIME_DIR", runtime_dir),
+        ("XDG_CURRENT_DESKTOP", "GNOME"),
+    ];
+    assert!(matches!(
+        bus.gnome_with(&nested).await,
+        Err(Error::OtherSession(why)) if why.contains("wayland-1")
+    ));
+
+    // No Wayland socket (GNOME on X11): XDG_CURRENT_DESKTOP must name GNOME,
+    // as one of its entries.
+    bus.gnome_with(&[("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")])
+        .await
+        .expect("a GNOME session on X11");
+    for desktop in [&[("XDG_CURRENT_DESKTOP", "sway")][..], &[]] {
+        assert!(matches!(
+            bus.gnome_with(desktop).await,
+            Err(Error::OtherSession(_))
+        ));
+    }
+}
+
+#[tokio::test]
 async fn the_state_is_read_and_each_request_sent_with_its_method_and_serial() {
     let bus = Bus::start();
     let (seen, _mutter) = mutter(&bus).await;
@@ -240,6 +302,29 @@ async fn mutter_s_refusal_and_a_stale_serial_are_told_apart() {
         "{before_sending:?}"
     );
     assert!(seen.lock().expect("unpoisoned").applied.is_empty());
+}
+
+#[tokio::test]
+async fn a_change_since_the_snapshot_is_stale_and_nothing_is_sent() {
+    let bus = Bus::start();
+    let (seen, _mutter) = mutter(&bus).await;
+    let gnome = bus.gnome().await.expect("Mutter is found");
+    let layout = gnome.snapshot().await.expect("a snapshot");
+
+    // Another client changes the displays after dsplr read them.
+    seen.lock().expect("unpoisoned").serial += 1;
+    for result in [gnome.test(&layout).await, gnome.apply(&layout).await] {
+        let error = crate::Error::from(result.expect_err("stale"));
+        assert!(error.is_stale(), "{error:?}");
+    }
+    assert!(seen.lock().expect("unpoisoned").applied.is_empty());
+
+    // Read again, the layout is made from the state now, and goes.
+    let layout = gnome.snapshot().await.expect("a snapshot");
+    gnome.apply(&layout).await.expect("applied");
+    // The apply moved the serial on itself, which is not a change since.
+    gnome.apply(&layout).await.expect("applied again");
+    assert_eq!(seen.lock().expect("unpoisoned").applied.len(), 2);
 }
 
 #[tokio::test]

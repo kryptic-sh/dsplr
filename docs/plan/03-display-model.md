@@ -50,12 +50,16 @@ capability is present and the conversions for other desktops ignore it.
   hardware facts (`Output`) and the settings (`OutputState`) for one monitor,
   plus layout-wide settings: the **fallback rule** for monitors not listed
   (Hyprland's `output = ""` catch-all, sway's `output *`; not built), and
-  GNOME's `layout_mode` (`Layout::layout_mode`, built at M6: `logical`
-  everywhere but where Mutter says `physical`). `dsplr list --json`, the GUI,
-  the profile store and every converter use this same struct; `Snapshot` is a
-  `Layout` read from the desktop plus its serial, not a separate shape. Apply,
-  test, persist and profiles all take a whole `Layout`, never a single field,
-  because every desktop applies a configuration atomically.
+  GNOME's `layout_mode` (`Layout::layout_mode`, built at M6: always named in a
+  GNOME snapshot, `logical` or `physical`; `None` on every other desktop and in
+  a file that does not name one, sized as `logical`. `dsplr apply` keeps the
+  desktop's mode unless the file names one and the desktop has modes, and a
+  change of mode is a difference the read-back reports and the confirm asks
+  about). `dsplr list --json`, the GUI, the profile store and every converter
+  use this same struct; `Snapshot` is a `Layout` read from the desktop plus its
+  serial, not a separate shape. Apply, test, persist and profiles all take a
+  whole `Layout`, never a single field, because every desktop applies a
+  configuration atomically.
 - **`Output`** (hardware facts) — connector name, description, `OutputId`,
   physical size in mm, available `Mode`s. **Optional**, because a `Layout` read
   back from a config file (`monitors.lua`, a sway outputs file) knows a
@@ -155,9 +159,21 @@ or y, along an axis only where one went negative, and not at all otherwise. So a
 drag changes only the output dragged unless it left one negative, and a layout
 away from the origin (headless sway's starts at x 1920) keeps its place; moving
 every output to the origin on each release would make them all pending changes,
-and an apply would move them all (decided 2026-11-10). `Layout::normalise` (the
-minimum x and y moved to zero, which XRandR requires) is the RandR backend's to
-apply at M7, not the canvas's.
+and an apply would move them all (decided 2026-11-10).
+
+Where the backend needs the layout **at the origin**
+(`Capabilities::origin_required`: GNOME, whose Mutter refuses logical monitors
+that do not start at 0,0, and X11 at M7), the layout is instead moved there
+(`Layout::normalise`, the minimum x and y of the enabled, non-mirrored outputs
+moved to zero) after every edit and on every drag's release, in the same undo
+step; so turning off the output at the origin moves the others up to it, and
+nudging that output away moves the others instead. The apply flow does the same
+to the layout it is asked to apply, before validating it, and says how far it
+moved it (`apply::to_origin`), which covers `dsplr apply`, `dsplr set` and
+`dsplr restore`; what is validated, tested, applied and read back is then one
+layout. Validation refuses a layout away from the origin there
+(`ProblemKind::NotAtOrigin`), so one that reaches it some other way is shown
+(decided by the owner at M6's review).
 
 `Layout::snap` takes its threshold in layout pixels, so `SNAP_DISTANCE` belongs
 to the canvas (`dsplr-core`), which divides it by the canvas zoom before

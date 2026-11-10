@@ -78,7 +78,7 @@ impl Layout {
     }
 
     /// The smallest x and the smallest y among the placed outputs.
-    fn placed_min(&self) -> Option<(i32, i32)> {
+    pub(crate) fn placed_min(&self) -> Option<(i32, i32)> {
         let min_x = placed(&self.entries).map(|(_, e)| e.state.x).min()?;
         let min_y = placed(&self.entries).map(|(_, e)| e.state.y).min()?;
         Some((min_x, min_y))
@@ -120,7 +120,7 @@ impl Layout {
         let Some((width, height)) = self
             .entries
             .get(moving)
-            .and_then(|entry| entry.state.size(self.layout_mode))
+            .and_then(|entry| entry.state.size(self.extent_mode()))
         else {
             return (x, y);
         };
@@ -133,7 +133,7 @@ impl Layout {
         let threshold = i64::from(threshold);
         let others: Vec<Rect> = placed(&self.entries)
             .filter(|(i, _)| *i != moving)
-            .filter_map(|(_, entry)| Rect::of(entry, self.layout_mode))
+            .filter_map(|(_, entry)| Rect::of(entry, self.extent_mode()))
             .collect();
         let near = |start: i64, len: i64, other_start: i64, other_len: i64| {
             start < other_start + other_len + threshold && other_start < start + len + threshold

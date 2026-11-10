@@ -247,34 +247,37 @@ milestone:
   ("negative"); that a priority change alone emits a new output order; and that
   `kwin_wayland --version` prints without a session (the harness gives it a time
   limit). The GUI e2e was not run either.
-- **The GNOME e2e has not run anywhere**
+- **The GNOME e2e is green in CI, but not since the review fixes**
   (`crates/dsplr-backend/tests/mutter_e2e.rs` and
-  `apps/dsplr/tests/mutter_e2e.rs`, under `tests/e2e/headless-mutter.sh`): the
-  owner's machine has no `mutter`, so their first run is CI's `mutter` entry.
-  The D-Bus side is checked locally against a stand-in `DisplayConfig` on a
-  private `dbus-daemon` (`gnome::tests`: the request shapes, method and serial,
-  Mutter's stale and refusal answers in its own words, `MonitorsChanged`), and
-  the wire types against the signatures in Mutter 51.1's interface XML; the
-  harness's private bus and environment were run with a stub `mutter`.
-  Everything Mutter itself does is read in its 51.1 source, not observed. Most
-  likely to fail first: that `mutter --headless --wayland --no-x11` starts in
-  the VM with GSettings in memory and no gnome-session; that its three virtual
-  monitors come up on, in a row, at scale 1, with serials and `Meta-N` names;
-  that a quarter turn of a virtual monitor applies; that 1920x1080 lists a
-  fractional scale (the CLI test's physical-mode refusal needs one); that
-  `monitors.xml` appears within the tests' wait; that Mutter's refusal text for
-  a gap contains "adjacent"; and that the VM's image has `dbus-run-session` (the
-  matrix entry installs `dbus` to be sure).
-- **GNOME: the canvas can leave the layout away from the origin**: Mutter
-  refuses logical monitors that do not start at 0,0, and dsplr refuses such a
-  layout before sending (exit `3`, `PlanError::Offset`). The GUI lifts a drag's
-  release only off negative positions (`Layout::make_non_negative`), so dragging
-  the leftmost output right of another leaves the layout starting at that
-  other's x, and Apply is refused with the reason. Options: a capability ("the
-  layout must start at the origin", true on GNOME and on X11 at M7) that makes
-  the editor normalise on release (`Layout::normalise`) and validation report
-  it; or the backend normalising before sending, at the cost of the read-back
-  reporting every position as not taken as asked. The owner's call.
+  `apps/dsplr/tests/mutter_e2e.rs`, under `tests/e2e/headless-mutter.sh`): its
+  first run, CI's `mutter` entry, passed against Mutter 51 (the backend's five
+  tests and the CLI's one). The owner's machine has no `mutter`, so it runs only
+  there. Not run yet: what M6's review changed, which the next CI run is the
+  first to check: detection requiring the Wayland socket's process to own
+  `DisplayConfig` (the harness's Mutter serves both), the serial of the last
+  snapshot making a later test or apply stale, the CLI moving an offset layout
+  to the origin (`moved the layout by 0,-10`), and
+  `dsplr set Meta-0 --disable --yes` turning off the primary output at the
+  origin, the others moved up to it and the next taking the primary. The D-Bus
+  side of each is unit-tested against a stand-in `DisplayConfig` on a private
+  `dbus-daemon` (`gnome::tests`).
+- **Moving a layout to the origin moves the outputs that are off too**
+  (`Layout::normalise` moves disabled outputs and mirrors by the same amount,
+  plan 03), so on GNOME an edit can change only where a disabled output sits,
+  which shows nowhere and still makes an undo step and a pending change that
+  applies as nothing. Leaving disabled outputs where they are would need a
+  normalise that skips them; not done.
+- **GNOME's session check refuses some real sessions**: behind a Wayland proxy
+  (waypipe, a Flatpak sandbox's) the socket's process is the proxy, so GNOME is
+  not found there rather than misjudged; and on GNOME on X11 the check is only
+  `XDG_CURRENT_DESKTOP`, which a nested X11 window manager inherits. Neither was
+  seen.
+- **A GNOME snapshot's serial is shared by clones of the backend**: the GUI's
+  backend thread reads the displays after each change Mutter reports, so an
+  apply racing a change it has not read yet is stale (exit `4` in the CLI, the
+  displays shown again in the window) rather than applied over it. A request
+  sent without any snapshot first (the watchdog's `dsplr restore --revert`) is
+  planned on what it reads, as before.
 - **GNOME adaptive sync**: Mutter 51.1 lists a variable-refresh mode as a mode
   of its own (`refresh-rate-mode` `variable` on the mode), not a setting, so
   dsplr shows it as a second mode of the same size and refresh and refuses

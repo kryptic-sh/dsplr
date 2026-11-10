@@ -139,11 +139,21 @@ mod tests {
     }
 
     #[test]
-    fn a_physical_layout_says_so_and_a_logical_one_leaves_it_out() {
+    fn a_layout_mode_is_written_when_named_and_left_out_when_not() {
         let mut layout = two_monitors();
         let written: serde_json::Value = serde_json::from_str(&layout.to_json().unwrap()).unwrap();
-        assert_eq!(written.get("layout_mode"), None);
-        layout.layout_mode = LayoutMode::Physical;
+        assert_eq!(written.get("layout_mode"), None, "a layout naming none");
+        // A layout from GNOME names its mode, logical too, so a file of it
+        // is told from one naming none.
+        layout.layout_mode = Some(LayoutMode::Logical);
+        let text = layout.to_json().unwrap();
+        let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(written["layout_mode"], "logical");
+        assert_eq!(
+            Layout::from_json(&text).unwrap().layout_mode,
+            Some(LayoutMode::Logical)
+        );
+        layout.layout_mode = Some(LayoutMode::Physical);
         let text = layout.to_json().unwrap();
         let written: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(written["layout_mode"], "physical");

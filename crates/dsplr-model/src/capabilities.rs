@@ -30,6 +30,12 @@ pub struct Capabilities {
     pub test_before_apply: bool,
     /// Enabled outputs may have gaps between them (not on KDE).
     pub gaps_allowed: bool,
+    /// The enabled outputs that are not mirrors must start at the origin:
+    /// the smallest x and the smallest y among them both 0 (GNOME's Mutter
+    /// refuses anything else, and XRandR will need it). The editor and the
+    /// apply flow move a layout there ([`crate::Layout::normalise`]), and
+    /// validation refuses one that is not.
+    pub origin_required: bool,
     /// The backend has a native place to persist a layout.
     pub native_persistence: bool,
     /// The desktop saves every applied layout itself.

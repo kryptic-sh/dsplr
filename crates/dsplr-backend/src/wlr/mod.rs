@@ -138,14 +138,14 @@ impl Wlr {
     /// IPC request, so it is asked only where it decides something: saving,
     /// and `dsplr backend`.
     pub async fn compositor(&self) -> Compositor {
-        let Some(display) = ipc::peer_pid(&self.socket, REQUEST_TIMEOUT).await else {
+        let Some(display) = crate::wayland::peer_pid(&self.socket, REQUEST_TIMEOUT).await else {
             return Compositor::Other;
         };
         let serves = async |socket: &Option<PathBuf>, answers: fn(&Path, Duration) -> bool| {
             let Some(socket) = socket.as_deref() else {
                 return false;
             };
-            ipc::peer_pid(socket, REQUEST_TIMEOUT).await == Some(display)
+            crate::wayland::peer_pid(socket, REQUEST_TIMEOUT).await == Some(display)
                 && answers(socket, REQUEST_TIMEOUT)
         };
         if serves(&self.swaysock, sway::answers).await {

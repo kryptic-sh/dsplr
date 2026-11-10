@@ -128,14 +128,23 @@ impl Confirm for Terminal {
 /// every message to `say`. The revert point and its watchdog are the ones
 /// `dsplr restore --revert` reads, so a dsplr killed mid-confirm is still
 /// reverted.
+///
+/// Where the backend needs the layout at the origin, the asked layout is
+/// moved there first ([`to_origin`]), saying so, so what is validated,
+/// tested, applied and read back is that one layout.
 pub async fn drive(
     backend: &Backend,
-    change: Change,
+    mut change: Change,
     options: flow::Options,
     confirm_timeout: Duration,
     confirmer: &mut dyn Confirm,
     say: &mut dyn FnMut(String),
 ) -> Outcome {
+    if change.capabilities.origin_required
+        && let Some(line) = to_origin(&mut change.asked, &change.backend)
+    {
+        say(line);
+    }
     let (mut flow, mut step) = Flow::start(change, options);
     let asked = flow.change().asked.clone();
     let capabilities = flow.change().capabilities.clone();
@@ -229,6 +238,23 @@ fn prepare(
     })
 }
 
+/// Moves `asked` so its outputs start at 0,0 ([`Layout::normalise`]), for
+/// `backend`, which needs that: the line saying how far, when it moved. A
+/// layout that cannot be moved without a position leaving `i32` is left as
+/// it is, for validation to refuse.
+pub fn to_origin(asked: &mut Layout, backend: &str) -> Option<String> {
+    let before = asked.clone();
+    asked.normalise().ok()?;
+    let (moved, was) = asked.entries.first().zip(before.entries.first())?;
+    let (dx, dy) = (
+        i64::from(moved.state.x) - i64::from(was.state.x),
+        i64::from(moved.state.y) - i64::from(was.state.y),
+    );
+    ((dx, dy) != (0, 0)).then(|| {
+        format!("moved the layout by {dx},{dy} so it starts at 0,0, which {backend} needs")
+    })
+}
+
 /// A backend error as the flow tells them apart.
 pub fn failure(error: &dsplr_backend::Error) -> Failure {
     let text = error.to_string();
@@ -270,9 +296,12 @@ impl std::fmt::Display for Unbound {
 /// names ([`assign`]), taking the live identity and hardware facts so the
 /// backend can name it. A mirror's source is the live output its file
 /// entry was paired with, or else the first one its identity names. Live
-/// outputs left unpaired keep their current state. Positions keep the
-/// file's layout mode, which they are measured in. The error lists the
-/// file's outputs left without one.
+/// outputs left unpaired keep their current state. The layout mode is the
+/// desktop's, unless the file names one and the desktop has layout modes
+/// (GNOME): a file that names none (from another desktop, or written by
+/// hand) neither switches GNOME's mode nor brings one to a desktop without
+/// them, so validation sizes its outputs as that desktop does. The error
+/// lists the file's outputs left without one.
 pub fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
     let paired = assign(&file.entries, &live.entries).map_err(|unpaired| {
         unpaired
@@ -317,7 +346,9 @@ pub fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
     );
     Ok(Layout {
         entries,
-        layout_mode: file.layout_mode,
+        layout_mode: live
+            .layout_mode
+            .map(|live| file.layout_mode.unwrap_or(live)),
     })
 }
 
@@ -379,9 +410,9 @@ pub fn is_yes(answer: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState};
+    use dsplr_model::{Layout, LayoutMode, Mode, Output, OutputEntry, OutputId, OutputState};
 
-    use super::{Unbound, bind, is_yes};
+    use super::{Unbound, bind, is_yes, to_origin};
 
     fn live_entry(connector: &str, serial: &str) -> OutputEntry {
         OutputEntry {
@@ -435,6 +466,49 @@ mod tests {
             live().entries[0],
             "not in the file: as it is"
         );
+    }
+
+    #[test]
+    fn a_layout_is_moved_to_the_origin_and_says_how_far() {
+        let mut layout = live();
+        layout.entries[0].state.x = 30;
+        layout.entries[1].state.x = 2590;
+        for entry in &mut layout.entries {
+            entry.state.y = 5;
+        }
+        assert_eq!(
+            to_origin(&mut layout, "gnome").as_deref(),
+            Some("moved the layout by -30,-5 so it starts at 0,0, which gnome needs")
+        );
+        let positions: Vec<_> = layout
+            .entries
+            .iter()
+            .map(|entry| (entry.state.x, entry.state.y))
+            .collect();
+        assert_eq!(positions, [(0, 0), (2560, 0)]);
+        assert_eq!(to_origin(&mut layout, "gnome"), None, "already there");
+    }
+
+    #[test]
+    fn the_layout_mode_is_the_desktop_s_unless_the_file_names_one_it_has() {
+        let with = |layout: Layout, mode: Option<LayoutMode>| Layout {
+            layout_mode: mode,
+            ..layout
+        };
+        let file = || live();
+        let gnome = |mode| with(live(), Some(mode));
+        // A file naming no mode, on GNOME: GNOME's mode, kept as it is.
+        for mode in [LayoutMode::Logical, LayoutMode::Physical] {
+            let bound = bind(&file(), &gnome(mode)).unwrap();
+            assert_eq!(bound.layout_mode, Some(mode));
+        }
+        // A file naming one, on GNOME: the file's, which the apply asks for.
+        let physical = with(file(), Some(LayoutMode::Physical));
+        let bound = bind(&physical, &gnome(LayoutMode::Logical)).unwrap();
+        assert_eq!(bound.layout_mode, Some(LayoutMode::Physical));
+        // On a desktop without modes a file's is dropped, so validation
+        // sizes outputs as that desktop does.
+        assert_eq!(bind(&physical, &live()).unwrap().layout_mode, None);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 use std::fmt;
 
 use crate::layout::SCALE_EPSILON;
-use crate::{Capabilities, Layout, OutputEntry, OutputId, OutputState};
+use crate::{Capabilities, Layout, LayoutMode, OutputEntry, OutputId, OutputState};
 
 /// One way the layout read back differs from the one asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +16,9 @@ pub enum Difference {
     Missing(OutputId),
     /// The layout read back has an output that was not asked for.
     Added(OutputId),
+    /// The layout mode (GNOME's) came back other than asked for: every
+    /// output's size, and so what its position means, changes with it.
+    LayoutMode { asked: LayoutMode, got: LayoutMode },
     /// A setting came back other than it was asked for, each written as
     /// `dsplr list` writes it.
     Setting {
@@ -67,6 +70,9 @@ impl fmt::Display for Difference {
         match self {
             Self::Missing(output) => write!(f, "{output}: asked for, but not there"),
             Self::Added(output) => write!(f, "{output}: there, but not asked for"),
+            Self::LayoutMode { asked, got } => {
+                write!(f, "layout mode asked {asked}, got {got}")
+            }
             Self::Setting {
                 output,
                 setting,
@@ -82,10 +88,13 @@ impl Layout {
     /// differs from it. Entries are paired by identity; both layouts come
     /// from the same backend, so its identities are the same.
     ///
-    /// A setting is compared only where both sides know it: a mode that was
+    /// The layout mode is compared where both name one. A setting is
+    /// compared only where both sides know it: a mode that was
     /// not asked for, an adaptive sync or optional setting either side has
     /// as `None`, and `primary` on a backend without
-    /// [`Capabilities::primary`] are skipped. A disabled output has nothing
+    /// [`Capabilities::primary`] or where `self` makes no output that is on
+    /// primary (the desktop then picks one, as GNOME and KWin always have
+    /// one) are skipped. A disabled output has nothing
     /// to compare but that. Modes match within the refresh tolerance. The
     /// scale asked for is first put through the roundings the backend's wire
     /// makes ([`Capabilities::carried_scale`]: a `wl_fixed`, KWin's 120ths),
@@ -94,10 +103,20 @@ impl Layout {
     /// scales) shows up.
     pub fn differences(&self, actual: &Self, capabilities: &Capabilities) -> Vec<Difference> {
         let mut differences = Vec::new();
+        if let (Some(asked), Some(got)) = (self.layout_mode, actual.layout_mode)
+            && asked != got
+        {
+            differences.push(Difference::LayoutMode { asked, got });
+        }
+        let primary = capabilities.primary
+            && self
+                .entries
+                .iter()
+                .any(|entry| entry.state.enabled && entry.state.primary);
         for asked in &self.entries {
             match actual.entries.iter().find(|got| got.id == asked.id) {
                 None => differences.push(Difference::Missing(asked.id.clone())),
-                Some(got) => compare(asked, got, capabilities, &mut differences),
+                Some(got) => compare(asked, got, capabilities, primary, &mut differences),
             }
         }
         for got in &actual.entries {
@@ -110,11 +129,12 @@ impl Layout {
 }
 
 /// Pushes a [`Difference::Setting`] for each setting of one output pair that
-/// differs.
+/// differs, `primary` among them only when `primary` says so.
 fn compare(
     asked: &OutputEntry,
     got: &OutputEntry,
     capabilities: &Capabilities,
+    primary: bool,
     differences: &mut Vec<Difference>,
 ) {
     let mut differ = |setting: Setting, asked_value: String, got_value: String| {
@@ -182,7 +202,7 @@ fn compare(
         };
         differ(Setting::MirrorOf, name(&a.mirror_of), name(&g.mirror_of));
     }
-    if capabilities.primary && a.primary != g.primary {
+    if primary && a.primary != g.primary {
         differ(
             Setting::Primary,
             a.primary.to_string(),
@@ -225,7 +245,8 @@ fn compare_known(
 mod tests {
     use super::{Difference, Setting};
     use crate::{
-        AdaptiveSync, Capabilities, Layout, Mode, OutputEntry, OutputId, OutputState, Transform,
+        AdaptiveSync, Capabilities, Layout, LayoutMode, Mode, OutputEntry, OutputId, OutputState,
+        Transform,
     };
 
     fn entry(name: &str, state: OutputState) -> OutputEntry {
@@ -257,6 +278,54 @@ mod tests {
             asked: asked.into(),
             got: got.into(),
         }
+    }
+
+    #[test]
+    fn primary_is_compared_only_where_the_layout_names_one() {
+        let caps = Capabilities {
+            primary: true,
+            ..Capabilities::default()
+        };
+        let got = one(OutputState {
+            primary: true,
+            ..enabled()
+        });
+        // Naming none, the desktop's pick is no difference.
+        assert_eq!(one(enabled()).differences(&got, &caps), []);
+        // Naming one that does not come back primary is.
+        let mut asked = Layout {
+            entries: vec![entry("DP-1", enabled()), entry("DP-2", enabled())],
+            ..Default::default()
+        };
+        asked.entries[1].state.primary = true;
+        let mut back = asked.clone();
+        back.entries[1].state.primary = false;
+        back.entries[0].state.primary = true;
+        assert_eq!(asked.differences(&back, &caps).len(), 2);
+    }
+
+    #[test]
+    fn a_layout_mode_named_on_both_sides_is_compared() {
+        let with = |mode| Layout {
+            layout_mode: mode,
+            ..one(enabled())
+        };
+        let caps = Capabilities::default();
+        let logical = with(Some(LayoutMode::Logical));
+        let physical = with(Some(LayoutMode::Physical));
+        assert_eq!(
+            physical.differences(&logical, &caps),
+            [Difference::LayoutMode {
+                asked: LayoutMode::Physical,
+                got: LayoutMode::Logical
+            }]
+        );
+        assert_eq!(
+            physical.differences(&logical, &caps)[0].to_string(),
+            "layout mode asked physical, got logical"
+        );
+        assert_eq!(with(None).differences(&logical, &caps), []);
+        assert_eq!(logical.differences(&with(None), &caps), []);
     }
 
     #[test]

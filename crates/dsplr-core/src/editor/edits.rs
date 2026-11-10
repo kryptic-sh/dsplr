@@ -91,7 +91,7 @@ impl Editor {
     /// is none, and nothing when that nearest one already touches it: the
     /// key stops at a neighbour, it does not jump past it to the next.
     pub fn move_to_neighbour(&mut self, index: usize, direction: Direction) -> bool {
-        let layout_mode = self.pending.layout_mode;
+        let layout_mode = self.pending.extent_mode();
         let Some(me) = self
             .pending
             .entries
@@ -178,7 +178,7 @@ impl Editor {
             return self.edit(index, |state| state.enabled = false);
         }
         let default = default_mode(self.listed_modes(index)).cloned();
-        let layout_mode = self.pending.layout_mode;
+        let layout_mode = self.pending.extent_mode();
         let others: Vec<Rect> = self
             .pending
             .entries
@@ -326,6 +326,24 @@ mod tests {
 
     fn state(editor: &Editor, index: usize) -> &OutputState {
         &editor.pending().entries[index].state
+    }
+
+    #[test]
+    fn edits_keep_the_layout_at_the_origin_where_the_backend_needs_it() {
+        let mut snapshot = three_monitors();
+        snapshot.capabilities.origin_required = true;
+        let mut editor = Editor::new(snapshot);
+        // DP-1 (0,360) and DP-2 (1920,0): turning DP-1 off moves DP-2 to
+        // the origin, in the same undo step.
+        assert!(editor.set_enabled(0, false));
+        assert_eq!((state(&editor, 1).x, state(&editor, 1).y), (0, 0));
+        assert!(editor.undo());
+        assert_eq!(state(&editor, 1).x, 1920);
+        // Nudging the output at x 0 further left keeps it there and moves
+        // the others right instead.
+        assert!(editor.nudge(0, Direction::Left));
+        assert_eq!(state(&editor, 0).x, 0);
+        assert_eq!(state(&editor, 1).x, 1920 + NUDGE_STEP);
     }
 
     #[test]

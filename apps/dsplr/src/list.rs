@@ -9,7 +9,7 @@ pub fn describe(layout: &Layout) -> String {
     if layout.entries.is_empty() {
         return "no outputs\n".to_owned();
     }
-    let mode = match layout.layout_mode {
+    let mode = match layout.extent_mode() {
         LayoutMode::Logical => String::new(),
         LayoutMode::Physical => {
             "physical layout mode: each output is as big as its mode, whatever its scale\n"
@@ -167,7 +167,7 @@ mod tests {
                 output: None,
                 state: OutputState::default(),
             }],
-            layout_mode: LayoutMode::Physical,
+            layout_mode: Some(LayoutMode::Physical),
         };
         assert!(
             describe(&layout).starts_with(

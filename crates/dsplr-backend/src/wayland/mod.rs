@@ -76,6 +76,18 @@ pub(crate) async fn bounded<T, E: From<Error>>(
         .map_err(|_| Error::Timeout { what })?
 }
 
+/// The pid of the process listening on `socket`, as the kernel reports it
+/// for a connection to it (`SO_PEERCRED`: the listener's at `listen`), to
+/// tell which process serves a compositor's socket. `None` when it cannot
+/// be connected to within `timeout` or the pid is not known.
+pub(crate) async fn peer_pid(socket: &Path, timeout: Duration) -> Option<i32> {
+    let stream = tokio::time::timeout(timeout, tokio::net::UnixStream::connect(socket))
+        .await
+        .ok()?
+        .ok()?;
+    stream.peer_cred().ok()?.pid()
+}
+
 /// Where the Wayland socket is, by libwayland's rule: `WAYLAND_DISPLAY`
 /// itself when absolute, else under `XDG_RUNTIME_DIR`.
 pub(crate) fn socket_path(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {

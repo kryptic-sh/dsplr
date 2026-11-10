@@ -6,8 +6,9 @@
 //! rescale under the pointer as the moving one changes the layout's extent.
 //! Each move snaps through `Layout::snap`; the release moves the layout off
 //! negative positions (`Layout::make_non_negative`), which moves no other
-//! output unless the drag left one negative, and records the whole drag as
-//! one undo step.
+//! output unless the drag left one negative, or, where the backend needs the
+//! layout at the origin, to the origin (`Layout::normalise`), and records
+//! the whole drag as one undo step.
 
 use dsplr_model::{Layout, PositionOutOfRange};
 
@@ -109,20 +110,26 @@ impl Editor {
     }
 
     /// The button came up: ends the drag, lifting the layout off negative
-    /// positions and recording the whole drag as one undo step when it moved
-    /// anything. Returns whether it did; a layout that cannot be lifted
-    /// without a position leaving `i32` is put back as it was.
+    /// positions, or moving it to the origin where the backend needs that,
+    /// and recording the whole drag as one undo step when it moved anything.
+    /// Returns whether it did; a layout that cannot be moved so without a
+    /// position leaving `i32` is put back as it was.
     pub fn release(&mut self) -> bool {
         let Some(drag) = self.drag.take() else {
             return false;
         };
-        if self.pending == drag.before {
+        let placed = if self.snapshot.capabilities.origin_required {
+            self.pending.normalise()
+        } else {
+            self.pending.make_non_negative()
+        };
+        if let Err(PositionOutOfRange { .. }) = placed {
+            // Moving the layout would put a position outside i32: the drag
+            // is refused, as no desktop could take the layout.
+            self.pending = drag.before;
             return false;
         }
-        if let Err(PositionOutOfRange { .. }) = self.pending.make_non_negative() {
-            // Lifting the layout off negative positions would put one outside
-            // i32: the drag is refused, as XRandR could not take the layout.
-            self.pending = drag.before;
+        if self.pending == drag.before {
             return false;
         }
         self.undo.push(drag.before);
@@ -267,6 +274,27 @@ mod tests {
                 "output {index} moved"
             );
         }
+    }
+
+    /// Where the backend needs the layout at the origin (GNOME), the release
+    /// moves it there: the same drag as above ends with the layout at 0,0.
+    #[test]
+    fn a_release_moves_the_layout_to_the_origin_where_the_backend_needs_it() {
+        let mut snapshot = three_monitors();
+        snapshot.capabilities.origin_required = true;
+        let mut editor = Editor::new(snapshot);
+        // DP-1 (0,360) down 200: DP-2 keeps the top at 0, DP-1 x 0.
+        drag(&mut editor, 0, 0.0, 200.0);
+        assert!(editor.release());
+        assert_eq!(position(&editor, 0), (0, 560));
+        // DP-1 right past DP-2 (at 1920, 1152 wide): DP-2 becomes the
+        // leftmost and moves to x 0, DP-1 by the same.
+        drag(&mut editor, 0, 3072.0, 0.0);
+        assert!(editor.release());
+        assert_eq!(position(&editor, 1), (0, 0));
+        assert!(position(&editor, 0).0 > 0, "{:?}", position(&editor, 0));
+        assert!(editor.undo());
+        assert_eq!(position(&editor, 0), (0, 560));
     }
 
     #[test]

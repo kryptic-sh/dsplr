@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use dsplr_model::Layout;
@@ -61,6 +62,10 @@ pub enum Error {
     Bus(#[from] zbus::Error),
     #[error("nothing owns {SERVICE} on the session bus, so this is not GNOME")]
     NotRunning,
+    /// Something owns the name, but nothing says it is this session's
+    /// Mutter rather than another session's on a shared bus.
+    #[error("a Mutter is on the session bus, but not this session's: {0}")]
+    OtherSession(String),
     #[error(transparent)]
     Snapshot(#[from] SnapshotError),
     #[error("the layout cannot be sent: {0}")]
@@ -102,12 +107,16 @@ impl Error {
     }
 }
 
-/// Mutter on the session bus: where the bus is, and what Mutter said it
-/// can do when it was found.
+/// Mutter on the session bus: where the bus is, what Mutter said it can do
+/// when it was found, and the serial of the state dsplr last read.
 #[derive(Clone, Debug)]
 pub struct Gnome {
     address: Address,
     global_scale_required: bool,
+    /// The serial of the last [`Gnome::snapshot`], which the layouts dsplr
+    /// is asked to send are made from; `None` before the first, and after
+    /// an apply, which moves Mutter's serial on itself. Shared by clones.
+    read: Arc<Mutex<Option<u32>>>,
 }
 
 impl Gnome {
@@ -119,24 +128,27 @@ impl Gnome {
     /// [`Gnome::from_env`], reading the variables through `var`: connects to
     /// the session bus they name, checks that something owns
     /// `org.gnome.Mutter.DisplayConfig` there (asking the bus, so nothing is
-    /// started on demand), and reads its state, which is how detection
+    /// started on demand) and that it is this session's Mutter
+    /// ([`this_session`]), and reads its state, which is how detection
     /// checks that Mutter is there and answers.
     pub async fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, Error> {
-        let address = bus::session_address(var)?;
+        let address = bus::session_address(&var)?;
         bounded("describe the displays", async {
             let connection = connect(&address).await?;
-            let owned = zbus::fdo::DBusProxy::new(&connection)
-                .await?
+            let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+            let owned = bus
                 .name_has_owner(SERVICE.try_into()?)
                 .await
                 .map_err(zbus::Error::from)?;
             if !owned {
                 return Err(Error::NotRunning);
             }
+            this_session(&var, &bus).await?;
             let state = read(&display_config(&connection).await?).await?;
             Ok(Self {
                 global_scale_required: state.global_scale_required,
                 address,
+                read: Arc::default(),
             })
         })
         .await
@@ -153,16 +165,31 @@ impl Gnome {
     }
 
     /// The current state as a [`Layout`].
+    ///
+    /// Its serial is remembered: a test or apply after it finds Mutter's
+    /// state changed since, and is dropped as stale ([`Gnome::test`]).
     pub async fn snapshot(&self) -> Result<Layout, Error> {
         bounded("describe the displays", async {
             let proxy = self.proxy().await?;
-            Ok(read(&proxy).await?.layout()?)
+            let state = read(&proxy).await?;
+            let layout = state.layout()?;
+            self.remember(Some(state.serial));
+            Ok(layout)
         })
         .await
     }
 
     /// Asks Mutter whether it would take `layout` (`verify`), changing
     /// nothing.
+    ///
+    /// Each request reads Mutter's state again to plan against (the mode
+    /// ids, which monitors are there) and sends its serial. When the last
+    /// [`Gnome::snapshot`] read another serial, the displays changed since
+    /// the layout was made from it, and the request is [`Error::Stale`],
+    /// nothing sent: as a stale serial is on Mutter's side, and a
+    /// `cancelled` on wlroots. Applying a layout made from an older state
+    /// would undo that change unseen, and the revert point the apply flow
+    /// keeps (that snapshot) would not be what the apply replaced.
     pub async fn test(&self, layout: &Layout) -> Result<(), Error> {
         bounded("check the layout", self.send(layout, Method::Verify)).await
     }
@@ -197,6 +224,13 @@ impl Gnome {
     async fn send(&self, layout: &Layout, method: Method) -> Result<(), Error> {
         let proxy = self.proxy().await?;
         let state = read(&proxy).await?;
+        let last_read = *self.read.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(serial) = last_read.filter(|&serial| serial != state.serial) {
+            return Err(Error::Stale(format!(
+                "Mutter's state is at serial {}, and the layout was made from serial {serial}",
+                state.serial
+            )));
+        }
         let current = state.layout()?;
         let config = plan::plan(&state, &current, layout)?;
         let mut properties = HashMap::new();
@@ -211,7 +245,15 @@ impl Gnome {
                 &properties,
             )
             .await
-            .map_err(Error::from_apply)
+            .map_err(Error::from_apply)?;
+        if method != Method::Verify {
+            self.remember(None);
+        }
+        Ok(())
+    }
+
+    fn remember(&self, serial: Option<u32>) {
+        *self.read.lock().unwrap_or_else(PoisonError::into_inner) = serial;
     }
 
     async fn proxy(&self) -> Result<DisplayConfigProxy<'static>, Error> {
@@ -237,6 +279,55 @@ impl Watch {
             .await
             .map(drop)
             .ok_or(Error::Ended)
+    }
+}
+
+/// Whether the Mutter owning `DisplayConfig` on the bus is this session's,
+/// not another's on a bus they share (systemd's user bus is one per user,
+/// not per session). Under Wayland, the process serving the socket
+/// `WAYLAND_DISPLAY` names (`SO_PEERCRED`) must be the one owning the name
+/// (`GetConnectionUnixProcessID`), as GNOME Shell does both; so a compositor
+/// nested in GNOME, which inherits its bus and `XDG_CURRENT_DESKTOP`, is not
+/// taken for it. Without a Wayland socket (GNOME on X11),
+/// `XDG_CURRENT_DESKTOP` must name GNOME. A Wayland proxy between the client
+/// and Mutter (waypipe, a sandbox) shows its own pid, so there GNOME is not
+/// found rather than misjudged.
+async fn this_session(
+    var: &impl Fn(&str) -> Option<OsString>,
+    bus: &zbus::fdo::DBusProxy<'_>,
+) -> Result<(), Error> {
+    let Ok(socket) = crate::wayland::socket_path(var) else {
+        let gnome = var("XDG_CURRENT_DESKTOP").is_some_and(|desktops| {
+            desktops
+                .to_string_lossy()
+                .split(':')
+                .any(|desktop| desktop.eq_ignore_ascii_case("GNOME"))
+        });
+        return if gnome {
+            Ok(())
+        } else {
+            Err(Error::OtherSession(
+                "there is no Wayland socket to check, and XDG_CURRENT_DESKTOP does not name GNOME"
+                    .into(),
+            ))
+        };
+    };
+    let owner = bus
+        .get_connection_unix_process_id(SERVICE.try_into()?)
+        .await
+        .map_err(zbus::Error::from)?;
+    let display = crate::wayland::peer_pid(&socket, crate::wayland::REQUEST_TIMEOUT).await;
+    if display.and_then(|pid| u32::try_from(pid).ok()) == Some(owner) {
+        Ok(())
+    } else {
+        Err(Error::OtherSession(format!(
+            "the Wayland socket {} is served by {}, not by the process owning it ({owner})",
+            socket.display(),
+            display.map_or_else(
+                || "no process dsplr can see".to_owned(),
+                |pid| format!("process {pid}")
+            ),
+        )))
     }
 }
 

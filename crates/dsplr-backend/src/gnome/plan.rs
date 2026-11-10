@@ -58,8 +58,6 @@ pub enum PlanError {
     MirrorModeSize { connector: String, mirrored: String },
     #[error("{0}: a second primary output; Mutter has one")]
     SecondPrimary(String),
-    #[error("{0}: primary, but off")]
-    PrimaryOff(String),
     #[error(
         "Mutter needs the outputs to start at 0,0 (the leftmost at x 0, the topmost at y 0), and this layout starts at {x},{y}"
     )]
@@ -86,10 +84,17 @@ pub enum PlanError {
 /// a logical monitor, at its position with its scale and transform; each
 /// mirror is put in its source's, whose position, scale and transform it
 /// then has. The primary output's logical monitor is the primary one; with
-/// none named, the one Mutter has as primary now stays so while it is on,
-/// else the first, since Mutter requires one. A mode is the one the
+/// none named among the outputs that are on, the one Mutter has as primary
+/// now stays so while it is on, else the first, since Mutter requires one. A mode is the one the
 /// monitor lists (Mutter takes no custom modes), and a scale is sent as the
 /// mode lists it, so a scale read back as a double goes back exactly.
+///
+/// A layout that names no layout mode is in Mutter's current one. One that
+/// names another is sent with it, and then its scales are not checked
+/// here: Mutter lists each mode's scales for its current layout mode only
+/// (`GetCurrentState` calculates them with `manager->layout_mode`), so the
+/// list dsplr has is the wrong one, and Mutter checks the scale against the
+/// new mode's itself.
 /// Mutter resets a monitor's underscanning and colour mode when an apply
 /// leaves them out, so they go back as they are, and its RGB range as the
 /// layout says, else as it is.
@@ -98,16 +103,18 @@ pub fn plan(state: &State, current: &Layout, layout: &Layout) -> Result<Config, 
     for (entry, monitor) in entries.iter().zip(&state.monitors) {
         refuse_unsupported(entry, monitor)?;
     }
+    let asked_mode = layout.layout_mode.unwrap_or(state.layout_mode);
+    let switching = asked_mode != state.layout_mode;
     let layout_mode = if state.supports_changing_layout_mode {
-        Some(match layout.layout_mode {
+        Some(match asked_mode {
             LayoutMode::Logical => LAYOUT_MODE_LOGICAL,
             LayoutMode::Physical => LAYOUT_MODE_PHYSICAL,
         })
-    } else if layout.layout_mode == state.layout_mode {
+    } else if !switching {
         None
     } else {
         return Err(PlanError::LayoutMode {
-            asked: layout.layout_mode,
+            asked: asked_mode,
             current: state.layout_mode,
         });
     };
@@ -151,7 +158,11 @@ pub fn plan(state: &State, current: &Layout, layout: &Layout) -> Result<Config, 
             let source = entries[group[0]];
             let monitor = &state.monitors[group[0]];
             let mode = listed_mode(monitor, source)?;
-            let scale = listed_scale(monitor, mode, source.state.scale)?;
+            let scale = if switching {
+                source.state.scale
+            } else {
+                listed_scale(monitor, mode, source.state.scale)?
+            };
             let mut monitors = vec![monitor_config(monitor, mode, source)];
             for &index in &group[1..] {
                 let mirror = &state.monitors[index];
@@ -256,12 +267,16 @@ fn primary_group(
         if !entry.state.primary {
             continue;
         }
-        let connector = || state.monitors[index].connector.clone();
+        // An output turned off keeps its flag in a layout made from a
+        // snapshot (`dsplr set … --disable`), and shows nothing: it names no
+        // primary.
         if !entry.state.enabled {
-            return Err(PlanError::PrimaryOff(connector()));
+            continue;
         }
         if named.is_some() {
-            return Err(PlanError::SecondPrimary(connector()));
+            return Err(PlanError::SecondPrimary(
+                state.monitors[index].connector.clone(),
+            ));
         }
         named = Some(index);
     }
@@ -514,9 +529,14 @@ mod tests {
             planned(&layout),
             Err(PlanError::SecondPrimary("HDMI-1".into()))
         );
+        // The primary output turned off with its flag still on, as
+        // `dsplr set DP-1 --disable` leaves it: the one left takes it.
         let mut layout = current();
         layout.entries[0].state.enabled = false;
-        assert_eq!(planned(&layout), Err(PlanError::PrimaryOff("DP-1".into())));
+        layout.entries[1].state.x = 0;
+        let config = planned(&layout).expect("plans");
+        assert_eq!(config.logical_monitors.len(), 1);
+        assert!(config.logical_monitors[0].4);
     }
 
     #[test]
@@ -562,9 +582,33 @@ mod tests {
     }
 
     #[test]
+    fn a_layout_naming_no_mode_is_in_mutter_s_and_a_switch_leaves_scales_to_mutter() {
+        // A file from another desktop names no mode: Mutter's stays.
+        let mut layout = current();
+        layout.layout_mode = None;
+        assert_eq!(
+            planned(&layout).expect("plans").layout_mode,
+            Some(LAYOUT_MODE_LOGICAL)
+        );
+
+        // In the logical mode 1.75 is not one of DP-1's listed scales, and is
+        // refused; asked with a switch to the physical mode, the list dsplr
+        // has is the logical mode's, so the scale goes as asked and Mutter
+        // checks it against the physical mode's.
+        layout.entries[0].state.scale = 1.75;
+        assert!(matches!(
+            planned(&layout),
+            Err(PlanError::ScaleNotForMode { .. })
+        ));
+        layout.layout_mode = Some(LayoutMode::Physical);
+        let config = planned(&layout).expect("plans");
+        assert!((config.logical_monitors[0].2 - 1.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn the_layout_mode_is_sent_where_mutter_can_change_it_and_must_match_elsewhere() {
         let mut layout = current();
-        layout.layout_mode = LayoutMode::Physical;
+        layout.layout_mode = Some(LayoutMode::Physical);
         layout.entries[0].state.scale = 1.0;
         layout.entries[1].state.x = 2560;
         assert_eq!(
