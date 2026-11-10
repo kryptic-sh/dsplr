@@ -67,6 +67,51 @@ impl Drop for Running {
     }
 }
 
+/// How long a command the test runs to its end (`wtype`, `swaymsg`,
+/// `grim`, `dsplr list`) may take: nothing in this test waits without a
+/// bound, so a hang is a failure saying what it waited on.
+const COMMAND: Duration = Duration::from_secs(30);
+
+/// Runs `command` to its end, its output collected, or fails after `limit`
+/// saying what it was and what it printed. Each command's output here is
+/// small enough for the pipes to hold until it ends.
+fn bounded(command: &mut Command, limit: Duration, what: &str) -> std::process::Output {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("{what}: cannot start: {error}"));
+    let deadline = Instant::now() + limit;
+    while child.try_wait().expect("its status").is_none() {
+        if Instant::now() >= deadline {
+            child.kill().expect("killed");
+            let output = child.wait_with_output().expect("reaped");
+            panic!("{what}: still running after {limit:?}; it printed {output:?}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().expect("its output")
+}
+
+/// Waits up to `limit` for `child` to end, and returns how; fails saying
+/// `what` it waited for, and what sway shows of dsplr's windows (a quit
+/// prompt shows in the window's title).
+fn ended(child: &mut Child, limit: Duration, what: &str) -> std::process::ExitStatus {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().expect("its status") {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: still running after {limit:?}; sway shows dsplr's windows as {:?} (title, focused)",
+            dsplr_windows()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// Holds a virtual keyboard for the session, so each `wtype` call's keys
 /// reach the window (the backlog's harness entry).
 fn hold_keyboard() -> Running {
@@ -80,29 +125,61 @@ fn hold_keyboard() -> Running {
 
 /// Types `keys`, one `wtype` argument: a character string, or `-k NAME`.
 fn wtype(keys: &[&str]) {
-    let status = Command::new("wtype")
-        .args(keys)
-        .status()
-        .expect("wtype runs");
-    assert!(status.success(), "wtype {keys:?}");
+    let what = format!("wtype {keys:?}");
+    let output = bounded(Command::new("wtype").args(keys), COMMAND, &what);
+    assert!(output.status.success(), "{what}: {output:?}");
+}
+
+/// Where the window's stderr goes, every run of it appended, so a failure
+/// can say what it printed.
+fn gui_log() -> PathBuf {
+    harness_runtime().join("gui.log")
 }
 
 fn start_gui() -> Running {
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(gui_log())
+        .expect("the window's log");
     Running(
         Command::new(dsplr_bin())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(log)
             .spawn()
             .expect("dsplr starts"),
     )
 }
 
+/// Types `q` and waits up to [`STEP`] for the window to quit, cleanly; when
+/// it does not (a quit prompt for pending edits shows only in its bar),
+/// fails with the layout and what the window printed.
+fn quit(mut gui: Running, what: &str) {
+    wtype(&["q"]);
+    let deadline = Instant::now() + STEP;
+    while gui.0.try_wait().expect("its status").is_none() {
+        if Instant::now() >= deadline {
+            panic!(
+                "{what}: still running after {STEP:?}; sway shows dsplr's windows as {:?}; \
+                 the layout is {:?}; the window printed:\n{}",
+                dsplr_windows(),
+                layout(),
+                std::fs::read_to_string(gui_log()).unwrap_or_default()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let status = gui.0.wait().expect("its status");
+    assert!(status.success(), "{what}: {status}");
+}
+
 /// The layout, as `dsplr list --json` reads it.
 fn layout() -> Layout {
-    let output = Command::new(dsplr_bin())
-        .args(["list", "--json"])
-        .output()
-        .expect("dsplr list runs");
+    let output = bounded(
+        Command::new(dsplr_bin()).args(["list", "--json"]),
+        COMMAND,
+        "dsplr list --json",
+    );
     assert!(output.status.success(), "{output:?}");
     Layout::from_json(&String::from_utf8_lossy(&output.stdout)).expect("a layout")
 }
@@ -136,10 +213,11 @@ const READY: Duration = Duration::from_secs(60);
 /// [`CONFIRM_TITLE`] (a toplevel dialog, where there are no layer surfaces,
 /// has it too).
 fn dsplr_windows() -> Vec<(String, bool)> {
-    let output = Command::new("swaymsg")
-        .args(["-t", "get_tree"])
-        .output()
-        .expect("swaymsg runs");
+    let output = bounded(
+        Command::new("swaymsg").args(["-t", "get_tree"]),
+        COMMAND,
+        "swaymsg -t get_tree",
+    );
     assert!(output.status.success(), "swaymsg -t get_tree: {output:?}");
     let tree: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("sway's tree is JSON");
@@ -223,14 +301,12 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     let _keyboard = hold_keyboard();
 
     // Kept: Enter in the dialog.
-    let mut gui = apply_a_scale_step(1.0, 1.25);
+    let gui = apply_a_scale_step(1.0, 1.25);
     wtype(&["-k", "Return"]);
     until_confirming(false, "Enter answering the confirm");
     std::thread::sleep(Duration::from_secs(CONFIRM_SECS + 2));
     until_scale(1.25, STEP, "kept");
-    wtype(&["q"]);
-    let status = gui.0.wait().unwrap();
-    assert!(status.success(), "quit after keeping: {status}");
+    quit(gui, "quit after keeping");
 
     // Not answered: the dialog's countdown reverts it.
     let gui = apply_a_scale_step(1.25, 1.5);
@@ -253,11 +329,15 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     let gui = start_gui_ready();
     wtype(&["+"]);
     let before = layout().entries.len();
-    let status = Command::new("swaymsg")
-        .arg("create_output")
-        .status()
-        .unwrap();
-    assert!(status.success(), "swaymsg create_output");
+    let created = bounded(
+        Command::new("swaymsg").arg("create_output"),
+        COMMAND,
+        "swaymsg create_output",
+    );
+    assert!(
+        created.status.success(),
+        "swaymsg create_output: {created:?}"
+    );
     let plugged = layout();
     assert_eq!(plugged.entries.len(), before + 1, "a new output");
     let new = plugged
@@ -297,22 +377,24 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
         );
         std::thread::sleep(Duration::from_millis(250));
     }
-    wtype(&["q"]);
-    let mut gui = gui;
-    let status = gui.0.wait().unwrap();
-    assert!(status.success(), "quit after the hotplug: {status}");
+    quit(gui, "quit after the hotplug");
 }
 
 /// How many of `output`'s pixels are `color`, in a `grim` capture of it.
 /// grim writes PPM (`P6`, then width, height and the maximum value, then the
 /// pixels as RGB bytes), which needs no decoder.
 fn pixels_of(output: &str, color: dsplr_core::Color) -> usize {
-    let capture = Command::new("grim")
-        .args(["-t", "ppm", "-o", output, "-"])
-        .output()
-        .expect("grim runs (the gui entry installs it)");
+    // To a file: a capture is more than a pipe holds before it is read.
+    let file = harness_runtime().join("capture.ppm");
+    let capture = bounded(
+        Command::new("grim")
+            .args(["-t", "ppm", "-o", output])
+            .arg(&file),
+        COMMAND,
+        "grim (the gui entry installs it)",
+    );
     assert!(capture.status.success(), "{capture:?}");
-    let ppm = capture.stdout;
+    let ppm = std::fs::read(&file).expect("the capture");
     // The header is four whitespace-separated fields, then one whitespace
     // byte before the pixels.
     let mut fields = 0;
@@ -399,7 +481,11 @@ fn identify_shows_each_output_s_panel_for_its_time() {
         }
     }
 
-    let status = identify.0.wait().unwrap();
+    let status = ended(
+        &mut identify.0,
+        IDENTIFY_TIME + STEP,
+        "dsplr identify closing",
+    );
     let rest: Vec<String> = said.try_iter().map(|(_, line)| line).collect();
     assert!(status.success(), "{status}: {rest:?}");
     let took = started.elapsed();
@@ -467,7 +553,7 @@ fn identify_with(vars: &[(&str, Option<&str>)]) -> (Option<i32>, String) {
             None => command.env_remove(name),
         };
     }
-    let output = command.output().unwrap();
+    let output = bounded(&mut command, COMMAND, "dsplr identify");
     (
         output.status.code(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
