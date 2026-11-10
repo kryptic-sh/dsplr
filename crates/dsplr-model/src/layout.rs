@@ -47,8 +47,9 @@ impl Layout {
     /// Drops each desktop-specific setting a backend without it
     /// (`capabilities`) could only refuse, where its value is the neutral
     /// one ([`NEUTRAL_COLOUR_PRESET`], [`NEUTRAL_BIT_DEPTH`],
-    /// [`NEUTRAL_OVERSCAN`], [`NEUTRAL_RGB_RANGE`]): what a layout read on
-    /// Hyprland or KDE says when nothing special is set, so a profile saved
+    /// [`NEUTRAL_OVERSCAN`], [`NEUTRAL_RGB_RANGE`], [`NEUTRAL_ADAPTIVE_SYNC`]):
+    /// what a layout read on Hyprland, KDE or wlroots says when nothing
+    /// special is set, so a profile saved
     /// there applies elsewhere. Any other value is a request the desktop
     /// cannot honour, and stays for the backend to refuse.
     pub fn drop_neutral_unsupported(&mut self, capabilities: &Capabilities) {
@@ -67,6 +68,11 @@ impl Layout {
             }
             if !capabilities.rgb_range && state.rgb_range == Some(NEUTRAL_RGB_RANGE) {
                 state.rgb_range = None;
+            }
+            if state.adaptive_sync == Some(NEUTRAL_ADAPTIVE_SYNC)
+                && !capabilities.adaptive_sync.contains(&NEUTRAL_ADAPTIVE_SYNC)
+            {
+                state.adaptive_sync = None;
             }
         }
     }
@@ -196,6 +202,10 @@ pub const NEUTRAL_COLOUR_PRESET: &str = "srgb";
 /// The bit depth that means nothing special: Hyprland's default
 /// (`m_enable10bit = false`).
 pub const NEUTRAL_BIT_DEPTH: u8 = 8;
+
+/// The adaptive sync that means nothing special: off, what wlroots and KDE
+/// report for an output not set to it.
+pub const NEUTRAL_ADAPTIVE_SYNC: AdaptiveSync = AdaptiveSync::Off;
 
 /// The overscan that means nothing special: none.
 pub const NEUTRAL_OVERSCAN: u8 = 0;
@@ -426,6 +436,29 @@ mod tests {
         };
         layout.drop_neutral_unsupported(&all);
         assert_eq!(layout.entries[0].state, neutral);
+        // Adaptive sync off, from a sway or KDE profile, is neutral too on a
+        // backend that takes none (GNOME); on one that takes it, it stays.
+        let mut sync = Layout {
+            entries: vec![entry(OutputState {
+                adaptive_sync: Some(AdaptiveSync::Off),
+                ..OutputState::default()
+            })],
+            ..Default::default()
+        };
+        sync.drop_neutral_unsupported(&crate::Capabilities::default());
+        assert_eq!(sync.entries[0].state.adaptive_sync, None);
+        let mut sync = Layout {
+            entries: vec![entry(OutputState {
+                adaptive_sync: Some(AdaptiveSync::Off),
+                ..OutputState::default()
+            })],
+            ..Default::default()
+        };
+        sync.drop_neutral_unsupported(&crate::Capabilities {
+            adaptive_sync: vec![AdaptiveSync::Off, AdaptiveSync::On],
+            ..crate::Capabilities::default()
+        });
+        assert_eq!(sync.entries[0].state.adaptive_sync, Some(AdaptiveSync::Off));
         // A real request stays, for the backend to refuse.
         let asked = OutputState {
             colour_preset: Some("wide".into()),

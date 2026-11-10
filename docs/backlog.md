@@ -411,11 +411,6 @@ milestone:
   connection of its own and save nothing on wlroots, unless the wlr check could
   take that connection over, which means changing a live client's protocol (or
   one protocol type for both).
-- **Hyprland adaptive sync**: the model now says "not known" (`None`) and the
-  writer writes `vrr = 0` for off, so `Backend::capabilities` can list
-  `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
-  headless output that can only check Hyprland accepts the rule (see the
-  Hyprland facts below), not that VRR changed.
 - **Hyprland on `wlr-output-management`**: the `wlr` backend
   (`dsplr_backend::wlr`) is written and tested on sway, but Hyprland still
   applies through `eval` and reads `j/monitors`; it needs the protocol only for
@@ -818,31 +813,17 @@ milestone:
 
 ## Open work in the Windows-owned crates
 
-- **`dsplr set --enable` does not place the output**: a desktop that reports a
-  disabled output at the origin (wlroots, Hyprland) gets it back there, so
-  validation refuses the overlap unless `--pos` is given. Placing it beside the
-  others (the right edge of the layout, say) would guess where the user wants
-  it; not done. The GUI's `space` makes that guess (right of the others, level
-  with the topmost, when its old place would overlap one or touch none, as it
-  can since moving a layout to the origin leaves outputs that are off behind:
-  `Editor::set_enabled`); whether `set --enable` should share it is open. Turned
-  on without a mode, an output takes its preferred mode, else its largest at the
-  highest refresh (`set::default_mode`); headless sway lists no mode for a
-  disabled output, so there `--mode` is needed too. `--no-mirror` does not place
-  the output either: Hyprland moves a mirror onto its source
-  (`CMonitor::setMirror` sets its position to the source's, v0.57.1 source, not
-  observed), so ending one without `--pos` is refused as an overlap (exit `3`).
-  The Hyprland e2e's `--no-mirror` step passes `--pos`.
+- **`dsplr set --enable` needs `--mode` on headless sway**: turned on without a
+  mode, an output takes its preferred mode, else its largest at the highest
+  refresh (`set::default_mode`); headless sway lists no mode for an output that
+  is off, so there `--mode` is needed too. Placement is shared with the GUI
+  (`Layout::place_beside_others`); the Hyprland e2e's `--no-mirror` step still
+  passes `--pos`, and Hyprland putting a mirror on its source
+  (`CMonitor::setMirror`, v0.57.1 source) was not observed.
 - **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
   output's size, and a neighbour it now overlaps or leaves a gap beside is
   refused or warned about by validation, not shifted. `Layout::normalise` and
   `snap` exist for the GUI; whether `set` should use them is open.
-- **Adaptive sync is checked against `Capabilities` only by `dsplr set`**:
-  `Layout::validate` does not look at `adaptive_sync`, so a layout file asking
-  for a value the backend lacks reaches the backend: on `wlr` its `Plan` error
-  refuses it at the test step, before the revert point (exit `3`, as `sway_e2e`
-  checks), but the GUI's validation would not show it. Moving the check into
-  validation would cover both.
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.

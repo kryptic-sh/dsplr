@@ -152,6 +152,11 @@ success, so it is not one. Checked:
   (Hyprland and sway allow gaps, but the pointer cannot cross one);
 - mirroring supported, and mirror sources exist, are enabled and are not mirrors
   themselves;
+- adaptive sync, where the layout says, among the values the backend takes
+  (`Capabilities::adaptive_sync`; `ProblemKind::AdaptiveSyncUnsupported`): every
+  value on Hyprland and KDE, off and on on wlroots, none on GNOME, where off
+  from another desktop's profile is dropped as neutral before validation
+  (`Layout::drop_neutral_unsupported`);
 - at most one primary among the enabled outputs (`ProblemKind::SecondPrimary`);
   an output that is off is no primary whatever it says, on GNOME and KDE alike.
 
@@ -190,12 +195,15 @@ impossible otherwise. `Layout::make_non_negative` and `Layout::normalise` move
 mirrors by the same amount as the rest, so a mirror stays on its source (GNOME
 puts a mirror in its source's logical monitor, and reads it back there), and
 leave outputs that are off where they are: no desktop shows where an output that
-is off sits, so moving it would be a pending change that applies as nothing. So
-an output turned back on in the GUI (`Editor::set_enabled`) can find the layout
-moved on from it: where its old place overlaps an output on the canvas, or
-touches none, it goes to the right of them all, level with the topmost; where it
-still touches one and overlaps none, it keeps its place. Both refuse (changing
-nothing) when a position would leave `i32`.
+is off sits, so moving it would be a pending change that applies as nothing.
+Both refuse (changing nothing) when a position would leave `i32`.
+
+So an output turned back on can find the layout moved on from it, and a desktop
+may report one that is off at the origin (wlroots, Hyprland), or a mirror on its
+source: `Layout::place_beside_others` leaves it where it is when it touches an
+output that is on and overlaps none, else puts it right of them all, level with
+the topmost. The GUI's `space` (`Editor::set_enabled`) and `dsplr set --enable`
+/ `--no-mirror` without `--pos` both place an output so.
 
 ## JSON form
 

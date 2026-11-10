@@ -171,11 +171,11 @@ impl Editor {
     }
 
     /// Turns output `index` on or off. Turned on without a mode, it takes
-    /// [`default_mode`]; turned on where it would overlap an output on the
-    /// canvas, or touch none of them (the layout moved on while it was off,
-    /// which moving to the origin does), it moves to the right of them all,
-    /// level with the topmost. Where it still touches one and overlaps none,
-    /// it keeps its place.
+    /// [`default_mode`], and it is placed beside the others
+    /// ([`Layout::place_beside_others`]): where its old place would overlap
+    /// an output on the canvas, or touch none of them (the layout moved on
+    /// while it was off, which moving to the origin does), right of them
+    /// all, level with the topmost; else where it was.
     pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
         if !enabled {
             // An output that is off is no primary: the desktop picks another.
@@ -185,35 +185,16 @@ impl Editor {
             });
         }
         let default = default_mode(self.listed_modes(index)).cloned();
-        let layout_mode = self.pending.extent_mode();
-        let others: Vec<Rect> = self
-            .pending
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|&(other, entry)| other != index && on_canvas(&entry.state))
-            .filter_map(|(_, entry)| Rect::of(entry, layout_mode))
-            .collect();
-        self.edit(index, |state| {
+        if self.pending.entries.get(index).is_none() {
+            return false;
+        }
+        self.edit_layout(|layout| {
+            let state = &mut layout.entries[index].state;
             state.enabled = true;
             if state.mode.is_none() {
                 state.mode = default;
             }
-            let Some(entry_rect) = Rect::of_state(state, layout_mode) else {
-                return;
-            };
-            let overlaps = others.iter().any(|other| other.overlaps(entry_rect));
-            let detached =
-                !others.is_empty() && !others.iter().any(|other| other.touches(entry_rect));
-            if overlaps || detached {
-                let right = others.iter().map(|other| other.right()).max();
-                let top = others.iter().map(|other| other.y).min();
-                if let (Some(Ok(x)), Some(Ok(y))) =
-                    (right.map(i32::try_from), top.map(i32::try_from))
-                {
-                    (state.x, state.y) = (x, y);
-                }
-            }
+            layout.place_beside_others(index);
         })
     }
 

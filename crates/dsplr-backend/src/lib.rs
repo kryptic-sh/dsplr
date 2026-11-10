@@ -241,9 +241,9 @@ impl Backend {
 
     /// What dsplr can do through this backend now.
     ///
-    /// Hyprland's are the ones its e2e test applies and reads back. Adaptive
-    /// sync is left out because turning it off cannot be applied yet, and
-    /// colour presets and bit depth because the snapshot does not read them.
+    /// Hyprland's are the ones its e2e test applies and reads back, and
+    /// adaptive sync, which its rules set (`vrr` 0, 1, 2) but its snapshot
+    /// cannot read back, so a read-back does not compare it.
     /// Its native persistence is the Lua config's `monitors.lua`; under a
     /// hyprlang config [`persist`](Self::persist) is unsupported.
     ///
@@ -289,6 +289,15 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => Capabilities {
                 mirroring: true,
+                // Set through `vrr` 0, 1 and 2; the snapshot reads none back
+                // (`vrr` there is whether it is active), so a read-back skips
+                // it ([`dsplr_model::Layout::differences`] compares only known
+                // values).
+                adaptive_sync: vec![
+                    dsplr_model::AdaptiveSync::Off,
+                    dsplr_model::AdaptiveSync::On,
+                    dsplr_model::AdaptiveSync::Automatic,
+                ],
                 fractional_scale: true,
                 per_output_scale: true,
                 gaps_allowed: true,

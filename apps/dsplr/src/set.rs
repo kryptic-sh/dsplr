@@ -210,7 +210,35 @@ pub async fn run(
     // A description names an output by its first words, so say which one
     // this is.
     eprintln!("dsplr: setting {named}");
+    if let Some((x, y)) = placed(&current, &mut asked, index, changes) {
+        let entry = &current.entries[index];
+        let name = entry
+            .connector()
+            .map_or_else(|| entry.id.to_string(), str::to_owned);
+        eprintln!("dsplr: placed {name} at {x},{y}, beside the others; --pos to choose");
+    }
     apply::run(backend, current, &asked, options).await
+}
+
+/// Places output `index` of `asked` beside the others
+/// ([`Layout::place_beside_others`]), as the GUI's `space` does, when
+/// `changes` turn it on (it was off in `current`) or end its mirror (it was
+/// one), and give no `--pos`: a desktop reports an output that is off at the
+/// origin, or where it was, and a mirror on its source. Where it was moved
+/// to, when it was.
+fn placed(
+    current: &Layout,
+    asked: &mut Layout,
+    index: usize,
+    changes: &Changes,
+) -> Option<(i32, i32)> {
+    let before = &current.entries.get(index)?.state;
+    let turned_on = changes.enable && !before.enabled;
+    let unmirrored = changes.no_mirror && before.mirror_of.is_some();
+    if changes.pos.is_some() || !(turned_on || unmirrored) {
+        return None;
+    }
+    asked.place_beside_others(index)
 }
 
 /// Makes `changes` to `entry`, with `mirror_of` already resolved. The error
@@ -251,10 +279,8 @@ fn edit(
     if let Some(transform) = changes.transform {
         entry.state.transform = transform;
     }
+    // One the desktop does not take is refused by validation.
     if let Some(vrr) = changes.vrr {
-        if !capabilities.adaptive_sync.contains(&vrr) {
-            return Err(format!("this desktop cannot set adaptive sync {vrr}"));
-        }
         entry.state.adaptive_sync = Some(vrr);
     }
     if changes.no_mirror {
@@ -325,7 +351,7 @@ mod tests {
 
     use super::{
         Changes, ModeSpec, NotFound, edit, find, off_refusal, parse_position, parse_scale,
-        pick_mode,
+        pick_mode, placed,
     };
 
     fn mode_arg(width: u32, height: u32, refresh_mhz: Option<u32>) -> ModeSpec {
@@ -509,6 +535,68 @@ mod tests {
     }
 
     #[test]
+    fn an_output_turned_on_or_unmirrored_without_pos_is_placed_beside_the_others() {
+        // DP-1 on at the origin; HDMI-A-1 off, reported at the origin too.
+        let mut one = output("DP-1", "AOC", modes());
+        one.state.mode = Some(Mode::new(1920, 1080, 60_000));
+        let mut two = output("HDMI-A-1", "BOE", modes());
+        two.state.enabled = false;
+        let current = Layout {
+            entries: vec![one, two],
+            ..Default::default()
+        };
+        let enable = Changes {
+            enable: true,
+            ..changes()
+        };
+        let mut asked = current.clone();
+        edit(
+            &mut asked.entries[1],
+            &enable,
+            None,
+            &Capabilities::default(),
+        )
+        .unwrap();
+        assert_eq!(placed(&current, &mut asked, 1, &enable), Some((1920, 0)));
+        assert_eq!(
+            (asked.entries[1].state.x, asked.entries[1].state.y),
+            (1920, 0)
+        );
+        // --pos wins.
+        let at = Changes {
+            pos: Some((0, 1080)),
+            enable: true,
+            ..changes()
+        };
+        let mut asked = current.clone();
+        edit(&mut asked.entries[1], &at, None, &Capabilities::default()).unwrap();
+        assert_eq!(placed(&current, &mut asked, 1, &at), None);
+        assert_eq!(asked.entries[1].state.y, 1080);
+        // Ending a mirror, which sits on its source.
+        let mut mirrored = current.clone();
+        mirrored.entries[1].state.enabled = true;
+        mirrored.entries[1].state.mode = Some(Mode::new(1920, 1080, 60_000));
+        mirrored.entries[1].state.mirror_of = Some(OutputId::Connector("DP-1".into()));
+        let unmirror = Changes {
+            no_mirror: true,
+            ..changes()
+        };
+        let mut asked = mirrored.clone();
+        edit(
+            &mut asked.entries[1],
+            &unmirror,
+            None,
+            &Capabilities::default(),
+        )
+        .unwrap();
+        assert_eq!(placed(&mirrored, &mut asked, 1, &unmirror), Some((1920, 0)));
+        // An output already on is left where the user has it.
+        let mut asked = mirrored.clone();
+        asked.entries[1].state.mirror_of = None;
+        assert_eq!(placed(&asked.clone(), &mut asked, 1, &enable), None);
+    }
+
+    #[test]
     fn an_edit_changes_what_was_asked_and_nothing_else() {
         let mut entry = output("DP-1", "AOC", modes());
         entry.state.mode = Some(modes()[0].clone());
@@ -631,22 +719,6 @@ mod tests {
             off_refusal(false, &no_mirror).as_deref(),
             Some("it is off; add --enable to change --no-mirror")
         );
-    }
-
-    #[test]
-    fn adaptive_sync_the_desktop_does_not_take_is_refused() {
-        let mut entry = output("DP-1", "AOC", modes());
-        let asked = Changes {
-            vrr: Some(AdaptiveSync::Automatic),
-            ..changes()
-        };
-        let caps = Capabilities {
-            adaptive_sync: vec![AdaptiveSync::Off, AdaptiveSync::On],
-            ..Capabilities::default()
-        };
-        let refusal = edit(&mut entry, &asked, None, &caps).unwrap_err();
-        assert_eq!(refusal, "this desktop cannot set adaptive sync automatic");
-        assert_eq!(entry.state.adaptive_sync, None);
     }
 
     #[test]

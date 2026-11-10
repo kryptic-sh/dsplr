@@ -40,16 +40,17 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
 - Every call states every setting dsplr owns (`disabled = false`,
   `mirror = ""`): Hyprland merges a rule onto the existing one of the same name,
   so a setting left out keeps its old value. Positions are always explicit.
-  `vrr` is written only when on or automatic, so a fullscreen-only rule that
-  Hyprland reports as off is never overwritten. `cm` and `bitdepth` are written
-  only when not Hyprland's default (`srgb`, 8): the file is read afresh at
-  startup, where a rule naming neither gets the defaults. Except for an output a
-  `hyprland.lua` `hl.monitor` call could name (read line by line; one whose
-  output is not a plain string counts as naming every output): the saved rule
-  merges onto that one, so the defaults are stated there. That is the preset and
-  depth in force, as the snapshot reads them, so a rule the monitor cannot do
-  (`cm = "hdr"` falling back to `srgb`, `bitdepth = 10` driven at 8) is not kept
-  by a save (backlog).
+  `vrr` is written only when the layout knows it (`0`, `1` or `2`): a snapshot
+  reads it as not known, since Hyprland reports whether adaptive sync is active
+  rather than its rule, so a fullscreen-only rule is never overwritten by a
+  save. `cm` and `bitdepth` are written only when not Hyprland's default
+  (`srgb`, 8): the file is read afresh at startup, where a rule naming neither
+  gets the defaults. Except for an output a `hyprland.lua` `hl.monitor` call
+  could name (read line by line; one whose output is not a plain string counts
+  as naming every output): the saved rule merges onto that one, so the defaults
+  are stated there. That is the preset and depth in force, as the snapshot reads
+  them, so a rule the monitor cannot do (`cm = "hdr"` falling back to `srgb`,
+  `bitdepth = 10` driven at 8) is not kept by a save (backlog).
 - The catch-all `hl.monitor({ output = "", mode = "preferred", … })` from the
   template is preserved if present: every such call of a file dsplr can read
   (its own, nwg-displays', or one approved after a conflict), as its text and in
@@ -292,12 +293,12 @@ a profile, moving an output and restoring it, by name and picked.
 - A profile saved on one desktop applies on another: a desktop-specific setting
   the backend lacks (`Capabilities`) is dropped where its value is the neutral
   one (`dsplr_model::NEUTRAL_COLOUR_PRESET` `srgb`, `NEUTRAL_BIT_DEPTH` 8,
-  `NEUTRAL_OVERSCAN` 0, `NEUTRAL_RGB_RANGE` automatic), which is what a Hyprland
-  or KDE snapshot says when nothing special is set
-  (`Layout::drop_neutral_unsupported`, in `apply::prepared` for every apply,
-  restore and the GUI). Any other value (a `wide` preset, 5 % overscan on sway)
-  is a request the desktop cannot honour, and is refused (exit `3`). Checked on
-  headless sway 1.12 with a profile holding all four.
+  `NEUTRAL_OVERSCAN` 0, `NEUTRAL_RGB_RANGE` automatic, `NEUTRAL_ADAPTIVE_SYNC`
+  off), which is what a Hyprland, KDE or wlroots snapshot says when nothing
+  special is set (`Layout::drop_neutral_unsupported`, in `apply::prepared` for
+  every apply, restore and the GUI). Any other value (a `wide` preset, 5 %
+  overscan on sway) is a request the desktop cannot honour, and is refused (exit
+  `3`). Checked on headless sway 1.12 with a profile holding all four.
 - A name is ASCII letters and digits, spaces, `-`, `_` and `.`, starts with a
   letter, a digit or `_`, does not end in a space or `.`, has no `..`, and is at
   most 200 bytes, so it is a file name in the store and nothing else; anything

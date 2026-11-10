@@ -122,7 +122,7 @@ impl Hyprland {
     ///
     /// The rules are runtime-only, and a config reload drops them. As with
     /// [`Hyprland::eval`], the change shows on Hyprland's next frame, so read
-    /// the state back to see what it made of it. Adaptive sync turned off is
+    /// the state back to see what it made of it. Adaptive sync not known is
     /// not written (see [`dsplr_persist::hyprland::monitor_call`]), nor a
     /// colour preset or bit depth the change leaves as Hyprland reads it
     /// ([`colour_as_changed`]), which costs one read first.
@@ -395,6 +395,28 @@ mod tests {
             !rules.contains("cm =") && !rules.contains("bitdepth"),
             "{rules}"
         );
+    }
+
+    #[tokio::test]
+    async fn adaptive_sync_from_another_desktop_s_profile_is_taken() {
+        use dsplr_model::AdaptiveSync;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut requests = fake_hyprland(dir.path(), owner);
+        let hyprland = at(dir.path());
+        let mut layout = hyprland.snapshot().await.expect("snapshot");
+        requests.recv().await.expect("the snapshot's request");
+        // The writer sets every value (`vrr` 0, 1, 2), though the snapshot
+        // cannot read the rule back.
+        let capabilities = crate::Backend::Hyprland(hyprland).capabilities();
+        assert_eq!(
+            capabilities.adaptive_sync,
+            [AdaptiveSync::Off, AdaptiveSync::On, AdaptiveSync::Automatic]
+        );
+        // A profile saved on sway says on or off: validation passes it.
+        for sync in [AdaptiveSync::Off, AdaptiveSync::On] {
+            layout.entries[1].state.adaptive_sync = Some(sync);
+            assert_eq!(layout.validate(&capabilities), [], "{sync:?}");
+        }
     }
 
     #[tokio::test]

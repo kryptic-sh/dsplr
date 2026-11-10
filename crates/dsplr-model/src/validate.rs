@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::layout::{SCALE_EPSILON, is_valid_scale};
 use crate::rect::Rect;
-use crate::{Capabilities, Layout, LayoutMode, Mode, OutputEntry, OutputId};
+use crate::{AdaptiveSync, Capabilities, Layout, LayoutMode, Mode, OutputEntry, OutputId};
 
 /// One thing wrong with a layout, naming the output and the setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +35,7 @@ pub enum Field {
     Position,
     MirrorOf,
     Primary,
+    AdaptiveSync,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,9 @@ pub enum ProblemKind {
     /// An output that is on is primary after another one is: a desktop has
     /// one primary output.
     SecondPrimary,
+    /// An adaptive sync setting the backend does not take
+    /// (`Capabilities::adaptive_sync`).
+    AdaptiveSyncUnsupported(AdaptiveSync),
 }
 
 impl ProblemKind {
@@ -94,6 +98,7 @@ impl ProblemKind {
             | Self::MirrorSourceDisabled
             | Self::MirrorOfMirror => Field::MirrorOf,
             Self::SecondPrimary => Field::Primary,
+            Self::AdaptiveSyncUnsupported(_) => Field::AdaptiveSync,
         }
     }
 }
@@ -143,6 +148,9 @@ impl fmt::Display for Problem {
             ProblemKind::SecondPrimary => {
                 f.write_str("is primary as well as another output; a desktop has one")
             }
+            ProblemKind::AdaptiveSyncUnsupported(asked) => {
+                write!(f, "this desktop cannot set adaptive sync {asked}")
+            }
             ProblemKind::NotAtOrigin { x, y } => write!(
                 f,
                 "this desktop needs the outputs to start at 0,0, and they start at {x},{y}"
@@ -178,6 +186,14 @@ impl Layout {
             .collect();
         for entry in &enabled {
             check_mode_and_scale(entry, capabilities, &mut problems);
+            if let Some(asked) = entry.state.adaptive_sync
+                && !capabilities.adaptive_sync.contains(&asked)
+            {
+                problems.push(Problem::error(
+                    &entry.id,
+                    ProblemKind::AdaptiveSyncUnsupported(asked),
+                ));
+            }
         }
         if !capabilities.per_output_scale {
             check_one_scale(&enabled, &mut problems);
@@ -364,7 +380,8 @@ fn check_placement(
 mod tests {
     use super::{Field, Problem, ProblemKind, Severity};
     use crate::{
-        Capabilities, Layout, LayoutMode, Mode, Output, OutputEntry, OutputId, OutputState,
+        AdaptiveSync, Capabilities, Layout, LayoutMode, Mode, Output, OutputEntry, OutputId,
+        OutputState,
     };
 
     fn id(name: &str) -> OutputId {
@@ -708,6 +725,39 @@ mod tests {
         off.state.enabled = false;
         let one = layout(vec![primary("DP-1", 0), off]);
         assert_eq!(kinds(&one, &permissive()), []);
+    }
+
+    #[test]
+    fn adaptive_sync_the_backend_does_not_take_is_refused() {
+        let mut automatic = monitor("DP-1", 0, 0);
+        automatic.state.adaptive_sync = Some(AdaptiveSync::Automatic);
+        let layout = layout(vec![automatic]);
+        let wlr = Capabilities {
+            adaptive_sync: vec![AdaptiveSync::Off, AdaptiveSync::On],
+            ..permissive()
+        };
+        let problems = layout.validate(&wlr);
+        assert_eq!(
+            kinds(&layout, &wlr),
+            [(
+                Some(id("DP-1")),
+                ProblemKind::AdaptiveSyncUnsupported(AdaptiveSync::Automatic)
+            )]
+        );
+        assert!(problems[0].is_error());
+        assert_eq!(problems[0].kind.field(), Field::AdaptiveSync);
+        assert_eq!(
+            problems[0].to_string(),
+            "DP-1: this desktop cannot set adaptive sync automatic"
+        );
+        // Not known says nothing; an output that is off is not checked.
+        let mut unknown = layout.clone();
+        unknown.entries[0].state.adaptive_sync = None;
+        assert_eq!(kinds(&unknown, &wlr), []);
+        let mut off = layout;
+        off.entries[0].state.enabled = false;
+        off.entries.push(monitor("DP-2", 0, 0));
+        assert_eq!(kinds(&off, &wlr), []);
     }
 
     #[test]

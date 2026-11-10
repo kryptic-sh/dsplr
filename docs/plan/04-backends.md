@@ -123,6 +123,12 @@ So:
   apply; mirroring through `eval` stays writable (it is in `Capabilities`), and
   another tool's protocol apply does not undo it.
 
+- **Adaptive sync** is set through each rule's `vrr` (`0` off, `1` on, `2`
+  fullscreen only, which dsplr calls automatic), so `Capabilities` lists all
+  three. The snapshot cannot read the rule back (`vrr` in `j/monitors all` is
+  whether it is active now), so it reads as not known, which the read-back does
+  not compare and the panel shows as `unknown` until set. The e2e checks
+  Hyprland takes each rule on a headless output, not that VRR changed.
 - **Colour preset and bit depth** (0.57.2, CI run 42784568478, a headless output
   without an EDID): `j/monitors all` reports `colorManagementPreset`, by the
   name a `cm` rule takes, and `currentFormat` (`XRGB8888`, `XRGB2101010`;

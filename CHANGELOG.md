@@ -43,8 +43,11 @@ and this project adheres to
   nor 10 bits per channel is not read as either.
 - A layout or profile from another desktop applies even where it names settings
   the desktop has not, when they are neutral: Hyprland's `srgb` preset and 8-bit
-  depth, KDE's zero overscan and automatic RGB range are dropped on a desktop
-  without them. Any other value is still refused (exit `3`).
+  depth, KDE's zero overscan and automatic RGB range, and adaptive sync off, are
+  dropped on a desktop without them. Any other value is still refused (exit
+  `3`). Adaptive sync is now set on Hyprland too (`vrr` 0, 1 or 2, from the
+  panel, a file or a profile); Hyprland reports only whether it is active, so it
+  is not read back.
 - `--backend <name>` (`hyprland`, `kde`, `gnome`, `wlr`; `randr`/`x11` says it
   is not written yet) uses that backend instead of detecting one, on every
   command and the GUI. Only that backend is checked: when it is not reachable,
@@ -297,7 +300,12 @@ and this project adheres to
   to mirror itself and a setting for an output that is off without `--enable`
   (or given with `--disable`), which no desktop would apply. A setting the
   desktop cannot take (a mode it does not list, an adaptive sync value it lacks)
-  exits `3`.
+  exits `3`; an adaptive sync value the desktop lacks is refused by validation,
+  so a layout file, a profile and the GUI's canvas say so too. An output turned
+  on with `--enable`, or out of a mirror with `--no-mirror`, without `--pos` is
+  placed as the GUI places one: where it was if it touches the others without
+  overlapping, else right of them, level with the topmost, which dsplr says
+  (`placed HDMI-A-1 at 3840,0, beside the others; --pos to choose`).
 - `dsplr save` makes the current layout last on Hyprland with a Lua config: it
   writes a dsplr-managed `monitors.lua` beside the `hyprland.lua` Hyprland reads
   (found through `HYPRLAND_CONFIG`, `$XDG_CONFIG_HOME/hypr` or `~/.config/hypr`,

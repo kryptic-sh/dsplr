@@ -23,7 +23,7 @@ use std::time::Duration;
 use dsplr_backend::hyprland::Hyprland;
 use dsplr_backend::wlr::Wlr;
 use dsplr_backend::{Backend, Persisted, Watch};
-use dsplr_model::{Layout, Mode, OutputId, Transform};
+use dsplr_model::{AdaptiveSync, Layout, Mode, OutputId, Transform};
 use dsplr_persist::managed::{Comment, Ownership, ownership};
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
@@ -341,6 +341,17 @@ async fn colour_and_bit_depth_as_hyprland_reports_them(backend: &Backend) {
         (state.colour_preset.as_deref(), state.bit_depth) == (Some("wide"), Some(10))
     })
     .await;
+    // Adaptive sync: Hyprland takes each value's rule. It reports only
+    // whether VRR is active, which a headless output never is, so this
+    // checks the rules are taken, not that VRR changed.
+    for sync in [AdaptiveSync::On, AdaptiveSync::Automatic, AdaptiveSync::Off] {
+        backend
+            .apply(&edited(&now, |layout| {
+                entry_mut(layout, "DSPLR-1").state.adaptive_sync = Some(sync);
+            }))
+            .await
+            .unwrap_or_else(|error| panic!("vrr {sync}: {error}"));
+    }
     backend.apply(&now).await.expect("applied");
     snapshot_until(backend, "DSPLR-1 back to srgb at 8 bits", |layout| {
         let state = &entry(layout, "DSPLR-1").state;

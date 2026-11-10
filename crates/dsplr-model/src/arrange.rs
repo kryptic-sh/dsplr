@@ -80,6 +80,36 @@ impl Layout {
         }
     }
 
+    /// Places output `index`, just turned on or out of a mirror, beside the
+    /// other outputs that are on: kept where it is when it touches one and
+    /// overlaps none, else moved right of them all, level with the topmost.
+    /// Returns where it was moved to; `None` when it stays (it touches the
+    /// others, there are none, or it has no size). The GUI's `space` and
+    /// `dsplr set --enable` / `--no-mirror` without `--pos` both place an
+    /// output so.
+    pub fn place_beside_others(&mut self, index: usize) -> Option<(i32, i32)> {
+        let layout_mode = self.extent_mode();
+        let entry = self.entries.get(index)?;
+        let rect = Rect::of(entry, layout_mode)?;
+        let others: Vec<Rect> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|&(other, entry)| other != index && entry.state.enabled)
+            .filter_map(|(_, entry)| Rect::of(entry, layout_mode))
+            .collect();
+        let overlaps = others.iter().any(|other| other.overlaps(rect));
+        let detached = !others.is_empty() && !others.iter().any(|other| other.touches(rect));
+        if !(overlaps || detached) {
+            return None;
+        }
+        let right = i32::try_from(others.iter().map(|other| other.right()).max()?).ok()?;
+        let top = i32::try_from(others.iter().map(|other| other.y).min()?).ok()?;
+        let state = &mut self.entries[index].state;
+        (state.x, state.y) = (right, top);
+        Some((right, top))
+    }
+
     /// The smallest x and the smallest y among the placed outputs.
     pub(crate) fn placed_min(&self) -> Option<(i32, i32)> {
         let min_x = placed(&self.entries).map(|(_, e)| e.state.x).min()?;
@@ -307,6 +337,39 @@ mod tests {
             [(0, 300), (2420, 200), (-5000, 40)],
             "x by 500, y not at all; the output that is off not at all"
         );
+    }
+
+    #[test]
+    fn an_output_is_placed_beside_the_others_unless_it_touches_them_already() {
+        let row = |x: i32| Layout {
+            entries: vec![
+                monitor("DP-1", 1920, 1080, 0, 360),
+                monitor("DP-2", 1920, 1080, 1920, 0),
+                monitor("HDMI-A-1", 1920, 1080, x, 0),
+            ],
+            ..Default::default()
+        };
+        // At the origin, over DP-1: moved right of the others, level with
+        // the topmost.
+        let mut over = row(0);
+        assert_eq!(over.place_beside_others(2), Some((3840, 0)));
+        assert_eq!(positions(&over)[2], (3840, 0));
+        // Touching DP-2 and overlapping none: kept.
+        let mut beside = row(3840);
+        assert_eq!(beside.place_beside_others(2), None);
+        assert_eq!(positions(&beside)[2], (3840, 0));
+        // Away from them all: moved beside them.
+        let mut away = row(9000);
+        assert_eq!(away.place_beside_others(2), Some((3840, 0)));
+        // Alone, or without a size: left where it is.
+        let mut alone = Layout {
+            entries: vec![monitor("HDMI-A-1", 1920, 1080, 500, 500)],
+            ..Default::default()
+        };
+        assert_eq!(alone.place_beside_others(0), None);
+        let mut sizeless = row(0);
+        sizeless.entries[2].state.mode = None;
+        assert_eq!(sizeless.place_beside_others(2), None);
     }
 
     #[test]

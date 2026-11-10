@@ -27,7 +27,7 @@ use dsplr_backend::{Backend, Named};
 use std::time::SystemTime;
 
 use dsplr_model::{
-    AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, RgbRange, Transform,
+    AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, Rect, RgbRange, Transform,
 };
 use dsplr_persist::managed::{Comment, Ownership, ownership};
 use dsplr_persist::profile::{self, Profile, unix_ms};
@@ -195,22 +195,34 @@ async fn apply_tests_on_a_dry_run_and_applies_and_reverts(backend: &Backend, run
     assert_eq!(code, Some(REFUSED), "{text}");
     assert!(text.contains("cannot mirror"), "{text}");
 
-    // What validation passes but the protocol cannot express is refused by
-    // dsplr at the test step, before sway is asked or a change starts: a
-    // refusal of dsplr's, not the desktop's.
+    // An adaptive sync sway does not take is refused by validation.
     let automatic = edited(&start, |layout| {
         entry_mut(layout, "HEADLESS-2").state.adaptive_sync = Some(AdaptiveSync::Automatic);
     });
     let file_automatic = layout_file(runtime, "automatic.json", &automatic);
+    let (code, text) = dsplr(&["apply", "--dry-run", &file_automatic]);
+    assert_eq!(code, Some(REFUSED), "{text}");
+    assert!(
+        text.contains("HEADLESS-2: this desktop cannot set adaptive sync automatic"),
+        "{text}"
+    );
+
+    // What validation passes but the protocol cannot express is refused by
+    // dsplr at the test step, before sway is asked or a change starts: a
+    // refusal of dsplr's, not the desktop's.
+    let wide = edited(&start, |layout| {
+        entry_mut(layout, "HEADLESS-2").state.colour_preset = Some("wide".into());
+    });
+    let file_wide = layout_file(runtime, "wide.json", &wide);
     for args in [
-        ["apply", "--dry-run", &file_automatic],
-        ["apply", "--yes", &file_automatic],
+        ["apply", "--dry-run", &file_wide],
+        ["apply", "--yes", &file_wide],
     ] {
         let (code, text) = dsplr(&args);
         assert_eq!(code, Some(REFUSED), "{args:?}: {text}");
         assert!(
             text.contains("wlr cannot take the layout")
-                && text.contains("automatic adaptive sync cannot be set"),
+                && text.contains("a colour preset cannot be set"),
             "{args:?}: {text}"
         );
     }
@@ -403,6 +415,30 @@ async fn set_edits_one_output(backend: &Backend) {
         &pos,
         "--yes",
     ]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(snapshot().await, start);
+
+    // Turned on again without --pos: placed beside the others, as the
+    // GUI's space places it, and said.
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--disable", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--enable", "--mode", &mode, "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    // sway reports an output that is off at the origin, over HEADLESS-1.
+    assert!(
+        text.contains("placed HEADLESS-2 at ")
+            && text.contains("beside the others; --pos to choose"),
+        "{text}"
+    );
+    let back = snapshot().await;
+    let layout_mode = back.extent_mode();
+    let rect = |name: &str| Rect::of(entry(&back, name), layout_mode).expect("on, with a size");
+    assert!(
+        rect("HEADLESS-2").touches(rect("HEADLESS-1"))
+            && !rect("HEADLESS-2").overlaps(rect("HEADLESS-1")),
+        "{back:#?}\n{text}"
+    );
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--pos", &pos, "--yes"]);
     assert_eq!(code, Some(0), "{text}");
     assert_eq!(snapshot().await, start);
 }

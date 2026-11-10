@@ -27,9 +27,9 @@ pub use compare::{Difference, Setting};
 pub use id::OutputId;
 pub use json::{JSON_VERSION, JsonError};
 pub use layout::{
-    AdaptiveSync, BIT_DEPTHS, COLOUR_PRESETS, Layout, LayoutMode, NEUTRAL_BIT_DEPTH,
-    NEUTRAL_COLOUR_PRESET, NEUTRAL_OVERSCAN, NEUTRAL_RGB_RANGE, OVERSCAN_MAX, Output, OutputEntry,
-    OutputState, RgbRange, SCALE_EPSILON, is_valid_scale,
+    AdaptiveSync, BIT_DEPTHS, COLOUR_PRESETS, Layout, LayoutMode, NEUTRAL_ADAPTIVE_SYNC,
+    NEUTRAL_BIT_DEPTH, NEUTRAL_COLOUR_PRESET, NEUTRAL_OVERSCAN, NEUTRAL_RGB_RANGE, OVERSCAN_MAX,
+    Output, OutputEntry, OutputState, RgbRange, SCALE_EPSILON, is_valid_scale,
 };
 pub use mode::{
     Mode, ModeHandle, ModeSpec, ParseModeError, REFRESH_TOLERANCE_MHZ, hz_text_to_mhz, hz_to_mhz,
