@@ -264,9 +264,13 @@ milestone:
   start, and nothing outside KWin adds one, so the KDE watch test covers changes
   made by another client and a new output order, not an output plugged in or
   removed (`removed` and a new registry `output`).
-- **The GUI does not warn before an apply on KDE** that KWin saves it (plan 02,
-  step 7, and `Capabilities::saves_on_apply`); `dsplr backend` lists "saves on
-  every apply", and `dsplr save` says the layout is already saved.
+- **On KDE the GUI says KWin saved the change only once it is applied**: the
+  bar's confirm line adds it while the change waits to be kept
+  (`dsplr_core::dialog::confirm_prompt`, from `Capabilities::saves_on_apply`),
+  not before the apply as plan 02's step 7 first put it, and the dialogs on each
+  monitor do not repeat it. The CLI's terminal prompt does not say it. Neither
+  was seen on screen: the bar's text is checked as a string, not drawn, and a
+  long bar line may be cut off on a narrow window.
 - **KWin's other output fields are not read**: EDID, EISA id, HDR, wide colour
   gamut, ICC profile, brightness, max bits per colour and the rest. The EISA id
   is the PNP vendor code plan 03 wants `make` normalised to, so it is the first
@@ -283,6 +287,11 @@ milestone:
 - **Detection opens a Wayland connection for the KDE check** on every desktop
   that is not Hyprland, before the wlroots check opens its own: one more
   connection and roundtrip per command on wlroots compositors. Not measured.
+  Sharing it is not simple: a `wayland::client::Client` is typed by the protocol
+  whose events it follows, so a shared probe of the globals would be a
+  connection of its own and save nothing on wlroots, unless the wlr check could
+  take that connection over, which means changing a live client's protocol (or
+  one protocol type for both).
 - **Hyprland adaptive sync**: the model now says "not known" (`None`) and the
   writer writes `vrr = 0` for off, so `Backend::capabilities` can list
   `[Off, On, Automatic]` for Hyprland. Not done: it needs an e2e step, and on a
@@ -310,13 +319,6 @@ milestone:
   its own (`Wlr::connect`) and closes it, so the serial guards only the instant
   between reading the heads and sending the configuration, and a change made
   after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
-- **A scale that is not a 256th is reported as changed after every `wlr`
-  apply**: `set_scale` takes a `wl_fixed`, so 1.3 arrives as 1.30078125, and
-  `Layout::differences` compares within `SCALE_EPSILON`. `dsplr apply` then
-  waits out the whole `SETTLE` and lists the scale as not taken as asked. Either
-  round the asked scale to what the backend can hold before applying, or let the
-  backend give the comparison its own tolerance; the model is the Windows
-  session's, so agree which.
 - **`wlr` on other compositors**: sway 1.12 (headless) and niri 26.04 (nested)
   have been run. river, labwc and Wayfire are expected to work through the same
   protocol and are not checked; COSMIC's own extension and whether it saves
@@ -421,6 +423,12 @@ milestone:
   its reload (the same rounding as the `wlr` apply entry above). Reading the
   scale from niri's IPC (`logical.scale`, a float) would keep it exact; not
   done, and the rounding was not observed on niri.
+- **niri rounds a scale further than the wire**: `dsplr set winit --scale 1.1`
+  on the nested niri 26.04 (2026-11-10) reads back 1.09765625 (281/256), not the
+  282/256 the `wl_fixed` carried, so it is reported as not taken as asked. That
+  is niri's own choice, which `Layout::differences` is meant to show;
+  `Capabilities::scale_steps` covers only the wire's roundings. Why niri picks
+  it was not looked into.
 - **Hyprland has no fallback for two monitors with one description**: the sway
   writer names them by connector, but `monitors.lua` would get two `desc:` rules
   with the same text, and Hyprland would apply the last to both. Not fixed; the

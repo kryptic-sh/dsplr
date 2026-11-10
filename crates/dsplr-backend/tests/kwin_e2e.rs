@@ -127,6 +127,17 @@ async fn kwin_applies_and_shows_each_layout() {
         (2640, 0)
     );
 
+    // 1.1 is neither a 256th nor kept as asked: it goes as 282/256, KWin
+    // keeps the nearest 120th (1.1), and sends that back as 282/256. That is
+    // what the wire holds, so it shows as no difference.
+    let tenth = edited(&start, |layout| {
+        entry_mut(layout, two).state.scale = 1.1;
+    });
+    backend.apply(&tenth).await.expect("KWin applies it");
+    shows(&backend, &tenth).await;
+    let scale = entry(&snapshot(&backend).await, two).state.scale;
+    assert!((scale - 282.0 / 256.0).abs() < f64::EPSILON, "{scale}");
+
     // The primary output, through the output order.
     let primary = edited(&start, |layout| {
         entry_mut(layout, one).state.primary = false;

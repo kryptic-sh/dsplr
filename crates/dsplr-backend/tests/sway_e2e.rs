@@ -185,18 +185,18 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
     );
 
     // A scale is sent as a wl_fixed, so 1.3 arrives as its nearest 256th,
-    // and reads back as that.
-    backend
-        .apply(&edited(&start, |layout| {
-            entry_mut(layout, "HEADLESS-1").state.scale = 1.3;
-        }))
-        .await
-        .expect("sway applies it");
-    let scale = entry(&snapshot(&backend).await, "HEADLESS-1").state.scale;
+    // and reads back as that, which is no difference from what was asked.
+    let fractional = edited(&start, |layout| {
+        entry_mut(layout, "HEADLESS-1").state.scale = 1.3;
+    });
+    backend.apply(&fractional).await.expect("sway applies it");
+    let shown = snapshot(&backend).await;
+    let scale = entry(&shown, "HEADLESS-1").state.scale;
     assert!(
         (scale - 333.0 / 256.0).abs() < f64::EPSILON,
         "scale {scale}"
     );
+    assert_eq!(fractional.differences(&shown, &capabilities), []);
 
     // Applying the revert point puts every setting back, not just the ones
     // the last apply named.

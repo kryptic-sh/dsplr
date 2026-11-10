@@ -24,11 +24,15 @@
 //!
 //! The KDE files wrap their copyright in a CDATA section, which the scanner's
 //! reader refuses, so each CDATA section is turned into the character data it
-//! stands for before parsing ([`without_cdata`]); the files themselves stay
-//! as upstream wrote them.
+//! stands for before parsing (`build/cdata.rs`, tested with the library);
+//! the files themselves stay as upstream wrote them.
+
+#[path = "build/cdata.rs"]
+mod cdata;
 
 use std::path::{Path, PathBuf};
 
+use cdata::without_cdata;
 use crcbl_wl_scanner::{Options, Source, parse_protocol};
 
 const PROTOCOLS: &[(&str, &str)] = &[
@@ -54,7 +58,7 @@ fn main() {
         let xml = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let xml = without_cdata(&xml)
-            .unwrap_or_else(|| panic!("{}: a CDATA section is not closed", path.display()));
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let protocol = parse_protocol(&xml)
             .unwrap_or_else(|error| panic!("cannot parse {}: {error}", path.display()));
         sources.push(Source { module, protocol });
@@ -71,31 +75,4 @@ fn main() {
     let out = Path::new(&std::env::var_os("OUT_DIR").expect("cargo sets this")).join("protocol.rs");
     std::fs::write(&out, generated)
         .unwrap_or_else(|error| panic!("cannot write {}: {error}", out.display()));
-}
-
-/// `xml` with each CDATA section replaced by the same characters escaped as
-/// ordinary character data, which is what a CDATA section means (XML 1.0,
-/// section 2.7: its text runs from `<![CDATA[` to the first `]]>` and is not
-/// markup). `None` when a section is not closed.
-fn without_cdata(xml: &str) -> Option<String> {
-    const OPEN: &str = "<![CDATA[";
-    const CLOSE: &str = "]]>";
-    let mut out = String::with_capacity(xml.len());
-    let mut rest = xml;
-    while let Some(start) = rest.find(OPEN) {
-        out.push_str(&rest[..start]);
-        let inside = &rest[start + OPEN.len()..];
-        let end = inside.find(CLOSE)?;
-        for c in inside[..end].chars() {
-            match c {
-                '&' => out.push_str("&amp;"),
-                '<' => out.push_str("&lt;"),
-                '>' => out.push_str("&gt;"),
-                c => out.push(c),
-            }
-        }
-        rest = &inside[end + CLOSE.len()..];
-    }
-    out.push_str(rest);
-    Some(out)
 }

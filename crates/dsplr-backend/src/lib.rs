@@ -16,6 +16,9 @@ use std::time::Duration;
 use dsplr_model::{Capabilities, Layout};
 use dsplr_persist::managed::{Conflict, Saved};
 
+#[cfg(test)]
+#[path = "../build/cdata.rs"]
+mod cdata;
 mod detect;
 #[cfg(target_os = "linux")]
 pub mod hyprland;
@@ -247,6 +250,12 @@ impl Backend {
                 ],
                 fractional_scale: true,
                 per_output_scale: true,
+                // A wl_fixed to KWin, its 120ths, a wl_fixed back.
+                scale_steps: vec![
+                    wayland::heads::WL_FIXED_STEPS,
+                    kde::KWIN_SCALE_STEPS,
+                    wayland::heads::WL_FIXED_STEPS,
+                ],
                 native_persistence: true,
                 saves_on_apply: true,
                 primary: kde.has_order(),
@@ -267,6 +276,9 @@ impl Backend {
                 },
                 fractional_scale: true,
                 per_output_scale: true,
+                // A wl_fixed each way; the compositor may round it further,
+                // which then shows.
+                scale_steps: vec![wayland::heads::WL_FIXED_STEPS],
                 test_before_apply: true,
                 gaps_allowed: true,
                 native_persistence: wlr.names_compositor(),

@@ -6,8 +6,11 @@ use dsplr_model::{
     AdaptiveSync, Layout, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState, Transform,
 };
 
-/// A `wl_fixed` counts in units of 1/256.
-const FIXED_ONE: f64 = 256.0;
+/// A `wl_fixed` counts in units of 1/this.
+pub const WL_FIXED_STEPS: u32 = 256;
+
+/// [`WL_FIXED_STEPS`] as a float.
+const FIXED_ONE: f64 = WL_FIXED_STEPS as f64;
 
 /// `adaptive_sync_state.disabled`.
 pub const ADAPTIVE_SYNC_DISABLED: u32 = 0;

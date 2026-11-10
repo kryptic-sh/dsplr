@@ -25,6 +25,12 @@ pub const REPLICATION_SINCE: u32 = 13;
 /// turned off ([`CAPABILITY_DISABLE`]).
 pub const DISABLE_CAPABILITY_SINCE: u32 = 25;
 
+/// KWin keeps a scale in 120ths: `kde_output_configuration_v2_scale` rounds
+/// the `wl_fixed` it is sent to the nearest 120th (KWin 6.8's
+/// `src/wayland/outputmanagement_v2.cpp`), and the device sends that back as
+/// a `wl_fixed` again.
+pub const KWIN_SCALE_STEPS: u32 = 120;
+
 /// The largest overscan KWin takes, in percent: it ignores a request for
 /// more (`kde_output_configuration_v2_overscan` in KWin 6.8's
 /// `src/wayland/outputmanagement_v2.cpp`).

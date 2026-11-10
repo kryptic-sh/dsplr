@@ -28,7 +28,7 @@ pub use crate::wayland::{OPERATION_TIMEOUT, REQUEST_TIMEOUT};
 use crate::wayland::{bounded, socket_path};
 pub use connection::{Connection, REGISTRY_SINCE};
 pub use devices::Device;
-pub use plan::REPLICATION_SINCE;
+pub use plan::{KWIN_SCALE_STEPS, REPLICATION_SINCE};
 
 /// What went wrong talking to KWin.
 #[derive(Debug, thiserror::Error)]

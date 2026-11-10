@@ -77,6 +77,7 @@ pub fn wlr() -> Capabilities {
         adaptive_sync: vec![AdaptiveSync::Off, AdaptiveSync::On],
         fractional_scale: true,
         per_output_scale: true,
+        scale_steps: vec![256],
         test_before_apply: true,
         gaps_allowed: true,
         ..Capabilities::default()

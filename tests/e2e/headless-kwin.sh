@@ -21,16 +21,20 @@
 #   pinned before HOME changes.
 set -uo pipefail
 
-# The facts the tests rest on were read in KWin 6.8.2's source; say which
-# KWin this is, so a failure after an update shows it.
-# `--version` builds KWin's application object first, so it gets a time limit.
-echo "== $(timeout 10 kwin_wayland --version 2>/dev/null || echo 'kwin_wayland --version said nothing')" >&2
-
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 home="$runtime/home"
 mkdir "$home" "$runtime/config"
+
+# The facts the tests rest on were read in KWin 6.8.2's source; say which
+# KWin this is, so a failure after an update shows it. `--version` builds
+# KWin's application object first, so it runs as KWin itself does below,
+# with nothing of the caller's environment, and with a time limit.
+version=$(env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
+  XDG_CONFIG_HOME="$runtime/config" timeout 10 kwin_wayland --version 2>/dev/null)
+echo "== ${version:-kwin_wayland --version said nothing}" >&2
+
 cleanup() {
   # The command's whole process group: it, and anything it started that
   # outlived it.

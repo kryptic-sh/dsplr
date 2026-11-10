@@ -17,6 +17,11 @@ pub const DIALOG_SIZE: Size = Size {
 };
 /// What the dialog asks.
 pub const QUESTION: &str = "Keep these display settings?";
+/// What the bar adds while a change is confirmed on a desktop that saved it
+/// as it applied it (`Capabilities::saves_on_apply`, KDE): the change is
+/// saved already, unconfirmed, and reverting is what takes it back.
+pub const SAVED_ON_APPLY: &str =
+    "the desktop saved it as it applied it; reverting puts the old one back and saves that";
 const PAD: f32 = 20.0;
 const TITLE_SIZE: f32 = 17.0;
 const TEXT_SIZE: f32 = 13.0;
@@ -67,10 +72,9 @@ pub fn draw_dialog(output: Option<&str>, left: Duration, size: Size, theme: &The
         list.text(Point::new(PAD, y), output, TEXT_SIZE, theme.text_dim, clip);
         y += LINE;
     }
-    let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
     list.text(
         Point::new(PAD, y),
-        format!("Reverting in {seconds} s"),
+        format!("Reverting in {} s", seconds_left(left)),
         TEXT_SIZE,
         theme.pending,
         clip,
@@ -109,6 +113,26 @@ pub fn draw_dialog(output: Option<&str>, left: Duration, size: Size, theme: &The
         buttons.push((bounds, choice));
     }
     DialogFrame { list, buttons }
+}
+
+/// `left` in whole seconds, rounded up: what a countdown shows.
+pub fn seconds_left(left: Duration) -> u64 {
+    left.as_secs() + u64::from(left.subsec_nanos() > 0)
+}
+
+/// The bar's line while a change waits to be confirmed, reverting in
+/// `left`: the question, the keys and the countdown, and, where the desktop
+/// `saves_on_apply`, that the change is saved already.
+pub fn confirm_prompt(left: Duration, saves_on_apply: bool) -> String {
+    let mut prompt = format!(
+        "{QUESTION}  Enter keeps, Esc reverts  ·  reverting in {} s",
+        seconds_left(left)
+    );
+    if saves_on_apply {
+        prompt.push_str("  ·  ");
+        prompt.push_str(SAVED_ON_APPLY);
+    }
+    prompt
 }
 
 /// The identify overlay's size in logical pixels.
@@ -248,6 +272,21 @@ mod tests {
         assert_eq!(frame.hit(centre(Choice::Keep)), Some(Choice::Keep));
         assert_eq!(frame.hit(centre(Choice::Revert)), Some(Choice::Revert));
         assert_eq!(frame.hit(Point::new(5.0, 5.0)), None);
+    }
+
+    #[test]
+    fn the_bar_says_a_desktop_that_saves_on_apply_has_saved_the_change() {
+        let left = Duration::from_millis(4_200);
+        assert_eq!(
+            super::confirm_prompt(left, false),
+            "Keep these display settings?  Enter keeps, Esc reverts  ·  reverting in 5 s"
+        );
+        let kde = super::confirm_prompt(left, true);
+        assert!(
+            kde.starts_with(&super::confirm_prompt(left, false)),
+            "{kde}"
+        );
+        assert!(kde.ends_with(super::SAVED_ON_APPLY), "{kde}");
     }
 
     #[test]

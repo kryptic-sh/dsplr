@@ -24,7 +24,7 @@ use crcbl_ui::font::Font;
 use crcbl_ui::text::FontAtlas;
 use crcbl_ui::tree::{AvailableSpace, NavInput, Ui};
 use crcbl_ui::widget::PointerInput;
-use dsplr_core::dialog::{Choice, QUESTION};
+use dsplr_core::dialog::{Choice, confirm_prompt};
 use dsplr_core::flow::Outcome;
 use dsplr_core::link::{Answer, Question, Reply, Request};
 use dsplr_core::panel::panel;
@@ -776,11 +776,11 @@ impl<'a> MainWindow<'a> {
             }
         }
 
-        let prompt = self.confirming.as_ref().map(|confirming| {
-            let left = confirming.left();
-            let seconds = left.as_secs() + u64::from(left.subsec_nanos() > 0);
-            format!("{QUESTION}  Enter keeps, Esc reverts  ·  reverting in {seconds} s")
-        });
+        let saves_on_apply = self.editor.snapshot().capabilities.saves_on_apply;
+        let prompt = self
+            .confirming
+            .as_ref()
+            .map(|confirming| confirm_prompt(confirming.left(), saves_on_apply));
         let message = if self.quitting {
             Some(QUIT_PROMPT)
         } else {

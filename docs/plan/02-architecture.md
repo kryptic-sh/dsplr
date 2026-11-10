@@ -87,8 +87,9 @@ The safety net, shared by every backend and both front ends:
 7. **Persist** only after confirmation, and only when the user asked to save.
    Apply without save is a valid, deliberate choice everywhere except where the
    desktop saves on every apply (KDE: KWin writes `kwinoutputconfig.json` on
-   every successful apply, read in KWin 6.8.2's source; the GUI is to say so
-   before the apply, and the watchdog's revert is what undoes it).
+   every successful apply, read in KWin 6.8.2's source; the GUI's bar says so
+   while the change waits to be kept, and the watchdog's revert is what undoes
+   it).
 
 Revert on X11, wlroots and Hyprland is dsplr re-applying the old state.
 

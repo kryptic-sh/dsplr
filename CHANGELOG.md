@@ -102,10 +102,18 @@ and this project adheres to
   checks the layout can be sent, then says KWin cannot test it; and its protocol
   allows no gaps between outputs, so validation refuses one. Custom modes are
   not written for KDE yet, and a mode the output does not list is refused (exit
-  `3`).
+  `3`). KWin keeps scales in 120ths, so a scale reads back as that rounding
+  carried it, and is not reported as not taken. While a change waits to be kept,
+  the window's bar says KWin has already saved it.
 - `dsplr save` on KDE writes nothing and says the layout is already saved: KWin
   saves every layout it applies in its `kwinoutputconfig.json`. A layout other
   than the one on screen is refused, as on niri.
+- A scale travels as a `wl_fixed` (in 256ths) on `wlr` and `kde`, so one that is
+  no 256th (`dsplr set … --scale 1.1`) reads back as the nearest one; the
+  read-back after an apply now compares against the asked scale carried the same
+  way (`Capabilities::scale_steps`), so it is not reported as not taken as
+  asked. A compositor that rounds further (niri: 1.1 reads back as 1.09765625)
+  is still reported.
 - The `wlr` backend reads, tests and applies layouts over
   `zwlr_output_manager_v1`: tested against sway and niri, and meant for any
   compositor offering it (river, labwc, Wayfire). Detection picks it after

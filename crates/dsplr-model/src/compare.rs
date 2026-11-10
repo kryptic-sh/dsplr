@@ -86,9 +86,12 @@ impl Layout {
     /// not asked for, an adaptive sync or optional setting either side has
     /// as `None`, and `primary` on a backend without
     /// [`Capabilities::primary`] are skipped. A disabled output has nothing
-    /// to compare but that. Modes match within the refresh tolerance, and
-    /// scales within float noise, so a scale the desktop rounded (a
-    /// `wl_fixed`, Hyprland's clean scales) shows up.
+    /// to compare but that. Modes match within the refresh tolerance. The
+    /// scale asked for is first put through the roundings the backend's wire
+    /// makes ([`Capabilities::carried_scale`]: a `wl_fixed`, KWin's 120ths),
+    /// so those are not differences, and then compared within float noise,
+    /// so a scale the desktop itself chose otherwise (Hyprland's clean
+    /// scales) shows up.
     pub fn differences(&self, actual: &Self, capabilities: &Capabilities) -> Vec<Difference> {
         let mut differences = Vec::new();
         for asked in &self.entries {
@@ -152,7 +155,7 @@ fn compare(
             format!("{},{}", g.x, g.y),
         );
     }
-    if (a.scale - g.scale).abs() >= SCALE_EPSILON {
+    if (capabilities.carried_scale(a.scale) - g.scale).abs() >= SCALE_EPSILON {
         differ(Setting::Scale, a.scale.to_string(), g.scale.to_string());
     }
     if a.transform != g.transform {
@@ -293,6 +296,33 @@ mod tests {
             differences[2].to_string(),
             "DP-1: scale asked 1.3, got 1.30078125"
         );
+    }
+
+    #[test]
+    fn a_scale_the_wire_rounds_is_not_a_difference_but_another_is() {
+        let asked = one(OutputState {
+            scale: 1.3,
+            ..enabled()
+        });
+        let got = |scale| one(OutputState { scale, ..enabled() });
+        let wl_fixed = Capabilities {
+            scale_steps: vec![256],
+            ..Capabilities::default()
+        };
+        assert_eq!(asked.differences(&got(333.0 / 256.0), &wl_fixed), []);
+        let other = asked.differences(&got(1.5), &wl_fixed);
+        assert_eq!(other, [setting(Setting::Scale, "1.3", "1.5")]);
+        // KWin's 120ths: 1.004 arrives as 1.
+        let kwin = Capabilities {
+            scale_steps: vec![256, 120, 256],
+            ..Capabilities::default()
+        };
+        let asked = one(OutputState {
+            scale: 1.004,
+            ..enabled()
+        });
+        assert_eq!(asked.differences(&got(1.0), &kwin), []);
+        assert_eq!(asked.differences(&got(1.0), &wl_fixed).len(), 1);
     }
 
     #[test]

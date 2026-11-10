@@ -39,6 +39,8 @@ fn capability_names(capabilities: &Capabilities) -> Vec<String> {
         adaptive_sync,
         fractional_scale,
         per_output_scale,
+        // How scales round on the way, not something a backend can do.
+        scale_steps: _,
         test_before_apply,
         gaps_allowed,
         native_persistence,

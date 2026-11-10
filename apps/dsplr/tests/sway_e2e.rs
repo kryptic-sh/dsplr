@@ -304,6 +304,15 @@ async fn set_edits_one_output(backend: &Backend) {
     assert!((scale - 2.0).abs() < f64::EPSILON, "{scale}");
     revert_to(backend, &start).await;
 
+    // 1.1 is no 256th, so it travels as 282/256 and reads back as that: what
+    // the wire holds, so not reported as not taken.
+    let (code, text) = dsplr(&["set", "HEADLESS-2", "--scale", "1.1", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(!text.contains("scale asked"), "{text}");
+    let scale = entry(&snapshot().await, "HEADLESS-2").state.scale;
+    assert!((scale - 282.0 / 256.0).abs() < f64::EPSILON, "{scale}");
+    revert_to(backend, &start).await;
+
     // dsplr's 90 is wl_output's, which sway reports as its 270, as --help
     // says.
     let (code, text) = dsplr(&["set", "HEADLESS-2", "--transform", "90", "--yes"]);
