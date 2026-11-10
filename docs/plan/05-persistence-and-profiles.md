@@ -2,7 +2,8 @@
 
 "Save" means the layout comes back after a reboot or a compositor restart. How
 that happens differs by desktop, and the GUI and CLI say which way it happened
-(`Persisted::ByDesktop`, `Persisted::File(path)`, `Persisted::Profile(name)`).
+(`Persisted::ByDesktop`, `Persisted::WhenKept`, `Persisted::File(path)`,
+`Persisted::Profile(name)`).
 
 ## Rules for files dsplr writes
 
@@ -216,6 +217,35 @@ The desktop saves it. `persist` on KDE writes nothing and returns
 saved only what it applied, a layout other than the one on screen is
 `Unsupported`, as on niri. On GNOME it is the `persistent` method of
 `ApplyMonitorsConfig`, which writes `monitors.xml`.
+
+### GNOME
+
+Built at M6 (`Backend::persist`, `gnome::Gnome::persist`), on what Mutter 51.1
+does ([04](04-backends.md#gnome-gnome)):
+
+- **Apply is `temporary`, Save is `persistent`.** `dsplr apply` and the GUI's
+  Apply send `temporary`, which Mutter neither saves nor reverts, and run
+  dsplr's own flow: test (`verify`), revert point and watchdog, apply, read
+  back, confirm. So on GNOME, as elsewhere, an apply not kept is reverted by
+  dsplr, and one kept is lost at the next login unless saved.
+- **Save sends the layout on screen again as `persistent`**, so nothing on
+  screen changes, and the confirm is GNOME Shell's "keep these display
+  settings?" dialog, not a second one of dsplr's: Mutter writes `monitors.xml`
+  only when it is kept, and on a no or its timeout applies the configuration
+  from before the `persistent` one, which is the same layout dsplr applied and
+  the user kept, so the screen still does not change; only the save is lost.
+  `persist` returns as soon as Mutter took the request, before anyone has
+  answered, so it reports `Persisted::WhenKept` ("handed to Mutter, which writes
+  monitors.xml once … kept"), not that it was saved. Without GNOME Shell (plain
+  `mutter`, the e2e harness) Mutter keeps it at once.
+- As on niri and KDE, a layout other than the one on screen is `Unsupported`
+  (exit `3`): saving applies, so a save never changes the screen past dsplr's
+  test, revert point and confirm.
+- Any `temporary` or `persistent` apply cancels a confirmation of Mutter's that
+  is still waiting, so applying with dsplr while GNOME Shell's dialog is up
+  drops that save (its dialog's answer then does nothing). Not seen, read in
+  `meta_monitor_manager_handle_apply_monitors_config`.
+- dsplr never writes `monitors.xml` itself.
 
 ## X11
 

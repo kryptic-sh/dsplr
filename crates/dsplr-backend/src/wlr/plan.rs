@@ -327,7 +327,8 @@ mod tests {
         assert_eq!(
             plan(
                 &Layout {
-                    entries: vec![stranger]
+                    entries: vec![stranger],
+                    ..Default::default()
                 },
                 &heads,
                 V4

@@ -169,6 +169,7 @@ mod tests {
         let panel = entry(OutputId::Connector("eDP-1".into()), "eDP-1");
         let layout = Layout {
             entries: vec![aoc.clone(), panel.clone()],
+            ..Default::default()
         };
         assert_eq!(
             output_name(&layout, &aoc).as_deref(),
@@ -182,6 +183,7 @@ mod tests {
         let headless = entry(OutputId::new("", " ", "X1", "HEADLESS-1"), "HEADLESS-1");
         let layout = Layout {
             entries: vec![headless.clone()],
+            ..Default::default()
         };
         assert_eq!(
             output_name(&layout, &headless).as_deref(),
@@ -197,6 +199,7 @@ mod tests {
             |connector: &str| entry(OutputId::new("AOC", "Q27G4", "0", connector), connector);
         let layout = Layout {
             entries: vec![twin("DP-1"), twin("DP-2")],
+            ..Default::default()
         };
         assert_eq!(
             output_name(&layout, &layout.entries[0]).as_deref(),
@@ -216,6 +219,7 @@ mod tests {
             let monitor = entry(OutputId::new("Acme", model, "1", "DP-1"), "DP-1");
             let layout = Layout {
                 entries: vec![monitor.clone()],
+                ..Default::default()
             };
             assert_eq!(
                 output_name(&layout, &monitor).as_deref(),
@@ -234,6 +238,7 @@ mod tests {
         (output.make, output.model) = ("BOE".into(), "0x0AFC".into());
         let layout = Layout {
             entries: vec![panel.clone()],
+            ..Default::default()
         };
         assert_eq!(identifier(&panel).as_deref(), Some("BOE 0x0AFC Unknown"));
         assert_eq!(output_name(&layout, &panel).as_deref(), Some("eDP-1"));

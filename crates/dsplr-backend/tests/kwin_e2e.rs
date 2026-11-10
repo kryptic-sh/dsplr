@@ -26,10 +26,8 @@ mod kwin_support;
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use kwin_support::{
-    KWIN_WAIT, connectors, harness_outputs, kwin_backend, kwin_output_config, row, shows,
-};
-use support::{edited, entry, entry_mut};
+use kwin_support::{KWIN_WAIT, harness_outputs, kwin_backend, kwin_output_config, shows};
+use support::{connectors, edited, entry, entry_mut, row};
 
 async fn snapshot(backend: &Backend) -> Layout {
     backend.snapshot().await.expect("snapshot")

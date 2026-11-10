@@ -1,6 +1,6 @@
 //! An output's rectangle on the canvas, shared by validation and arranging.
 
-use crate::{OutputEntry, OutputState};
+use crate::{LayoutMode, OutputEntry, OutputState};
 
 /// An output's place on the canvas, in whole layout pixels.
 #[derive(Debug, Clone, Copy)]
@@ -12,16 +12,16 @@ pub struct Rect {
 }
 
 impl Rect {
-    /// Where `entry`'s settings put it: [`Rect::of_state`].
-    pub fn of(entry: &OutputEntry) -> Option<Self> {
-        Self::of_state(&entry.state)
+    /// Where `entry`'s settings put it in `layout_mode`: [`Rect::of_state`].
+    pub fn of(entry: &OutputEntry, layout_mode: LayoutMode) -> Option<Self> {
+        Self::of_state(&entry.state, layout_mode)
     }
 
-    /// Where these settings put an output: their position and logical size.
-    /// `None` when there is no logical size; whether the output is enabled is
-    /// the caller's question.
-    pub fn of_state(state: &OutputState) -> Option<Self> {
-        let (width, height) = state.logical_size()?;
+    /// Where these settings put an output in `layout_mode`: their position
+    /// and their size there ([`OutputState::size`]). `None` when there is no
+    /// size; whether the output is enabled is the caller's question.
+    pub fn of_state(state: &OutputState, layout_mode: LayoutMode) -> Option<Self> {
+        let (width, height) = state.size(layout_mode)?;
         Some(Self {
             x: state.x.into(),
             y: state.y.into(),

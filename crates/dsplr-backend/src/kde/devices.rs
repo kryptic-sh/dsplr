@@ -85,7 +85,10 @@ pub fn layout(devices: &[Device], order: Option<&[String]>) -> Result<Layout, Sn
         .iter()
         .map(|device| entry(device, devices, order))
         .collect::<Result<_, _>>()?;
-    Ok(Layout { entries })
+    Ok(Layout {
+        entries,
+        ..Default::default()
+    })
 }
 
 fn entry(

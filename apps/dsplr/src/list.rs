@@ -1,13 +1,26 @@
 //! `dsplr list`: the layout as text, one block per output.
 
-use dsplr_model::{Layout, Mode, OutputEntry};
+use dsplr_model::{Layout, LayoutMode, Mode, OutputEntry};
 
-/// The text `dsplr list` prints.
+/// The text `dsplr list` prints: a line first when positions count in
+/// GNOME's physical layout mode, where an output's size is its mode's
+/// whatever its scale.
 pub fn describe(layout: &Layout) -> String {
     if layout.entries.is_empty() {
         return "no outputs\n".to_owned();
     }
-    layout.entries.iter().map(describe_entry).collect()
+    let mode = match layout.layout_mode {
+        LayoutMode::Logical => String::new(),
+        LayoutMode::Physical => {
+            "physical layout mode: each output is as big as its mode, whatever its scale\n"
+                .to_owned()
+        }
+    };
+    mode + &layout
+        .entries
+        .iter()
+        .map(describe_entry)
+        .collect::<String>()
 }
 
 /// The line `dsplr list` heads an output with, and other commands name one
@@ -75,7 +88,8 @@ fn describe_entry(entry: &OutputEntry) -> String {
 #[cfg(test)]
 mod tests {
     use dsplr_model::{
-        AdaptiveSync, Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform,
+        AdaptiveSync, Layout, LayoutMode, Mode, Output, OutputEntry, OutputId, OutputState,
+        Transform,
     };
 
     use super::describe;
@@ -133,6 +147,7 @@ mod tests {
                     },
                 },
             ],
+            ..Default::default()
         };
         assert_eq!(
             describe(&layout),
@@ -145,6 +160,25 @@ mod tests {
     }
 
     #[test]
+    fn a_physical_layout_says_so_first() {
+        let layout = Layout {
+            entries: vec![OutputEntry {
+                id: OutputId::Connector("DP-1".into()),
+                output: None,
+                state: OutputState::default(),
+            }],
+            layout_mode: LayoutMode::Physical,
+        };
+        assert!(
+            describe(&layout).starts_with(
+                "physical layout mode: each output is as big as its mode, whatever its scale\nDP-1\n"
+            ),
+            "{}",
+            describe(&layout)
+        );
+    }
+
+    #[test]
     fn an_entry_without_hardware_facts_is_named_by_its_identity() {
         let layout = Layout {
             entries: vec![OutputEntry {
@@ -152,6 +186,7 @@ mod tests {
                 output: None,
                 state: OutputState::default(),
             }],
+            ..Default::default()
         };
         assert_eq!(
             describe(&layout),

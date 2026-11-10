@@ -68,8 +68,8 @@ mod tests {
 
     use super::JsonError;
     use crate::{
-        AdaptiveSync, Layout, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState,
-        RgbRange, Transform,
+        AdaptiveSync, Layout, LayoutMode, Mode, ModeHandle, Output, OutputEntry, OutputId,
+        OutputState, RgbRange, Transform,
     };
 
     fn two_monitors() -> Layout {
@@ -115,6 +115,7 @@ mod tests {
                     },
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -138,6 +139,18 @@ mod tests {
     }
 
     #[test]
+    fn a_physical_layout_says_so_and_a_logical_one_leaves_it_out() {
+        let mut layout = two_monitors();
+        let written: serde_json::Value = serde_json::from_str(&layout.to_json().unwrap()).unwrap();
+        assert_eq!(written.get("layout_mode"), None);
+        layout.layout_mode = LayoutMode::Physical;
+        let text = layout.to_json().unwrap();
+        let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(written["layout_mode"], "physical");
+        assert_eq!(Layout::from_json(&text).unwrap(), without_handles(layout));
+    }
+
+    #[test]
     fn the_written_form_is_versioned_snake_case_in_millihertz() {
         let layout = Layout {
             entries: vec![OutputEntry {
@@ -152,6 +165,7 @@ mod tests {
                     ..OutputState::default()
                 },
             }],
+            ..Default::default()
         };
         let written: serde_json::Value = serde_json::from_str(&layout.to_json().unwrap()).unwrap();
         assert_eq!(

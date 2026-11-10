@@ -180,6 +180,7 @@ mod tests {
                     ..OutputState::default()
                 },
             }],
+            ..Default::default()
         }
     }
 

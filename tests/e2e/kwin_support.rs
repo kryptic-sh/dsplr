@@ -1,7 +1,7 @@
 //! Shared by every KWin e2e test (included with `#[path]`, beside
 //! `support.rs`): the check that the test runs under
-//! `tests/e2e/headless-kwin.sh`, waiting for that harness's KWin, the layout
-//! the tests start from, and the `kwinoutputconfig.json` KWin saves.
+//! `tests/e2e/headless-kwin.sh`, waiting for that harness's KWin, and the
+//! `kwinoutputconfig.json` KWin saves.
 
 #![allow(
     dead_code,
@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use dsplr_backend::Backend;
-use dsplr_model::{Layout, OutputState};
+use dsplr_model::Layout;
 
 /// How long KWin gets to offer its output management after its socket
 /// appears, and to report a change it was asked for.
@@ -84,58 +84,9 @@ pub async fn kwin_backend() -> Backend {
     }
 }
 
-/// The harness's outputs, each at its one mode, unscaled and untransformed,
-/// in a row in the order KWin lists them, the first primary: the layout
-/// every test starts from, so each leaves KWin as it would find it.
-pub fn row(snapshot: &Layout) -> Layout {
-    let mut layout = snapshot.clone();
-    let mut x = 0;
-    for (index, entry) in layout.entries.iter_mut().enumerate() {
-        let output = entry.output.as_ref().expect("live outputs");
-        let mode = output
-            .modes
-            .iter()
-            .find(|mode| mode.preferred)
-            .or_else(|| output.modes.first())
-            .expect("a mode")
-            .clone();
-        let width = i32::try_from(mode.width).expect("a mode's width fits");
-        entry.state = OutputState {
-            mode: Some(mode),
-            x,
-            primary: index == 0,
-            ..OutputState::default()
-        };
-        x += width;
-    }
-    layout
-}
-
-/// The connector of every output in `layout`, in its order.
-pub fn connectors(layout: &Layout) -> Vec<String> {
-    layout
-        .entries
-        .iter()
-        .map(|entry| entry.connector().expect("a connector").to_owned())
-        .collect()
-}
-
-/// Waits until KWin shows `layout` (every setting dsplr compares, by
-/// `Layout::differences`), or fails after [`KWIN_WAIT`]. KWin sends a
-/// device's `done` on its next event-loop turn, which can come after it has
-/// answered the apply.
+/// Waits until KWin shows `layout` ([`crate::support::shows`]). KWin sends
+/// a device's `done` on its next event-loop turn, which can come after it
+/// has answered the apply.
 pub async fn shows(backend: &Backend, layout: &Layout) {
-    let started = Instant::now();
-    loop {
-        let now = backend.snapshot().await.expect("snapshot");
-        let differences = layout.differences(&now, &backend.capabilities());
-        if differences.is_empty() {
-            return;
-        }
-        assert!(
-            started.elapsed() < KWIN_WAIT,
-            "KWin does not show the layout: {differences:?}\n{now:#?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    crate::support::shows(backend, layout, "KWin", KWIN_WAIT).await;
 }

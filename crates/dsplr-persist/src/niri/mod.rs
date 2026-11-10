@@ -236,6 +236,7 @@ mod tests {
         let panel = entry(OutputId::Connector("eDP-1".into()), "eDP-1");
         let layout = Layout {
             entries: vec![aoc.clone(), panel.clone()],
+            ..Default::default()
         };
         assert_eq!(
             output_name(&layout, &aoc).as_deref(),
@@ -253,6 +254,7 @@ mod tests {
                 entry(OutputId::new("AOC", "Q27G4", "a1", "DP-1"), "DP-1"),
                 entry(OutputId::new("aoc", "q27g4", "A1", "DP-2"), "DP-2"),
             ],
+            ..Default::default()
         };
         for (entry, connector) in layout.entries.iter().zip(["DP-1", "DP-2"]) {
             assert_eq!(output_name(&layout, entry).as_deref(), Some(connector));

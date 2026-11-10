@@ -88,7 +88,7 @@ impl Editor {
                 let before = merge(
                     old_live,
                     &drag.before().entries,
-                    new_live,
+                    &snapshot.layout,
                     &from,
                     &mut Vec::new(),
                 );
@@ -97,7 +97,7 @@ impl Editor {
             let pending = merge(
                 old_live,
                 &self.pending.entries,
-                new_live,
+                &snapshot.layout,
                 &from,
                 &mut rebased.kept_over,
             );
@@ -121,17 +121,19 @@ impl Editor {
     }
 }
 
-/// The pending layout over `new_live`: each new entry with its old one's
-/// edits (`from` names the old entry of each new one), the settings the
-/// desktop also changed under an edit pushed onto `kept_over`.
+/// The pending layout over `new_live`, in its layout mode: each new entry
+/// with its old one's edits (`from` names the old entry of each new one),
+/// the settings the desktop also changed under an edit pushed onto
+/// `kept_over`.
 fn merge(
     old_live: &[OutputEntry],
     pending: &[OutputEntry],
-    new_live: &[OutputEntry],
+    new_live: &Layout,
     from: &[Option<usize>],
     kept_over: &mut Vec<(String, Setting)>,
 ) -> Layout {
     let entries = new_live
+        .entries
         .iter()
         .zip(from)
         .map(|(new, from)| match *from {
@@ -152,7 +154,10 @@ fn merge(
             None => new.clone(),
         })
         .collect();
-    Layout { entries }
+    Layout {
+        entries,
+        layout_mode: new_live.layout_mode,
+    }
 }
 
 /// One output's settings: `pending`'s where they differ from `old` (the user

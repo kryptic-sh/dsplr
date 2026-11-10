@@ -388,6 +388,7 @@ mod tests {
                 .iter()
                 .map(|&(connector, serial)| live_entry(connector, serial))
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -583,6 +584,7 @@ mod tests {
                     },
                     live_entry("DP-1", "SER1"),
                 ],
+                ..Default::default()
             },
             ..profile("p", &[], 0)
         };

@@ -72,7 +72,9 @@ export XDG_CONFIG_HOME="$runtime/config"
 # The e2e tests refuse to run without this, so they never reach a real
 # Hyprland when started some other way.
 export DSPLR_E2E_HYPRLAND="$runtime"
-unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NIRI_SOCKET HYPRLAND_CONFIG
+# No session bus: dsplr's GNOME detection asks the one the environment
+# names, else the private runtime's, where there is none.
+unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NIRI_SOCKET HYPRLAND_CONFIG DBUS_SESSION_BUS_ADDRESS
 "$@"
 status=$?
 if [ "$status" -ne 0 ]; then

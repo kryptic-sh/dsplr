@@ -130,7 +130,10 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
         .map(|(name, line, rule)| entry(&name, line, rule))
         .collect::<Result<_, _>>()?;
     Ok(MonitorsLua {
-        layout: dsplr_model::Layout { entries },
+        layout: dsplr_model::Layout {
+            entries,
+            ..Default::default()
+        },
         catch_all,
     })
 }
@@ -371,6 +374,7 @@ mod tests {
                             },
                         },
                     ],
+                    ..Default::default()
                 },
                 catch_all: None,
             }
@@ -416,6 +420,7 @@ mod tests {
                         },
                     },
                 ],
+                ..Default::default()
             },
             catch_all: Some(
                 r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#

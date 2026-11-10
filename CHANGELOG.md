@@ -83,9 +83,37 @@ and this project adheres to
   the versioned JSON form profiles will use (refresh in millihertz).
 - `dsplr backend` prints what detection checked, the backend it found and that
   backend's capabilities.
-- Three backends so far: Hyprland, KDE Plasma 6 on Wayland (`kde`), and wlroots
-  compositors (`wlr`). With no backend found, both commands exit with code 6; on
-  targets other than Linux, detection says dsplr supports Linux only.
+- Four backends so far: Hyprland, KDE Plasma 6 on Wayland (`kde`), GNOME
+  (`gnome`), and wlroots compositors (`wlr`). With no backend found, both
+  commands exit with code 6; on targets other than Linux, detection says dsplr
+  supports Linux only.
+- The `gnome` backend reads, tests and applies layouts over Mutter's
+  `org.gnome.Mutter.DisplayConfig` on the session bus
+  (`DBUS_SESSION_BUS_ADDRESS`, else the `bus` socket in `XDG_RUNTIME_DIR`).
+  Detection tries it after KDE and before wlroots, when something owns that name
+  on the bus (asked of the bus, so nothing is started). It reads every monitor,
+  its modes and the scales each mode takes, and sets mode, position, scale (one
+  of the mode's, each output its own unless Mutter requires one for all),
+  transform, enabled, the primary output, RGB range and mirroring (monitors
+  sharing a logical monitor). `dsplr apply --dry-run` has Mutter test the layout
+  (`verify`), and an apply is `temporary`, which Mutter neither saves nor
+  reverts, so dsplr's confirm and watchdog guard it as on other desktops.
+  Mutter's own reason for a refusal is shown (exit `4`); a change between
+  reading the displays and applying is reported as the displays having changed.
+  A mode the monitor does not list, a mirror whose mode differs in size from its
+  source's, a second primary output and a layout that does not start at 0,0 are
+  refused before Mutter is asked (exit `3`), and validation refuses gaps, which
+  Mutter does not take. A monitor's underscanning and colour mode are sent back
+  as they are, since Mutter resets them otherwise. Mutter's physical layout
+  mode, where an output is as big as its mode whatever its scale, is read and
+  kept: a layout carries it (`layout_mode` in the JSON form, left out when
+  logical), the canvas and validation size outputs by it, and `dsplr list` says
+  so.
+- `dsplr save` on GNOME sends the layout on screen to Mutter again as
+  `persistent`: GNOME Shell asks whether to keep the display settings, and
+  Mutter writes `monitors.xml` only once they are kept (Mutter alone keeps them
+  at once). dsplr says it handed the layout over, since the answer is the
+  desktop's. A layout other than the one on screen is refused, as on niri.
 - The `kde` backend reads and applies layouts over KWin's own protocols:
   `kde_output_device_v2` through `kde_output_device_registry_v2` (version 21 or
   later, which KWin 6.8 requires), `kde_output_order_v1` for the primary output,

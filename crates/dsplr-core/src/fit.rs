@@ -71,7 +71,7 @@ pub fn rects(layout: &Layout) -> impl Iterator<Item = (usize, Rect)> + '_ {
         .iter()
         .enumerate()
         .filter(|(_, entry)| on_canvas(&entry.state))
-        .filter_map(|(index, entry)| Some((index, Rect::of(entry)?)))
+        .filter_map(|(index, entry)| Some((index, Rect::of(entry, layout.layout_mode)?)))
 }
 
 /// The fit of `editor`'s live and pending outputs, together, in `area`.

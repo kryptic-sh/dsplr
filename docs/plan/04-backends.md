@@ -22,7 +22,9 @@ Detection never trusts `XDG_CURRENT_DESKTOP` alone: a variable says what the
 session claims to be, the registry and the bus say what is there.
 `dsplr --backend <name>` overrides it, for testing and for desktops that offer
 more than one interface (KDE on X11 is `Randr`; GNOME on X11 offers both
-`DisplayConfig` and RandR, and `Gnome` wins because it persists).
+`DisplayConfig` and RandR, and `Gnome` wins because it persists, which the order
+above gives: Mutter 51.1 has no X11 backend, so this is an older GNOME; which
+release dropped it was not checked). `--backend` is not written yet.
 
 No match is an error that lists what was checked and what was found, never an
 empty canvas.
@@ -225,34 +227,110 @@ As built:
 
 ## GNOME (`Gnome`)
 
-`org.gnome.Mutter.DisplayConfig` on the session bus:
+Built in M6 (`crates/dsplr-backend/src/gnome/`), over
+`org.gnome.Mutter.DisplayConfig` on the session bus, through `zbus`. Read in
+Mutter 51.1's source (Arch's package on 2026-11-10;
+`data/dbus-interfaces/org.gnome.Mutter.DisplayConfig.xml`,
+`src/backends/meta-monitor-manager.c`, `meta-monitor-config-manager.c`,
+`meta-monitor-config-utils.c`):
 
-- **Read:** `GetCurrentState()` → serial, physical monitors (connector, vendor,
-  product, serial, modes with their supported scales), logical monitors (x, y,
-  scale, transform, primary, which monitors), properties (`layout-mode`,
-  `supports-changing-layout-mode`, `global-scale-required`).
-- **Change stream:** the `MonitorsChanged` signal.
-- **Apply:** `ApplyMonitorsConfig(serial, method, logical_monitors, props)`
-  where method is `verify` (dsplr's `test`), `temporary` (apply, not saved,
-  never reverted by Mutter) or `persistent` (apply, then Mutter's own confirm,
-  then `~/.config/monitors.xml`).
-- GNOME's model is logical monitors containing physical ones; mirroring is two
-  monitors in one logical monitor, so `Gnome` supports mirroring.
-- `layout-mode` decides whether positions are logical or physical pixels; the
-  backend converts both ways.
-- A `persistent` apply from **any** client starts Mutter's own confirmation:
-  GNOME Shell shows its "Keep changes?" dialog, Mutter writes `monitors.xml`
-  only if the user keeps it and restores the previous config on timeout
-  (`DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT` in
-  `src/backends/meta-monitor-manager.c`). How dsplr uses that is in
-  [02](02-architecture.md#apply-confirm-revert).
+- `GetCurrentState()` → serial, monitors (connector, vendor, product, serial;
+  modes with id, size, refresh as a double, `supported-scales` and `is-current`
+  / `is-preferred`; properties such as `display-name`, `width-mm`,
+  `is-underscanning`, `color-mode`, `rgb-range`), logical monitors (x, y, scale,
+  transform, primary, their monitors) and properties (`layout-mode`, absent
+  meaning logical; `supports-changing-layout-mode`; `global-scale-required`).
+  There is no `supports-mirroring` property in 51.1.
+- The vendor is the EDID's PNP code (`set_output_details_from_edid` in
+  `src/backends/meta-output.c`), and Mutter sends `unknown` for a vendor,
+  product or serial it does not know (`meta_monitor_generate_spec`).
+- `ApplyMonitorsConfig(serial, method, logical_monitors, properties)`: method
+  `0` verify, `1` temporary, `2` persistent. A wrong serial is `AccessDenied`
+  "The requested configuration is based on stale information", and D-Bus
+  configuration turned off by policy is `AccessDenied` too; a configuration
+  Mutter cannot apply is `InvalidArgs` with its reason (none translated). Mutter
+  refuses logical monitors that overlap, do not all touch ("Logical monitors not
+  adjacent"), do not start at 0,0 ("positions are offset"), have no primary or
+  two, a scale the mode does not list (compared within a float's epsilon), a
+  fractional scale in the physical layout mode, and monitors of one logical
+  monitor at different mode sizes. A monitor left out of every logical monitor
+  is turned off. A monitor's `underscanning` and `color-mode` reset to their
+  defaults when an apply leaves them out. `layout-mode` left out is Mutter's
+  **default** mode, not the current one.
+- `temporary` is not saved and never reverted by Mutter. `persistent` applies,
+  emits `confirm-display-change` and starts a timeout
+  (`DEFAULT_DISPLAY_CONFIGURATION_TIMEOUT`); kept, Mutter writes `monitors.xml`
+  in `g_get_user_config_dir()` (asynchronously); not kept or timed out, it
+  applies the configuration from before the persistent one, `temporary`. GNOME
+  Shell answers the signal with its dialog; Mutter's default plugin has no
+  handler, so plain `mutter` keeps it at once
+  (`meta_plugin_manager_confirm_display_change`). Any `temporary` or
+  `persistent` apply cancels a confirmation still waiting.
+- `MonitorsChanged` is emitted after each change.
+- Mutter 51.1 has no X11 backend (no `src/backends/x11/`), and its native
+  backend's default layout mode is logical, with `supports-changing-layout-mode`
+  set. The physical mode still comes from a `monitors.xml` that says so or a
+  client that sets it.
+
+As built:
+
+- **Read**: one entry per monitor; a monitor in no logical monitor is off. The
+  first monitor of a logical monitor is placed there; each other one mirrors it,
+  with the logical monitor's position, scale and transform. The primary logical
+  monitor makes its first monitor primary. Mutter's `unknown` is read as not
+  reported, so a monitor without a serial is named by its connector. The
+  description is `display-name`. A mode's handle is its ordinal among the
+  monitor's modes, as on wlroots (a monitor can list one size and refresh twice:
+  interlaced, or a variable-refresh mode). The layout carries Mutter's layout
+  mode (`Layout::layout_mode`, below).
+- **Test**: `verify`, a real test. **Apply**: `temporary`, so dsplr's own
+  confirm and watchdog guard it as elsewhere. Both read the state and send on
+  one connection, with that state's serial. Each output on and mirroring nothing
+  is a logical monitor; a mirror joins its source's. A monitor the layout does
+  not name keeps its current settings. The mode is the one the monitor lists (no
+  custom modes); the scale is sent as the mode lists it, so it reads back as
+  sent (no `scale_steps`). With no primary named, the one Mutter has stays
+  primary while on, else the first logical monitor. `layout-mode` is sent
+  wherever Mutter can change it; elsewhere a layout in the other mode is
+  refused. Underscanning and colour mode go back as read; RGB range as the
+  layout says, else as read.
+- **Refused before sending** (`gnome::PlanError`, exit `3`): a mode the monitor
+  does not list, a scale its mode does not list, a mirror of another mode size
+  or of an output that is off or a mirror, a second primary output or one that
+  is off, a layout not starting at 0,0, a layout mode Mutter cannot switch to,
+  and colour preset, bit depth, overscan or adaptive sync (Mutter offers
+  variable refresh as modes of their own, not read yet). Gaps are refused by
+  validation (`gaps_allowed` off).
+- **Errors**: Mutter's `InvalidArgs`, and `AccessDenied` other than the stale
+  one, are refusals (`Error::is_refusal`); the stale one, and a monitor gone
+  since the read, are `Error::is_stale`.
+- **Persist**: the layout must be the one on screen (as on niri and KDE), and is
+  sent again as `persistent`; `Persisted::WhenKept` says Mutter saves it once
+  GNOME Shell's dialog keeps it. How that meets dsplr's confirm flow is in
+  [05](05-persistence-and-profiles.md#kde-and-gnome).
+- **Watch**: `MonitorsChanged` on a bus connection of its own. Every request
+  uses a connection of its own too, so a signal stream left unread never holds
+  up a reply (zbus stops reading a connection while one of its streams is full).
+- **Capabilities**: test before apply, mirroring, primary output, RGB range,
+  fractional scale, per-output scale unless `global-scale-required`, native
+  persistence; no gaps, no custom modes, no adaptive sync, not saved on every
+  apply.
+- **Layout modes**: `Layout::layout_mode` is `logical` everywhere but where
+  Mutter reports `physical`; there an output's extent on the canvas is its mode
+  turned by its transform, whatever its scale (`OutputState::size`), which
+  validation, snapping and the canvas use. The JSON form leaves `logical` out. A
+  layout file keeps its own mode on `dsplr apply`.
+- **Detection**: after KDE, before wlroots: the session bus the environment
+  names (`DBUS_SESSION_BUS_ADDRESS`, else `$XDG_RUNTIME_DIR/bus`), asked whether
+  something owns `org.gnome.Mutter.DisplayConfig` (`NameHasOwner`, so nothing is
+  activated), then `GetCurrentState`.
 - Mutter offers no layer-shell (its Wayland protocol list in `src/meson.build`
-  has no `wlr-layer-shell`), so dsplr's per-monitor dialogs and identify overlay
-  are drawn differently on GNOME ([06](06-gui.md)).
+  has no `wlr-layer-shell`), so dsplr's per-monitor dialogs fall back to one
+  toplevel and identify is unsupported there ([06](06-gui.md)).
 
 Cinnamon's Muffin exposes the same interface under
 `org.cinnamon.Muffin.DisplayConfig`; whether one implementation serves both is
-checked at M6 and recorded as a stretch item if it does.
+not checked (backlog).
 
 ## X11 (`Randr`)
 

@@ -91,7 +91,13 @@ impl Editor {
     /// is none, and nothing when that nearest one already touches it: the
     /// key stops at a neighbour, it does not jump past it to the next.
     pub fn move_to_neighbour(&mut self, index: usize, direction: Direction) -> bool {
-        let Some(me) = self.pending.entries.get(index).and_then(Rect::of) else {
+        let layout_mode = self.pending.layout_mode;
+        let Some(me) = self
+            .pending
+            .entries
+            .get(index)
+            .and_then(|entry| Rect::of(entry, layout_mode))
+        else {
             return false;
         };
         let others: Vec<Rect> = self
@@ -102,7 +108,7 @@ impl Editor {
             .filter(|&(other, entry)| {
                 other != index && on_canvas(&entry.state) && entry.state.mirror_of.is_none()
             })
-            .filter_map(|(_, entry)| Rect::of(entry))
+            .filter_map(|(_, entry)| Rect::of(entry, layout_mode))
             .collect();
         let across = |other: &Rect| match direction {
             Direction::Left | Direction::Right => other.y < me.bottom() && me.y < other.bottom(),
@@ -172,20 +178,21 @@ impl Editor {
             return self.edit(index, |state| state.enabled = false);
         }
         let default = default_mode(self.listed_modes(index)).cloned();
+        let layout_mode = self.pending.layout_mode;
         let others: Vec<Rect> = self
             .pending
             .entries
             .iter()
             .enumerate()
             .filter(|&(other, entry)| other != index && on_canvas(&entry.state))
-            .filter_map(|(_, entry)| Rect::of(entry))
+            .filter_map(|(_, entry)| Rect::of(entry, layout_mode))
             .collect();
         self.edit(index, |state| {
             state.enabled = true;
             if state.mode.is_none() {
                 state.mode = default;
             }
-            let Some(entry_rect) = Rect::of_state(state) else {
+            let Some(entry_rect) = Rect::of_state(state, layout_mode) else {
                 return;
             };
             if others.iter().any(|other| other.overlaps(entry_rect)) {

@@ -66,6 +66,7 @@ pub fn owners_machine() -> Snapshot {
                     },
                 },
             ],
+            ..Default::default()
         },
     }
 }
@@ -125,6 +126,7 @@ pub fn three_monitors() -> Snapshot {
                     },
                 ),
             ],
+            ..Default::default()
         },
     }
 }

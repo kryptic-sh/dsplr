@@ -68,16 +68,23 @@ rebound.
 
 **GNOME has no layer-shell**, so there the confirm is a normal toplevel dialog
 that GNOME places, and the revert watchdog covers the case where it lands on a
-screen that went dark ([02](02-architecture.md#apply-confirm-revert)). On Save,
-GNOME Shell shows its own confirm dialog instead of dsplr's.
+screen that went dark ([02](02-architecture.md#apply-confirm-revert)). This is
+the panel set's own fallback (`dsplr-gui`'s `panels.rs`): crcbl-shell reports
+`ShellCaps::PANEL` only where the compositor offers `zwlr_layer_shell_v1`
+(crcbl-shell 0.18.0, `wayland/mod.rs`), and the confirm kind tries one toplevel
+when no panel opens. Not run on GNOME. On Save, GNOME Shell shows its own
+confirm dialog instead of dsplr's ([05](05-persistence-and-profiles.md#gnome)).
 
 ## Identify overlay
 
-On GNOME, where panels are not available, identify is to ask GNOME Shell to show
-its own monitor labels (`org.gnome.Shell` `ShowMonitorLabels`, which
-gnome-control-center uses; whether Shell accepts the call from another client is
-to verify at M6), else it is `Unsupported` there, as it is today on any window
-system without panels.
+On GNOME identify is **unsupported**: the window says so in the bar, as on any
+window system without panels. GNOME Shell's `ShowMonitorLabels` (which
+gnome-control-center uses) answers only callers owning `org.gnome.Settings`,
+`org.gnome.SettingsDaemon.MediaKeys` or
+`org.freedesktop.impl.portal.desktop.gnome`, unless Shell runs in unsafe mode
+(`DBusSenderChecker` in GNOME Shell 51.1's `js/ui/shellDBus.js` and
+`js/misc/util.js`, read, not run). Taking one of those names to get past it was
+declined (backlog).
 
 ## What crcbl must provide
 

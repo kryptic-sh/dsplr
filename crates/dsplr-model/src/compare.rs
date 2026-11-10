@@ -246,6 +246,7 @@ mod tests {
     fn one(state: OutputState) -> Layout {
         Layout {
             entries: vec![entry("DP-1", state)],
+            ..Default::default()
         }
     }
 
@@ -373,9 +374,11 @@ mod tests {
     fn outputs_that_came_or_went_are_named() {
         let asked = Layout {
             entries: vec![entry("DP-1", enabled()), entry("DP-2", enabled())],
+            ..Default::default()
         };
         let got = Layout {
             entries: vec![entry("DP-1", enabled()), entry("HDMI-A-1", enabled())],
+            ..Default::default()
         };
         let differences = asked.differences(&got, &Capabilities::default());
         assert_eq!(

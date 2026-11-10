@@ -155,6 +155,7 @@ pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
     let saved = match persisted {
         Persisted::File(saved) => saved,
         Persisted::ByDesktop { by } => return vec![format!("already saved, by {by}")],
+        Persisted::WhenKept { by } => return vec![format!("handed to {by}")],
     };
     let mut messages = vec![format!("saved to {}", saved.path.display())];
     messages.extend(
@@ -258,6 +259,17 @@ mod tests {
         assert_eq!(
             messages,
             ["already saved, by KWin, in its kwinoutputconfig.json, when it applied it"]
+        );
+    }
+
+    #[test]
+    fn a_layout_the_desktop_saves_once_kept_says_so() {
+        let messages = super::saved_messages(&dsplr_backend::Persisted::WhenKept {
+            by: "Mutter, which writes monitors.xml once it is kept",
+        });
+        assert_eq!(
+            messages,
+            ["handed to Mutter, which writes monitors.xml once it is kept"]
         );
     }
 

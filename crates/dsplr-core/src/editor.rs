@@ -228,6 +228,7 @@ mod tests {
                     entry("DP-1", true, 1920),
                     entry("DP-2", true, 0),
                 ],
+                ..Default::default()
             },
         })
     }

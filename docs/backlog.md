@@ -9,7 +9,9 @@ M0 (scaffold) and M1 (read Hyprland, `dsplr list`, `dsplr backend`) are done. On
 the owner's machine (Hyprland 0.56.2) `dsplr list --json` was compared field by
 field with `hyprctl -j monitors all` and matched. Detection knows Hyprland, KDE
 Plasma (`kde`, over KWin's own protocols, which reads and applies; built at M5,
-its e2e not yet run, below) and wlroots compositors (`wlr`, over
+its e2e not yet run, below), GNOME (`gnome`, over Mutter's `DisplayConfig` on
+the session bus, which reads, tests, applies and saves through Mutter; built at
+M6, its e2e not yet run, below) and wlroots compositors (`wlr`, over
 `zwlr_output_manager_v1`, which reads, tests and applies; its e2e runs on
 headless sway). Build order is `docs/plan/11-milestones.md`.
 
@@ -245,6 +247,62 @@ milestone:
   ("negative"); that a priority change alone emits a new output order; and that
   `kwin_wayland --version` prints without a session (the harness gives it a time
   limit). The GUI e2e was not run either.
+- **The GNOME e2e has not run anywhere**
+  (`crates/dsplr-backend/tests/mutter_e2e.rs` and
+  `apps/dsplr/tests/mutter_e2e.rs`, under `tests/e2e/headless-mutter.sh`): the
+  owner's machine has no `mutter`, so their first run is CI's `mutter` entry.
+  The D-Bus side is checked locally against a stand-in `DisplayConfig` on a
+  private `dbus-daemon` (`gnome::tests`: the request shapes, method and serial,
+  Mutter's stale and refusal answers in its own words, `MonitorsChanged`), and
+  the wire types against the signatures in Mutter 51.1's interface XML; the
+  harness's private bus and environment were run with a stub `mutter`.
+  Everything Mutter itself does is read in its 51.1 source, not observed. Most
+  likely to fail first: that `mutter --headless --wayland --no-x11` starts in
+  the VM with GSettings in memory and no gnome-session; that its three virtual
+  monitors come up on, in a row, at scale 1, with serials and `Meta-N` names;
+  that a quarter turn of a virtual monitor applies; that 1920x1080 lists a
+  fractional scale (the CLI test's physical-mode refusal needs one); that
+  `monitors.xml` appears within the tests' wait; that Mutter's refusal text for
+  a gap contains "adjacent"; and that the VM's image has `dbus-run-session` (the
+  matrix entry installs `dbus` to be sure).
+- **GNOME: the canvas can leave the layout away from the origin**: Mutter
+  refuses logical monitors that do not start at 0,0, and dsplr refuses such a
+  layout before sending (exit `3`, `PlanError::Offset`). The GUI lifts a drag's
+  release only off negative positions (`Layout::make_non_negative`), so dragging
+  the leftmost output right of another leaves the layout starting at that
+  other's x, and Apply is refused with the reason. Options: a capability ("the
+  layout must start at the origin", true on GNOME and on X11 at M7) that makes
+  the editor normalise on release (`Layout::normalise`) and validation report
+  it; or the backend normalising before sending, at the cost of the read-back
+  reporting every position as not taken as asked. The owner's call.
+- **GNOME adaptive sync**: Mutter 51.1 lists a variable-refresh mode as a mode
+  of its own (`refresh-rate-mode` `variable` on the mode), not a setting, so
+  dsplr shows it as a second mode of the same size and refresh and refuses
+  `adaptive_sync` in a layout before sending (as `wlr` does without version 4).
+  Mapping it means reading `refresh-rate-mode` into `Mode` or into
+  `AdaptiveSync` by which mode is current; not designed.
+- **GNOME physical layout mode not observed**: Mutter 51.1's native backend
+  defaults to the logical mode; the physical one comes from a `monitors.xml`
+  saying so or a client setting it, and the CLI e2e only checks that Mutter
+  refuses a fractional scale there. Reading a physical layout, the canvas at
+  mode sizes, and applying in it are unit-tested only. The editor's scale steps
+  in the physical mode still offer the mode's listed scales, which Mutter lists
+  for the current mode (integers only in the physical one).
+- **GNOME RGB range, underscanning and colour mode are not observed**: dsplr
+  reads `rgb-range` into `OutputState::rgb_range` and sends it back (or the
+  layout's), and sends `underscanning` and `color-mode` back as read, since
+  Mutter resets them when an apply leaves them out. Virtual monitors have none
+  of them to show, so only the unit tests check them.
+- **GNOME: other things not checked**: Cinnamon's Muffin
+  (`org.cinnamon.Muffin.DisplayConfig`, same interface by its name); GNOME on
+  X11 (Mutter 51.1 has none; which release dropped it was not checked); Mutter
+  refusing D-Bus configuration by policy (`<policy><dbus>no</dbus>` in
+  `monitors.xml`), classified as a refusal from its source; GNOME Shell's dialog
+  and its timeout on a real session; the manual checklist on GNOME (M6's exit
+  check).
+- **`dsplr --backend` is not written**: plan 04 names it for desktops offering
+  more than one interface (GNOME on X11, KDE on X11); detection's order picks
+  for now.
 - **KDE custom modes**: KWin 6.8 takes them as a mode list per output
   (`create_mode_list`, `set_resolution`, `set_refresh_rate`, `add_mode`, then
   `set_custom_modes` on the configuration, from management version 18), which
@@ -473,10 +531,11 @@ milestone:
   Character keys match the keysym's character, so they follow the keyboard
   layout; Shift is never compared for them (`H` is Shift+h).
 - **Identify where there are no panels**: the window reports "identify is
-  unsupported here" in the bar where crcbl's shell lacks `ShellCaps::PANEL`
-  (GNOME is M6, plan 06). That path has no test: `MainWindow::identify` needs
-  the window's GPU, which the window's unit tests do not have. A monitor that
-  matches no output shows the window system's monitor name instead.
+  unsupported here" in the bar where crcbl's shell lacks `ShellCaps::PANEL`,
+  GNOME included (GNOME Shell's `ShowMonitorLabels` refuses other callers, plan
+  06). That path has no test: `MainWindow::identify` needs the window's GPU,
+  which the window's unit tests do not have. A monitor that matches no output
+  shows the window system's monitor name instead.
 - **The GUI's Replace is `dsplr save --force`**: the CLI asks a yes for a file
   someone else wrote and needs `--force` for one edited by hand or holding what
   dsplr cannot keep; the window shows why and the diff in every case and takes
@@ -574,10 +633,8 @@ milestone:
   check weekly (`cron.yml`'s `miri` job); a dsplr job for these four tests would
   take seconds plus a nightly toolchain. Not added: a CI job is the owner's
   call.
-- **e2e for the other desktops**: each backend (M5 to M7) adds a
-  `headless-<desktop>.sh` harness and a CI matrix entry, as
-  `tests/e2e/headless-sway.sh` and the `sway` entry did for `wlr`, and
-  `headless-niri.sh` and the `niri` entry for `wlr` on niri.
+- **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
+  `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
 
 ## Open work in the Windows-owned crates
 
@@ -674,8 +731,9 @@ milestone:
   closed, since the terminal may be gone when it fires, so a watchdog that fails
   to revert says so to no one. A log file in the state directory would fix that.
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
-  not written; needs a vendor-name table with a source, and waits for M6 to see
-  what Mutter reports.
+  not written; needs a vendor-name table with a source. Mutter 51.1 reports the
+  PNP code (read in `set_output_details_from_edid`, not seen on a real monitor),
+  so it is wlroots' and Hyprland's resolved names that need mapping.
 
 ## Verified while planning
 
@@ -713,24 +771,26 @@ the table there says which needs are confirmed.
 
 ## Not verified (stated as gaps)
 
-Reported correct by the plan review but not rechecked by hand: the
-`ApplyMonitorsConfig` method values and `layout-mode` semantics (Mutter's
-DisplayConfig XML), sway's `adaptive_sync` taking effect (a headless output
-accepts it and stays off), and the `hl.monitor` field names (Hyprland wiki).
-sway's `include` was checked on headless sway 1.12 (2026-11-10): a relative
-path, `~`, `$HOME`, `$XDG_CONFIG_HOME` and an absolute path load; a quoted
-absolute path with a space in it does not.
+Reported correct by the plan review but not rechecked by hand: sway's
+`adaptive_sync` taking effect (a headless output accepts it and stays off), and
+the `hl.monitor` field names (Hyprland wiki). sway's `include` was checked on
+headless sway 1.12 (2026-11-10): a relative path, `~`, `$HOME`,
+`$XDG_CONFIG_HOME` and an absolute path load; a quoted absolute path with a
+space in it does not.
 
 Read in KWin 6.8.2's source but not yet observed: that KWin saves
 `kwinoutputconfig.json` on every successful protocol apply
 (`Workspace::applyOutputConfiguration` calls
 `OutputConfigurationStore::storeConfig`); the KDE e2e checks it, and has not
-run. Not verified by anyone: that Mutter reports `vendor` as a PNP code (why
-`OutputId` normalises make from the EDID); COSMIC's protocol offer and whether
-it persists outputs itself; GNOME Shell accepting `ShowMonitorLabels` from
-another client; the Xorg dummy driver giving several RandR outputs; whether an
-`eval` of `hl.monitor` survives a protocol apply; KDE's confirm timeout; the
-RandR 1.5 details. Each is checked in its backend's milestone.
+run. Read in Mutter 51.1's source at M6 and not yet observed: the
+`ApplyMonitorsConfig` method values, `layout-mode`, the vendor being the PNP
+code, and the rest of `docs/plan/04-backends.md#gnome-gnome`; the GNOME e2e
+checks most of it, and has not run. Read in GNOME Shell 51.1's source:
+`ShowMonitorLabels` refuses callers that do not own one of its allowed names.
+Not verified by anyone: COSMIC's protocol offer and whether it persists outputs
+itself; the Xorg dummy driver giving several RandR outputs; whether an `eval` of
+`hl.monitor` survives a protocol apply; KDE's confirm timeout; the RandR 1.5
+details. Each is checked in its backend's milestone.
 
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
@@ -874,6 +934,11 @@ and the `monitors.lua` writer:
 - **wayr for the GUI.** Wayland-only by construction, so it cannot serve the X11
   window managers in the MVP. crcbl covers both (owner's call, 2026-11-04).
 - **Windows and macOS.** Their own display settings cover this.
+- **Identify on GNOME by taking a name GNOME Shell trusts** (M6): Shell answers
+  `ShowMonitorLabels` only for callers owning `org.gnome.Settings` and two other
+  names (`DBusSenderChecker`, GNOME Shell 51.1). dsplr owning one of them would
+  pass itself off as GNOME Settings and break the real one while it runs, so
+  identify is unsupported on GNOME instead.
 - **Shelling out to `wlr-randr`, `kscreen-doctor`, `xrandr`, `gnome-randr`.**
   Each desktop is driven through its own interface; those tools are test
   cross-checks only.

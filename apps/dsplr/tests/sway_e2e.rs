@@ -425,6 +425,7 @@ async fn profiles_are_saved_picked_and_restored(backend: &Backend) {
                 ..OutputState::default()
             },
         }],
+        ..Default::default()
     };
     std::fs::create_dir_all(&store).expect("store made");
     std::fs::write(
@@ -647,7 +648,10 @@ async fn profiles_are_saved_picked_and_restored(backend: &Backend) {
     );
     let both = Profile {
         name: "both".parse().expect("a name"),
-        layout: Layout { entries },
+        layout: Layout {
+            entries,
+            ..Default::default()
+        },
         saved_unix_ms: unix_ms(SystemTime::now()),
     };
     profile::save(&store, &both).expect("profile saved");

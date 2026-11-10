@@ -11,8 +11,10 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
-use dsplr_model::{Layout, OutputEntry};
+use dsplr_backend::Backend;
+use dsplr_model::{Layout, OutputEntry, OutputState};
 
 /// The harness's runtime directory, which the harness names in `variable`,
 /// after checking that this process really runs under `harness` and not
@@ -56,6 +58,62 @@ pub fn entry_mut<'a>(layout: &'a mut Layout, connector: &str) -> &'a mut OutputE
         .iter_mut()
         .find(|e| e.output.as_ref().is_some_and(|o| o.connector == connector))
         .unwrap_or_else(|| panic!("{connector} is in the layout"))
+}
+
+/// The outputs of `snapshot`, each at its preferred mode (else its first),
+/// unscaled and untransformed, in a row in the order the desktop lists
+/// them, the first primary: the layout every test of a desktop with one
+/// mode per output starts from, so each leaves the desktop as it would find
+/// it.
+pub fn row(snapshot: &Layout) -> Layout {
+    let mut layout = snapshot.clone();
+    let mut x = 0;
+    for (index, entry) in layout.entries.iter_mut().enumerate() {
+        let output = entry.output.as_ref().expect("live outputs");
+        let mode = output
+            .modes
+            .iter()
+            .find(|mode| mode.preferred)
+            .or_else(|| output.modes.first())
+            .expect("a mode")
+            .clone();
+        let width = i32::try_from(mode.width).expect("a mode's width fits");
+        entry.state = OutputState {
+            mode: Some(mode),
+            x,
+            primary: index == 0,
+            ..OutputState::default()
+        };
+        x += width;
+    }
+    layout
+}
+
+/// The connector of every output in `layout`, in its order.
+pub fn connectors(layout: &Layout) -> Vec<String> {
+    layout
+        .entries
+        .iter()
+        .map(|entry| entry.connector().expect("a connector").to_owned())
+        .collect()
+}
+
+/// Waits until `desktop` shows `layout` (every setting dsplr compares, by
+/// `Layout::differences`), or fails after `wait`.
+pub async fn shows(backend: &Backend, layout: &Layout, desktop: &str, wait: Duration) {
+    let started = Instant::now();
+    loop {
+        let now = backend.snapshot().await.expect("snapshot");
+        let differences = layout.differences(&now, &backend.capabilities());
+        if differences.is_empty() {
+            return;
+        }
+        assert!(
+            started.elapsed() < wait,
+            "{desktop} does not show the layout: {differences:?}\n{now:#?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// `layout` with `edit` made to it: what a user does to a snapshot before

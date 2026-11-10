@@ -158,6 +158,7 @@ mod tests {
                     ..dsplr_model::OutputState::default()
                 },
             }],
+            ..Default::default()
         };
         let text = output_blocks(&layout).unwrap();
         let blocks = read_outputs(&text).unwrap();

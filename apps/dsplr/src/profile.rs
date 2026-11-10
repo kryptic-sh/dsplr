@@ -408,6 +408,7 @@ mod tests {
                     entry(OutputId::Connector("eDP-1".into())),
                     entry(OutputId::new("AOC", "Q27G4", "SER1", "DP-1")),
                 ],
+                ..Default::default()
             },
             saved_unix_ms: 1_000,
         };

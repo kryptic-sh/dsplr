@@ -391,6 +391,7 @@ mod tests {
                 output("DP-2", "AOC Q27G4 SER12", vec![]),
                 output("eDP-1", "BOE 0x0AFC", vec![]),
             ],
+            ..Default::default()
         }
     }
 

@@ -2,12 +2,13 @@
 //! compositors, KDE Plasma, GNOME and X11 (`docs/plan/04-backends.md`).
 //!
 //! [`detect`] finds the backend for the running desktop and reports what it
-//! looked at. So far Hyprland, KDE Plasma and wlroots compositors exist; all
-//! read and apply, wlroots tests, Hyprland persists to its Lua config, sway
-//! to its `outputs` file and niri to its `outputs.kdl`, and KWin saves each
-//! layout it applies itself; other wlroots compositors have no native
-//! persistence and use dsplr's profile store (`dsplr save --profile`), and
-//! GNOME and X11 are not written yet.
+//! looked at. So far Hyprland, KDE Plasma, GNOME and wlroots compositors
+//! exist; all read and apply, wlroots and GNOME test, Hyprland persists to
+//! its Lua config, sway to its `outputs` file and niri to its
+//! `outputs.kdl`, KWin saves each layout it applies itself, and Mutter saves
+//! `monitors.xml` once GNOME Shell's dialog keeps it; other wlroots
+//! compositors have no native persistence and use dsplr's profile store
+//! (`dsplr save --profile`), and X11 is not written yet.
 //! Every backend is Linux-only; on other targets [`Backend`] has no variants
 //! and detection says why.
 
@@ -20,6 +21,8 @@ use dsplr_persist::managed::{Conflict, Saved};
 #[path = "../build/cdata.rs"]
 mod cdata;
 mod detect;
+#[cfg(target_os = "linux")]
+pub mod gnome;
 #[cfg(target_os = "linux")]
 pub mod hyprland;
 #[cfg(target_os = "linux")]
@@ -36,6 +39,8 @@ pub use detect::{Check, Detection, detect};
 #[non_exhaustive]
 pub enum Backend {
     #[cfg(target_os = "linux")]
+    Gnome(gnome::Gnome),
+    #[cfg(target_os = "linux")]
     Hyprland(hyprland::Hyprland),
     #[cfg(target_os = "linux")]
     Kde(kde::Kde),
@@ -47,6 +52,8 @@ pub enum Backend {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Watch {
+    #[cfg(target_os = "linux")]
+    Gnome(Box<gnome::Watch>),
     #[cfg(target_os = "linux")]
     Hyprland(hyprland::Events),
     #[cfg(target_os = "linux")]
@@ -62,6 +69,8 @@ impl Watch {
     pub async fn changed(&mut self) -> Result<(), Error> {
         match *self {
             #[cfg(target_os = "linux")]
+            Self::Gnome(ref mut watch) => Ok(watch.changed().await?),
+            #[cfg(target_os = "linux")]
             Self::Hyprland(ref mut events) => Ok(events.changed().await?),
             #[cfg(target_os = "linux")]
             Self::Kde(ref mut connection) => Ok(connection.changed().await?),
@@ -75,6 +84,9 @@ impl Watch {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Gnome(#[from] gnome::Error),
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Hyprland(#[from] hyprland::Error),
@@ -108,11 +120,18 @@ pub enum Persisted {
         /// kwinoutputconfig.json".
         by: &'static str,
     },
+    /// Handed to the desktop, which saves it once the user keeps it in a
+    /// dialog of the desktop's own, and not otherwise; nothing was written.
+    WhenKept {
+        /// Who saves it, where, and what it asks, for the user.
+        by: &'static str,
+    },
 }
 
 impl Error {
     /// Whether the desktop itself refused the layout, and nothing changed:
-    /// wlroots' `failed`, KWin's `failed`, a rule Hyprland rejected. Not a
+    /// wlroots' `failed`, KWin's `failed`, a rule Hyprland rejected, Mutter's
+    /// refusal (`InvalidArgs`, or D-Bus configuration turned off). Not a
     /// layout dsplr
     /// refused before sending it ([`Error::is_refused_before_sending`]), a
     /// connection that failed or timed out, or [`Error::is_stale`].
@@ -122,6 +141,7 @@ impl Error {
             #[cfg(target_os = "linux")]
             Self::Wlr(wlr::Error::Failed)
             | Self::Kde(kde::Error::Failed { .. })
+            | Self::Gnome(gnome::Error::Refused(_))
             | Self::Hyprland(hyprland::Error::Refused { .. }) => true,
             _ => false,
         }
@@ -138,17 +158,22 @@ impl Error {
     /// primary output. On Hyprland, a [`hyprland::Error::Write`]: an output
     /// with no name,
     /// enabled without a mode or with an unusable scale, or mirroring one
-    /// with no name. An output that is no longer connected is
+    /// with no name. On GNOME, a [`gnome::PlanError`]: a mode or scale the
+    /// monitor does not list, a mirror of another size, a second primary
+    /// output, a layout away from the origin, or a setting Mutter's
+    /// interface cannot carry. An output that is no longer connected is
     /// [`Error::is_stale`] instead.
     #[must_use]
     pub const fn is_refused_before_sending(&self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
             Self::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(_)))
-            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_))) => false,
+            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_)))
+            | Self::Gnome(gnome::Error::Plan(gnome::PlanError::NotConnected(_))) => false,
             #[cfg(target_os = "linux")]
             Self::Wlr(wlr::Error::Plan(_))
             | Self::Kde(kde::Error::Plan(_))
+            | Self::Gnome(gnome::Error::Plan(_))
             | Self::Hyprland(hyprland::Error::Write(_)) => true,
             _ => false,
         }
@@ -156,7 +181,8 @@ impl Error {
 
     /// Whether the desktop's state changed between reading it and the
     /// request, so the request was dropped unapplied: wlroots' `cancelled`,
-    /// or an output in the layout that is no longer connected (unplugged
+    /// Mutter's stale serial, or an output in the layout that is no longer
+    /// connected (unplugged
     /// between the snapshot and the request), which dsplr finds before
     /// sending. Read the state again before deciding anything; never retry
     /// the same request blindly. KWin's configurations carry no serial, so
@@ -170,7 +196,10 @@ impl Error {
             Self::Wlr(
                 wlr::Error::Cancelled | wlr::Error::Plan(wlr::PlanError::NotConnected(_)),
             )
-            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_))) => true,
+            | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_)))
+            | Self::Gnome(
+                gnome::Error::Stale(_) | gnome::Error::Plan(gnome::PlanError::NotConnected(_)),
+            ) => true,
             _ => false,
         }
     }
@@ -181,6 +210,8 @@ impl Backend {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(_) => "gnome",
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => "hyprland",
             #[cfg(target_os = "linux")]
@@ -197,6 +228,8 @@ impl Backend {
     #[must_use]
     pub const fn request_timeout(&self) -> Duration {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(_) => gnome::OPERATION_TIMEOUT,
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => hyprland::REQUEST_TIMEOUT,
             #[cfg(target_os = "linux")]
@@ -228,9 +261,30 @@ impl Backend {
     /// applies; it has no test request, and its management protocol says
     /// outputs may have no gaps between them. Custom modes are not written
     /// for it yet.
+    ///
+    /// Mutter tests (`verify`), mirrors (monitors sharing a logical
+    /// monitor), has a primary output and an RGB range, and takes the
+    /// scales each mode lists, each output its own unless it says
+    /// `global-scale-required`; the scale goes as the mode lists it, so it
+    /// reads back as sent. It requires its logical monitors to touch and to
+    /// start at the origin, takes no custom modes, and offers adaptive sync
+    /// only as modes of their own, which dsplr does not read yet. It saves
+    /// `monitors.xml` on a `persistent` apply once GNOME Shell's dialog
+    /// keeps it, not on every apply.
     #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => Capabilities {
+                mirroring: true,
+                fractional_scale: true,
+                per_output_scale: !gnome.global_scale_required(),
+                test_before_apply: true,
+                native_persistence: true,
+                primary: true,
+                rgb_range: true,
+                ..Capabilities::default()
+            },
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => Capabilities {
                 mirroring: true,
@@ -295,7 +349,9 @@ impl Backend {
     pub async fn native_persistence(&self) -> bool {
         match *self {
             #[cfg(target_os = "linux")]
-            Self::Hyprland(_) | Self::Kde(_) => self.capabilities().native_persistence,
+            Self::Gnome(_) | Self::Hyprland(_) | Self::Kde(_) => {
+                self.capabilities().native_persistence
+            }
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => matches!(
                 wlr.compositor().await,
@@ -307,10 +363,13 @@ impl Backend {
     /// A way to follow the desktop's changes to its outputs: on wlroots a
     /// connection of its own that dispatches the output manager's `done`
     /// events, on KDE one that dispatches each output device's `done` and
-    /// the output order, on Hyprland its event socket. Read the state again
-    /// after each [`Watch::changed`].
+    /// the output order, on GNOME Mutter's `MonitorsChanged` on a bus
+    /// connection of its own, on Hyprland its event socket. Read the state
+    /// again after each [`Watch::changed`].
     pub async fn watch(&self) -> Result<Watch, Error> {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => Ok(Watch::Gnome(Box::new(gnome.watch().await?))),
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(Watch::Hyprland(hyprland.events().await?)),
             #[cfg(target_os = "linux")]
@@ -323,6 +382,8 @@ impl Backend {
     /// The desktop's current state.
     pub async fn snapshot(&self) -> Result<Layout, Error> {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => Ok(gnome.snapshot().await?),
             #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(hyprland.snapshot().await?),
             #[cfg(target_os = "linux")]
@@ -347,6 +408,8 @@ impl Backend {
     )]
     pub async fn test(&self, layout: &Layout) -> Result<(), Error> {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => Ok(gnome.test(layout).await?),
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => {
                 hyprland::monitor_rules(layout)?;
@@ -377,6 +440,8 @@ impl Backend {
     pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
         match *self {
             #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => Ok(gnome.apply(layout).await?),
+            #[cfg(target_os = "linux")]
             Self::Hyprland(ref hyprland) => Ok(hyprland.apply(layout).await?),
             #[cfg(target_os = "linux")]
             Self::Kde(ref kde) => Ok(kde.apply(layout).await?),
@@ -393,7 +458,10 @@ impl Backend {
     /// which niri reloads, and so applies, as soon as it is written. On KDE
     /// nothing is written: KWin saved the layout in its
     /// `kwinoutputconfig.json` when it applied it, so this is
-    /// [`Persisted::ByDesktop`].
+    /// [`Persisted::ByDesktop`]. On GNOME the layout is sent to Mutter again
+    /// with `persistent`, which has GNOME Shell ask whether to keep it and
+    /// writes `monitors.xml` only once it is kept, so this is
+    /// [`Persisted::WhenKept`], returned before anyone has answered.
     ///
     /// Because writing it applies it, on niri `layout` must be the outputs as
     /// they are now: they are read again and compared
@@ -401,7 +469,8 @@ impl Backend {
     /// back with), and any other layout is [`Error::Unsupported`], nothing
     /// written, so a save never changes the screen past the apply flow's
     /// test, revert point and confirm. Apply a layout first, then save it.
-    /// The same holds on KDE, where KWin has saved only what is on screen.
+    /// The same holds on KDE, where KWin has saved only what is on screen,
+    /// and on GNOME, where saving applies the layout again.
     ///
     /// A file there that dsplr may not overwrite unasked is
     /// [`Error::Conflict`], and nothing is written; once the user has seen it
@@ -420,6 +489,14 @@ impl Backend {
         approved: Option<&str>,
     ) -> Result<Persisted, Error> {
         match *self {
+            #[cfg(target_os = "linux")]
+            Self::Gnome(ref gnome) => {
+                self.on_screen(layout, "Mutter saves a layout by applying it again, so dsplr saves only the outputs as they are now; apply the layout first (dsplr apply tests it and asks to keep it), then save").await?;
+                gnome.persist(layout).await?;
+                Ok(Persisted::WhenKept {
+                    by: "Mutter, which writes monitors.xml once the layout is kept in GNOME Shell's dialog asking whether to keep the display settings, and puts the layout from before back if it is not (without GNOME Shell, Mutter keeps it at once)",
+                })
+            }
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => {
                 use dsplr_persist::hyprland::{SaveError, save};
@@ -512,7 +589,7 @@ mod tests {
     use dsplr_model::OutputId;
     use dsplr_persist::hyprland::WriteError;
 
-    use super::{Error, hyprland, wlr};
+    use super::{Error, gnome, hyprland, wlr};
 
     #[test]
     fn a_refusal_is_the_desktop_s_one_before_sending_dsplr_s_and_a_vanished_output_stale() {
@@ -522,16 +599,26 @@ mod tests {
                 request: "/eval".into(),
                 reply: "error".into(),
             }),
+            Error::Gnome(gnome::Error::Refused(
+                "Logical monitors not adjacent".into(),
+            )),
         ];
         let before_sending = [
             Error::Wlr(wlr::Error::Plan(wlr::PlanError::Twice("DP-1".into()))),
             Error::Hyprland(hyprland::Error::Write(WriteError::NoMode(
                 OutputId::Connector("DP-1".into()),
             ))),
+            Error::Gnome(gnome::Error::Plan(gnome::PlanError::Offset { x: 0, y: 5 })),
         ];
         let stale = [
             Error::Wlr(wlr::Error::Cancelled),
             Error::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(
+                OutputId::Connector("DP-1".into()),
+            ))),
+            Error::Gnome(gnome::Error::Stale(
+                "The requested configuration is based on stale information".into(),
+            )),
+            Error::Gnome(gnome::Error::Plan(gnome::PlanError::NotConnected(
                 OutputId::Connector("DP-1".into()),
             ))),
         ];
@@ -543,6 +630,7 @@ mod tests {
                 what: "testing a layout",
                 reason: "a stub",
             },
+            Error::Gnome(gnome::Error::Timeout { what: "apply" }),
         ];
         for error in &by_desktop {
             assert!(error.is_refusal(), "{error:?}");

@@ -186,6 +186,7 @@ pub(super) mod tests {
                     },
                 },
             ],
+            ..Default::default()
         }
     }
 

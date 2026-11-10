@@ -270,7 +270,8 @@ impl std::fmt::Display for Unbound {
 /// names ([`assign`]), taking the live identity and hardware facts so the
 /// backend can name it. A mirror's source is the live output its file
 /// entry was paired with, or else the first one its identity names. Live
-/// outputs left unpaired keep their current state. The error lists the
+/// outputs left unpaired keep their current state. Positions keep the
+/// file's layout mode, which they are measured in. The error lists the
 /// file's outputs left without one.
 pub fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
     let paired = assign(&file.entries, &live.entries).map_err(|unpaired| {
@@ -314,7 +315,10 @@ pub fn bind(file: &Layout, live: &Layout) -> Result<Layout, Vec<Unbound>> {
             .filter(|index| !paired.contains(index))
             .map(|index| live.entries[index].clone()),
     );
-    Ok(Layout { entries })
+    Ok(Layout {
+        entries,
+        layout_mode: file.layout_mode,
+    })
 }
 
 /// Reads the layout back until it shows `asked` or [`SETTLE`] has passed,
@@ -401,6 +405,7 @@ mod tests {
     fn live() -> Layout {
         Layout {
             entries: vec![live_entry("DP-1", "AAA"), live_entry("HDMI-A-1", "BBB")],
+            ..Default::default()
         }
     }
 
@@ -416,6 +421,7 @@ mod tests {
                     ..live().entries[1].state.clone()
                 },
             }],
+            ..Default::default()
         };
         let bound = bind(&file, &live()).unwrap();
         assert_eq!(bound.entries.len(), 2);
@@ -444,6 +450,7 @@ mod tests {
                     output: None,
                     state: OutputState::default(),
                 }],
+                ..Default::default()
             };
             assert_eq!(bind(&file, &live()), Err(vec![Unbound::NotConnected(id)]));
         }
@@ -467,6 +474,7 @@ mod tests {
                 entry(OutputId::Description("AOC Q27G4".into()), 100),
                 entry(OutputId::Connector("DP-1".into()), 200),
             ],
+            ..Default::default()
         };
         let bound = bind(&file, &live()).unwrap();
         let x = |connector: &str| {
@@ -504,6 +512,7 @@ mod tests {
         };
         let now = Layout {
             entries: vec![twin("DP-1"), twin("HDMI-A-1")],
+            ..Default::default()
         };
         let mut file = now.clone();
         file.entries.reverse();

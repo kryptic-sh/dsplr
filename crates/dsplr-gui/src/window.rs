@@ -936,6 +936,7 @@ mod tests {
             capabilities: Capabilities::default(),
             layout: Layout {
                 entries: vec![entry("DP-1", 0), entry("DP-2", 1920)],
+                ..Default::default()
             },
         })
     }

@@ -137,7 +137,10 @@ pub fn scale_to_fixed(scale: f64) -> Option<i32> {
 /// Adaptive sync is known only from a version-4 manager.
 pub fn layout(heads: &[Head]) -> Result<Layout, SnapshotError> {
     let entries = heads.iter().map(entry).collect::<Result<_, _>>()?;
-    Ok(Layout { entries })
+    Ok(Layout {
+        entries,
+        ..Default::default()
+    })
 }
 
 /// One head as an entry of [`layout`].

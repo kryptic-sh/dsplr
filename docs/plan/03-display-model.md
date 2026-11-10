@@ -41,19 +41,21 @@ capability is present and the conversions for other desktops ignore it.
   connector name (`HDMI-A-1`). Hyprland, wlroots, KDE and GNOME all report make,
   model and serial; XRandR gets them by parsing the EDID property. Make is
   **normalised to the EDID's PNP vendor code** before comparing: the backends do
-  not agree on it (wlroots and Hyprland report a resolved name such as "AOC",
-  Mutter is expected to report the three-letter code, to verify at M6), so a raw
-  `make` would make profiles fail to match across desktops. KDE exposes the EDID
-  and EISA id directly; RandR has the EDID property.
+  not agree on it (wlroots and Hyprland report a resolved name such as "AOC";
+  Mutter 51.1 reports the three-letter code, read in its
+  `set_output_details_from_edid`, not seen on a real monitor), so a raw `make`
+  would make profiles fail to match across desktops. KDE exposes the EDID and
+  EISA id directly; RandR has the EDID property.
 - **`Layout`** — the one struct. A list of **`OutputEntry`**s, each holding the
   hardware facts (`Output`) and the settings (`OutputState`) for one monitor,
   plus layout-wide settings: the **fallback rule** for monitors not listed
-  (Hyprland's `output = ""` catch-all, sway's `output *`), and GNOME's
-  `layout_mode` where it applies. `dsplr list --json`, the GUI, the profile
-  store and every converter use this same struct; `Snapshot` is a `Layout` read
-  from the desktop plus its serial, not a separate shape. Apply, test, persist
-  and profiles all take a whole `Layout`, never a single field, because every
-  desktop applies a configuration atomically.
+  (Hyprland's `output = ""` catch-all, sway's `output *`; not built), and
+  GNOME's `layout_mode` (`Layout::layout_mode`, built at M6: `logical`
+  everywhere but where Mutter says `physical`). `dsplr list --json`, the GUI,
+  the profile store and every converter use this same struct; `Snapshot` is a
+  `Layout` read from the desktop plus its serial, not a separate shape. Apply,
+  test, persist and profiles all take a whole `Layout`, never a single field,
+  because every desktop applies a configuration atomically.
 - **`Output`** (hardware facts) — connector name, description, `OutputId`,
   physical size in mm, available `Mode`s. **Optional**, because a `Layout` read
   back from a config file (`monitors.lua`, a sway outputs file) knows a
@@ -72,8 +74,9 @@ capability is present and the conversions for other desktops ignore it.
   `wlr-output-management` and KDE use; Hyprland's `"1920x1080@60.00Hz"` strings
   and GNOME's doubles are converted at the edge, once), whether it is preferred,
   the **valid scales for this mode** (GNOME lists them per mode), and an opaque
-  **backend handle** (GNOME's mode id string, the wlr mode object, the RandR
-  mode XID) so the exact mode is passed back rather than matched again by
+  **backend handle** (the mode's ordinal among its output's modes on wlroots and
+  GNOME, whose apply re-reads the modes and takes the id at that ordinal; the
+  RandR mode XID) so the exact mode is passed back rather than matched again by
   number. Matching a mode from a config file uses a refresh tolerance
   (`REFRESH_TOLERANCE_MHZ`), because the formats round differently.
 - **`Transform`** — the eight Wayland transforms (normal, 90, 180, 270 and the
@@ -89,6 +92,14 @@ capability is present and the conversions for other desktops ignore it.
 Positions are in **layout (logical) coordinates**, the space Wayland compositors
 and GNOME's "logical monitors" use: an output's extent on the canvas is its mode
 size, rotated by its transform, divided by its scale.
+
+The exception is GNOME's **physical layout mode** (Mutter's `layout-mode` 2),
+where an output's extent is its mode size, rotated, whatever its scale. A
+`Layout` read there says so (`layout_mode: physical`), and its extents
+(`OutputState::size`, which `Rect` and so validation, snapping and the canvas
+use) follow it. Positions are kept as Mutter reports them rather than converted
+to logical ones: with outputs at different scales no logical layout keeps them
+touching, so a conversion would not round-trip.
 
 - Scale is stored as given by the backend. Valid scales are backend-specific: on
   wlroots `set_scale` takes a `wl_fixed` and the protocol lets the compositor

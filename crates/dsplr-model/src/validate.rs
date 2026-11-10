@@ -7,7 +7,7 @@ use std::fmt;
 
 use crate::layout::{SCALE_EPSILON, is_valid_scale};
 use crate::rect::Rect;
-use crate::{Capabilities, Layout, Mode, OutputEntry, OutputId};
+use crate::{Capabilities, Layout, LayoutMode, Mode, OutputEntry, OutputId};
 
 /// One thing wrong with a layout, naming the output and the setting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +168,7 @@ impl Layout {
             check_one_scale(&enabled, &mut problems);
         }
         self.check_mirrors(capabilities, &mut problems);
-        check_placement(&enabled, capabilities, &mut problems);
+        check_placement(&enabled, self.layout_mode, capabilities, &mut problems);
         problems
     }
 
@@ -256,13 +256,14 @@ fn check_one_scale(enabled: &[&OutputEntry], problems: &mut Vec<Problem>) {
 /// reported on every output not connected, edge to edge, to the first one.
 fn check_placement(
     enabled: &[&OutputEntry],
+    layout_mode: LayoutMode,
     capabilities: &Capabilities,
     problems: &mut Vec<Problem>,
 ) {
     let placed: Vec<(&OutputEntry, Rect)> = enabled
         .iter()
         .filter(|entry| entry.state.mirror_of.is_none())
-        .filter_map(|entry| Some((*entry, Rect::of(entry)?)))
+        .filter_map(|entry| Some((*entry, Rect::of(entry, layout_mode)?)))
         .collect();
     for (i, (entry, rect)) in placed.iter().enumerate() {
         for (earlier, earlier_rect) in &placed[..i] {
@@ -313,7 +314,9 @@ fn check_placement(
 #[cfg(test)]
 mod tests {
     use super::{Field, Problem, ProblemKind, Severity};
-    use crate::{Capabilities, Layout, Mode, Output, OutputEntry, OutputId, OutputState};
+    use crate::{
+        Capabilities, Layout, LayoutMode, Mode, Output, OutputEntry, OutputId, OutputState,
+    };
 
     fn id(name: &str) -> OutputId {
         OutputId::Connector(name.into())
@@ -364,7 +367,10 @@ mod tests {
     }
 
     fn layout(entries: Vec<OutputEntry>) -> Layout {
-        Layout { entries }
+        Layout {
+            entries,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -527,6 +533,26 @@ mod tests {
         let problems = layout.validate(&permissive());
         assert_eq!(problems.len(), 1);
         assert_eq!(problems[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn outputs_are_placed_by_their_size_in_the_layout_s_mode() {
+        let scaled = |name: &str, x: i32| {
+            let mut entry = monitor(name, x, 0);
+            entry.state.scale = 2.0;
+            entry
+        };
+        // At scale 2 a 1920 wide output is 960 wide in the logical mode, and
+        // still 1920 in the physical one.
+        let mut layout = layout(vec![scaled("DP-1", 0), scaled("DP-2", 960)]);
+        assert_eq!(kinds(&layout, &permissive()), []);
+        layout.layout_mode = LayoutMode::Physical;
+        assert_eq!(
+            kinds(&layout, &permissive()),
+            [(Some(id("DP-2")), ProblemKind::Overlap { with: id("DP-1") })]
+        );
+        layout.entries[1].state.x = 1920;
+        assert_eq!(kinds(&layout, &permissive()), []);
     }
 
     #[test]

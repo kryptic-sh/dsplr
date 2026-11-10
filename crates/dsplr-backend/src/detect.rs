@@ -27,13 +27,14 @@ impl Check {
     }
 }
 
-/// What detection says about the desktops whose backends do not exist yet.
+/// What detection says about the desktop whose backend does not exist yet.
 #[cfg(target_os = "linux")]
-const NOT_WRITTEN: &str = "not written yet (planned for M6 and M7)";
+const NOT_WRITTEN: &str = "not written yet (planned for M7)";
 
 /// Finds the backend for the running desktop, in the plan's order: Hyprland,
-/// then KWin's output management, then GNOME (not written yet), then a
-/// wlroots compositor's output manager, then X11 (not written yet). When
+/// then KWin's output management, then Mutter's `DisplayConfig` on the
+/// session bus, then a wlroots compositor's output manager, then X11 (not
+/// written yet). When
 /// Hyprland's variable is set but
 /// its socket does not answer, detection stops there: this is Hyprland, and
 /// its own `wlr-output-management` would pass for a wlroots compositor. On
@@ -81,7 +82,12 @@ async fn detect_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Detect
             backend: Some(backend),
         };
     }
-    checks.push(Check::new("GNOME", NOT_WRITTEN));
+    if let Some(backend) = gnome(&var, &mut checks).await {
+        return Detection {
+            checks,
+            backend: Some(backend),
+        };
+    }
     if let Some(backend) = wlr(&var, &mut checks).await {
         return Detection {
             checks,
@@ -178,6 +184,34 @@ async fn kde(
 /// What the KDE check is called in [`Detection::checks`].
 #[cfg(target_os = "linux")]
 const KDE_CHECK: &str = "KDE";
+
+/// Mutter, when the session bus the environment names has
+/// `org.gnome.Mutter.DisplayConfig` owned and it describes the displays.
+/// Under X11 GNOME offers RandR too, and this comes first because Mutter
+/// persists (`docs/plan/04-backends.md#detection`).
+#[cfg(target_os = "linux")]
+async fn gnome(
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    checks: &mut Vec<Check>,
+) -> Option<Backend> {
+    match crate::gnome::Gnome::from_vars(var).await {
+        Ok(gnome) => {
+            checks.push(Check::new(
+                GNOME_CHECK,
+                format!("org.gnome.Mutter.DisplayConfig at {}", gnome.address()),
+            ));
+            Some(Backend::Gnome(gnome))
+        }
+        Err(error) => {
+            checks.push(Check::new(GNOME_CHECK, error.to_string()));
+            None
+        }
+    }
+}
+
+/// What the GNOME check is called in [`Detection::checks`].
+#[cfg(target_os = "linux")]
+const GNOME_CHECK: &str = "GNOME";
 
 /// A wlroots compositor, when `WAYLAND_DISPLAY` names a compositor that
 /// offers `zwlr_output_manager_v1` and describes its heads.
@@ -314,6 +348,13 @@ mod tests {
         for wayland in [&detection.checks[1], &detection.checks[3]] {
             assert!(wayland.found.contains("WAYLAND_DISPLAY"), "{wayland:?}");
         }
+        assert!(
+            detection.checks[2]
+                .found
+                .contains("DBUS_SESSION_BUS_ADDRESS"),
+            "{:?}",
+            detection.checks[2]
+        );
     }
 
     #[tokio::test]
@@ -329,6 +370,13 @@ mod tests {
         for wayland in [&detection.checks[1], &detection.checks[3]] {
             assert!(wayland.found.contains("wayland-7"), "{wayland:?}");
         }
+        // No DBUS_SESSION_BUS_ADDRESS: the bus in the runtime directory,
+        // which is not there.
+        assert!(
+            detection.checks[2].found.starts_with("the session bus"),
+            "{:?}",
+            detection.checks[2]
+        );
     }
 
     #[tokio::test]

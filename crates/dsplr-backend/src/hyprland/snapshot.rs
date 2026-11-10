@@ -32,7 +32,10 @@ pub fn layout(monitors: &[Monitor]) -> Result<Layout, SnapshotError> {
         .iter()
         .map(|monitor| entry(monitor, monitors))
         .collect::<Result<_, _>>()?;
-    Ok(Layout { entries })
+    Ok(Layout {
+        entries,
+        ..Default::default()
+    })
 }
 
 fn id(monitor: &Monitor) -> OutputId {

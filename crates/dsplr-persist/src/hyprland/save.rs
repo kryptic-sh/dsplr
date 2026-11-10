@@ -134,6 +134,7 @@ fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
     MonitorsLua {
         layout: Layout {
             entries: in_hyprland_order(layout.entries.clone()),
+            ..Default::default()
         },
         catch_all: None,
     }
@@ -216,7 +217,10 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
         .chain(in_hyprland_order(live))
         .collect();
     let file = MonitorsLua {
-        layout: Layout { entries },
+        layout: Layout {
+            entries,
+            ..Default::default()
+        },
         catch_all: old.catch_all.clone(),
     };
     (file, kept)
@@ -376,6 +380,7 @@ mod tests {
                     },
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -865,6 +870,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
             let config = Config::new("");
             let mut old = Layout {
                 entries: ser1_and_ser12(),
+                ..Default::default()
             };
             if reversed {
                 old.entries.reverse();

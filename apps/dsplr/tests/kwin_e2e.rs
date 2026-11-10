@@ -27,8 +27,8 @@ mod kwin_support;
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use kwin_support::{connectors, harness_outputs, harness_runtime, kwin_backend, row, shows};
-use support::{edited, entry, entry_mut};
+use kwin_support::{harness_outputs, harness_runtime, kwin_backend, shows};
+use support::{connectors, edited, entry, entry_mut, row};
 
 /// The exit code of a layout validation refused (`Exit::Refused`).
 const REFUSED: i32 = 3;

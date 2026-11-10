@@ -120,7 +120,7 @@ impl Layout {
         let Some((width, height)) = self
             .entries
             .get(moving)
-            .and_then(|entry| entry.state.logical_size())
+            .and_then(|entry| entry.state.size(self.layout_mode))
         else {
             return (x, y);
         };
@@ -133,7 +133,7 @@ impl Layout {
         let threshold = i64::from(threshold);
         let others: Vec<Rect> = placed(&self.entries)
             .filter(|(i, _)| *i != moving)
-            .filter_map(|(_, entry)| Rect::of(entry))
+            .filter_map(|(_, entry)| Rect::of(entry, self.layout_mode))
             .collect();
         let near = |start: i64, len: i64, other_start: i64, other_len: i64| {
             start < other_start + other_len + threshold && other_start < start + len + threshold
@@ -224,6 +224,7 @@ mod tests {
                 monitor("DP-2", 1920, 1080, 0, 200),
                 disabled,
             ],
+            ..Default::default()
         };
         layout.normalise().unwrap();
         assert_eq!(positions(&layout), [(0, 100), (1920, 0), (-3080, -5200)]);
@@ -235,6 +236,7 @@ mod tests {
         only.state.enabled = false;
         let mut layout = Layout {
             entries: vec![only],
+            ..Default::default()
         };
         layout.normalise().unwrap();
         assert_eq!(positions(&layout), [(40, 40)]);
@@ -246,6 +248,7 @@ mod tests {
         far.state.enabled = false;
         let mut layout = Layout {
             entries: vec![monitor("DP-1", 1920, 1080, -10, 0), far],
+            ..Default::default()
         };
         let before = layout.clone();
         assert_eq!(
@@ -265,6 +268,7 @@ mod tests {
                 monitor("HEADLESS-2", 1920, 1080, 1920, 0),
                 monitor("HEADLESS-1", 1280, 720, 3840, 0),
             ],
+            ..Default::default()
         };
         let before = layout.clone();
         layout.make_non_negative().unwrap();
@@ -281,6 +285,7 @@ mod tests {
                 monitor("DP-2", 1920, 1080, 1920, 200),
                 disabled,
             ],
+            ..Default::default()
         };
         layout.make_non_negative().unwrap();
         assert_eq!(
@@ -296,6 +301,7 @@ mod tests {
         far.state.enabled = false;
         let mut layout = Layout {
             entries: vec![monitor("DP-1", 1920, 1080, -10, 0), far],
+            ..Default::default()
         };
         let before = layout.clone();
         assert!(layout.make_non_negative().is_err());
@@ -305,6 +311,7 @@ mod tests {
     fn beside_dp1(moving: OutputEntry) -> Layout {
         Layout {
             entries: vec![monitor("DP-1", 1920, 1080, 0, 0), moving],
+            ..Default::default()
         }
     }
 
@@ -331,6 +338,7 @@ mod tests {
                 monitor("DP-2", 1920, 1080, 0, 0),
                 monitor("DP-3", 1920, 1080, 1925, -1080),
             ],
+            ..Default::default()
         };
         assert_eq!(layout.snap(1, 1924, 0, 10).0, 1920);
     }
@@ -364,6 +372,7 @@ mod tests {
         mirror.state.mirror_of = Some(OutputId::Connector("eDP-1".into()));
         let layout = Layout {
             entries: vec![disabled, mirror, monitor("DP-1", 1920, 1080, 0, 0)],
+            ..Default::default()
         };
         assert_eq!(layout.snap(2, 1925, 3, 10), (1925, 3));
     }

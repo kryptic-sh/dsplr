@@ -96,7 +96,9 @@ export DSPLR_E2E_NIRI_PARENT="$parent" DSPLR_E2E_NIRI_PARENT_SWAYSOCK="$swaysock
 # The e2e tests refuse to run without this, so they never reach a real
 # compositor when started some other way.
 export DSPLR_E2E_NIRI="$runtime"
-unset DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK NIRI_CONFIG
+# No session bus: dsplr's GNOME detection asks the one the environment
+# names, else the private runtime's, where there is none.
+unset DISPLAY HYPRLAND_INSTANCE_SIGNATURE SWAYSOCK NIRI_CONFIG DBUS_SESSION_BUS_ADDRESS
 # In a session and process group of its own, so cleanup can end all of it.
 # A background job of a script is no group leader, so setsid runs it in
 # place and its pid names the group.

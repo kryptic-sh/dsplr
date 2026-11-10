@@ -21,11 +21,47 @@ pub fn is_valid_scale(scale: f64) -> bool {
 ///
 /// Apply, test, persist and profiles take a whole `Layout`, since every
 /// desktop applies a configuration atomically. Fields will be added (the
-/// fallback rule for unlisted monitors, GNOME's layout mode), so build one
-/// with `..Default::default()`.
+/// fallback rule for unlisted monitors), so build one with
+/// `..Default::default()`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Layout {
     pub entries: Vec<OutputEntry>,
+    /// How big an output is on the canvas, which is what its position is
+    /// measured against. Logical everywhere but where GNOME says otherwise,
+    /// so the JSON form leaves the logical mode out.
+    #[serde(default, skip_serializing_if = "LayoutMode::is_logical")]
+    pub layout_mode: LayoutMode,
+}
+
+/// What an output's extent on the canvas is, and so what its position
+/// counts in: GNOME's `layout-mode` (Mutter's `DisplayConfig`), which every
+/// other desktop has as the logical one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutMode {
+    /// Its mode's size, turned by its transform, divided by its scale.
+    #[default]
+    Logical,
+    /// Its mode's size, turned by its transform, whatever its scale: the
+    /// scale makes what it shows bigger, not the space it takes.
+    Physical,
+}
+
+impl LayoutMode {
+    /// Whether this is [`LayoutMode::Logical`].
+    pub const fn is_logical(&self) -> bool {
+        matches!(self, Self::Logical)
+    }
+}
+
+/// `logical` or `physical`.
+impl fmt::Display for LayoutMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Logical => "logical",
+            Self::Physical => "physical",
+        })
+    }
 }
 
 /// One monitor: its hardware facts, when known, and its settings.
@@ -171,15 +207,7 @@ impl OutputState {
     /// size its own way (2560 at scale 1.75); recording those is open, and
     /// until then this is the one rule.
     pub fn logical_size(&self) -> Option<(u32, u32)> {
-        let mode = self.mode.as_ref()?;
-        if !is_valid_scale(self.scale) {
-            return None;
-        }
-        let (width, height) = if self.transform.swaps_axes() {
-            (mode.height, mode.width)
-        } else {
-            (mode.width, mode.height)
-        };
+        let (width, height) = self.turned_size()?;
         let logical = |pixels: u32| {
             let size = (f64::from(pixels) / self.scale).round();
             // Whole and inside u32's range, checked here, so the cast is exact.
@@ -187,6 +215,31 @@ impl OutputState {
             (size <= f64::from(u32::MAX)).then_some(size as u32)
         };
         Some((logical(width)?, logical(height)?))
+    }
+
+    /// The output's size on the canvas in `layout_mode`: its
+    /// [`logical_size`](Self::logical_size) in the logical mode, its mode's
+    /// size turned by its transform in the physical one. `None` without a
+    /// mode, or with a scale that is not a positive number, in either.
+    pub fn size(&self, layout_mode: LayoutMode) -> Option<(u32, u32)> {
+        match layout_mode {
+            LayoutMode::Logical => self.logical_size(),
+            LayoutMode::Physical => self.turned_size(),
+        }
+    }
+
+    /// Its mode's size, turned by its transform. `None` without a mode, or
+    /// with a scale that is not a positive number.
+    fn turned_size(&self) -> Option<(u32, u32)> {
+        let mode = self.mode.as_ref()?;
+        if !is_valid_scale(self.scale) {
+            return None;
+        }
+        Some(if self.transform.swaps_axes() {
+            (mode.height, mode.width)
+        } else {
+            (mode.width, mode.height)
+        })
     }
 }
 
@@ -249,8 +302,8 @@ impl fmt::Display for RgbRange {
 
 #[cfg(test)]
 mod tests {
-    use super::{AdaptiveSync, OutputState};
-    use crate::{Mode, Transform};
+    use super::{AdaptiveSync, LayoutMode, OutputState};
+    use crate::{Layout, Mode, Transform};
 
     fn state(transform: Transform, scale: f64) -> OutputState {
         OutputState {
@@ -288,6 +341,32 @@ mod tests {
             state(Transform::Normal, 1.75).logical_size(),
             Some((1463, 823))
         );
+    }
+
+    #[test]
+    fn a_physical_size_is_the_mode_turned_whatever_the_scale() {
+        assert_eq!(
+            state(Transform::Rotate90, 2.0).size(LayoutMode::Physical),
+            Some((1440, 2560))
+        );
+        assert_eq!(
+            state(Transform::Normal, 2.0).size(LayoutMode::Logical),
+            Some((1280, 720))
+        );
+        assert_eq!(
+            state(Transform::Normal, 0.0).size(LayoutMode::Physical),
+            None,
+            "an unusable scale is unusable in either mode"
+        );
+        assert_eq!(OutputState::default().size(LayoutMode::Physical), None);
+    }
+
+    #[test]
+    fn a_layout_is_logical_unless_it_says_otherwise() {
+        assert_eq!(Layout::default().layout_mode, LayoutMode::Logical);
+        assert!(LayoutMode::Logical.is_logical());
+        assert!(!LayoutMode::Physical.is_logical());
+        assert_eq!(LayoutMode::Physical.to_string(), "physical");
     }
 
     #[test]
