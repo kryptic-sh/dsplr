@@ -12,8 +12,24 @@ Part of the [kryptic.sh](https://kryptic.sh) suite.
 
 ## Status
 
-**Scaffold.** The workspace builds, but nothing is implemented yet; the first
-commands land in M1. The plan is in [`docs/plan/`](docs/plan/00-index.md); what
+**Works, not yet released.** Running today:
+
+- **Backends**: Hyprland, KDE Plasma 6 on Wayland, GNOME, and wlroots
+  compositors (sway and niri tested; river, labwc and Wayfire expected to work
+  through the same protocol). Each reads, applies and follows its outputs, and
+  saves where the desktop reads them: Hyprland's `monitors.lua`, sway's
+  `outputs`, niri's `outputs.kdl`; KDE keeps each layout it applies, and GNOME
+  saves through its own keep-or-revert dialog.
+- **GUI** (`dsplr`): a canvas to drag outputs on, a panel for each output's
+  settings, keys for everything, undo, a confirm dialog on every monitor that
+  reverts on its own, identify, profiles, and live updates when the desktop
+  changes.
+- **CLI**: `list`, `backend`, `set`, `apply`, `save`, `restore` (and
+  `--revert`), `profile list|show|rm`, `profile import kanshi`, and `watch`,
+  which restores the matching profile whenever monitors are plugged in.
+
+Open: X11 window managers (M7) and the first release (M9), with packages and
+install instructions. The plan is in [`docs/plan/`](docs/plan/00-index.md); what
 is open is in [`docs/backlog.md`](docs/backlog.md).
 
 ## License
