@@ -575,10 +575,14 @@ milestone:
   exposes no keysym for the level without Caps Lock. So with Caps Lock on, the
   nudge keys move to the neighbour and redo does nothing. Guessing by swapping a
   letter's case when `Modifiers::CAPS_LOCK` is set would be wrong for layouts
-  whose Caps Lock is a shift lock or does not touch some keys. To ask of crcbl:
-  the keysym without Caps Lock (xkbcommon's `xkb_state_key_get_one_sym` with the
-  Lock modifier consumed, or the level-0/1 keysym with Shift alone), then match
-  characters on it in `dsplr-gui`'s `keys::matches`.
+  whose Caps Lock is a shift lock or does not touch some keys. crcbl's main has
+  the fix as `ShellEvent::Key::shortcut_keysym` (commit 1c6fcaeb): the keysym
+  with xkb's Lock removed, through a second xkb state, so Shift still applies
+  and Shift Lock stays; it equals the keysym when Caps Lock is off, and on Win32
+  and AppKit; the web shell still applies Caps Lock. It is in no crcbl release
+  yet (when one is cut is the owner's call). Once a release carries it: bump
+  crcbl, and match characters on `shortcut_keysym` in `dsplr-gui`'s
+  `keys::matches`.
 - **The GUI's watch reopening is unit-tested in its decision only**:
   `gui::next_try` (the wait and the line, from `watch::Backoff`) has a test; the
   loop that acts on it in `serve` (`Following`, `next_followed`) has none, and
@@ -654,11 +658,13 @@ milestone:
   fallback (`hdr`, `edid`, `hdredid`, `auto` as `srgb` on an output without an
   EDID; `bitdepth = 10` as 8 where 10 is not driven). Consequences: a save
   writes the fallback, so such a rule in `monitors.lua` is dropped (dsplr cannot
-  tell it from the user having turned it off); an apply restates it at runtime;
-  the read-back reports asked-versus-got. Keeping the old file's rule where the
-  live value is a fallback was considered and not built: it would also keep a
-  rule the user changed on purpose. Not seen on a monitor that can do HDR or 10
-  bits (CI's output is headless, without an EDID).
+  tell it from the user having turned it off); an apply states a preset or depth
+  only where the change makes it differ from what Hyprland reads
+  (`hyprland::colour_as_changed`), so a move leaves such a rule alone, and a
+  fallback is reported only when the user asked for that preset. Keeping the old
+  file's rule where the live value is a fallback was considered and not built:
+  it would also keep a rule the user changed on purpose. Not seen on a monitor
+  that can do HDR or 10 bits (CI's output is headless, without an EDID).
 - **A profile asking a desktop-specific setting another desktop lacks is
   refused**: neutral values are dropped (`Layout::drop_neutral_unsupported`),
   others refused (exit `3`), so a Hyprland profile with `wide` or 10 bits, or a
@@ -667,11 +673,13 @@ milestone:
   Hyprland the same way, and was not covered by this: `primary = true` is a
   request, not a neutral value. Taking the live value instead, saying so, is the
   alternative.
-- **A main-config rule can still win for colour and depth**: a save leaves
-  `cm = "srgb"` and `bitdepth = 8` out of `monitors.lua`, so a `hyprland.lua`
-  `hl.monitor` call before `require("monitors")` setting either for the same
-  output keeps its value at startup (the merge). dsplr says when calls come
-  after the require, not this.
+- **What a save sees of the main config's monitor rules**: a save states
+  `cm = "srgb"` and `bitdepth = 8` for an output whenever `hyprland.lua` has a
+  `hl.monitor` call that could name it (one whose output it cannot read counts
+  as naming every output), since the saved rule merges onto it. Read line by
+  line (`save::main_rules`): a call spelled `hl.monitor (`, one in a multi-line
+  comment, one made in a loop or a function, and one in another file the config
+  requires are not seen, and there a value left out keeps that rule's.
 - **The panel's overscan steps are a guess**: 0 to 10 % by one, then 15 and 20 %
   (`dsplr-core`'s `OVERSCANS`), plus the output's own value; KDE's own settings
   offer every percent. No `dsplr set` flag sets the primary output, overscan or

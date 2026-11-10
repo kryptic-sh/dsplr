@@ -37,7 +37,9 @@ pub enum WriteError {
 ///   included: Hyprland merges a rule onto the one before it for the same
 ///   output, so a setting left out keeps an earlier rule's (a `bitdepth = 8`
 ///   after a `bitdepth = 10` turned it off, 0.57.2, CI run 42784568478).
-///   Saving leaves the defaults out ([`crate::hyprland::save`]).
+///   The live apply leaves out what its change does not set, and saving
+///   leaves the defaults out ([`crate::hyprland::save`]); both by setting
+///   them to `None` before writing.
 ///
 /// # Errors
 ///

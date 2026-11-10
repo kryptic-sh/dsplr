@@ -42,7 +42,7 @@ pub struct Monitor {
     /// Every mode the monitor offers, as `WIDTHxHEIGHT@REFRESHHz` strings.
     pub available_modes: Vec<String>,
     /// The DRM format it is driven in (`XRGB8888`, `XRGB2101010`); `Invalid`
-    /// while disabled. A 2101010 format is 10 bits per channel, which a
+    /// while disabled. An `XRGB2101010` is 10 bits per channel, which a
     /// `bitdepth = 10` rule gets where the output can do it (0.57.2, CI run
     /// 42784568478). Empty from a Hyprland that does not say.
     #[serde(default)]
@@ -55,11 +55,24 @@ pub struct Monitor {
     pub color_management_preset: String,
 }
 
-/// The part of a [`Monitor::current_format`] that says 10 bits per channel.
-const TEN_BIT_FORMAT: &str = "2101010";
+/// The DRM formats of 8 bits per colour channel (`drm_fourcc.h`'s 32-bit
+/// RGB formats with 8 bits each), by the names Hyprland writes.
+const EIGHT_BIT_FORMATS: [&str; 8] = [
+    "XRGB8888", "ARGB8888", "XBGR8888", "ABGR8888", "RGBX8888", "RGBA8888", "BGRX8888", "BGRA8888",
+];
 
-/// What [`Monitor::current_format`] holds while disabled.
-const NO_FORMAT: &str = "Invalid";
+/// The DRM formats of 10 bits per colour channel (`drm_fourcc.h`'s
+/// 2101010 and 1010102 RGB formats).
+const TEN_BIT_FORMATS: [&str; 8] = [
+    "XRGB2101010",
+    "ARGB2101010",
+    "XBGR2101010",
+    "ABGR2101010",
+    "RGBX1010102",
+    "RGBA1010102",
+    "BGRX1010102",
+    "BGRA1010102",
+];
 
 /// What `mirrorOf` holds when the monitor mirrors nothing.
 const NOT_MIRRORING: &str = "none";
@@ -83,13 +96,18 @@ impl Monitor {
             .map_err(|_| self.mirror_of.as_str())
     }
 
-    /// Bits per channel by [`Monitor::current_format`]: 10 for a 2101010
-    /// format, else 8 (Hyprland's two); `None` when it says none.
+    /// Bits per channel by [`Monitor::current_format`]: 8 or 10 for a
+    /// format known to be one or the other; `None` for any other (none
+    /// while disabled, a half-float format), which is then neither compared
+    /// nor written.
     pub fn bit_depth(&self) -> Option<u8> {
-        match self.current_format.as_str() {
-            "" | NO_FORMAT => None,
-            format if format.contains(TEN_BIT_FORMAT) => Some(10),
-            _ => Some(8),
+        let format = self.current_format.as_str();
+        if EIGHT_BIT_FORMATS.contains(&format) {
+            Some(8)
+        } else if TEN_BIT_FORMATS.contains(&format) {
+            Some(10)
+        } else {
+            None
         }
     }
 

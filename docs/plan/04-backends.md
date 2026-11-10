@@ -132,15 +132,20 @@ So:
   `edid`, `hdr`, `hdredid` and `auto` as `srgb` there, where the output cannot
   do them. `bitdepth = 10` gives a 2101010 format, a later rule without
   `bitdepth` keeps it (the merge), `bitdepth = 8` turns it off, and `16` reads
-  as 8. So the snapshot reads the preset in force and 10 bits for a 2101010
-  format, else 8; an apply states both on every rule (8 and `srgb` included,
-  since a rule merges onto the last); a save leaves Hyprland's defaults
-  (`srgb`, 8) out of `monitors.lua`
-  ([05](05-persistence-and-profiles.md#hyprland)). A preset that falls back
-  reads back as `srgb`, which the read-back reports as a difference (asked
-  `hdr`, got `srgb`): it is what Hyprland shows, and the differences are said,
-  not a failure, so the user learns the monitor did not take it. Not seen on a
-  monitor that can do HDR or 10 bits.
+  as 8. So the snapshot reads the preset in force, and 10 bits for a 2101010 or
+  1010102 format, 8 for an 8888 one, and nothing for any other (a half-float
+  format), which is then neither compared nor written. An apply states the
+  preset and depth only for an output whose change makes them differ from what
+  Hyprland reads (`hyprland::colour_as_changed`, one read first), 8 and `srgb`
+  included: the rest are left to the rule in force by the merge, so a move does
+  not pin `cm = "auto"` to the preset it resolved to. A save leaves Hyprland's
+  defaults (`srgb`, 8) out of `monitors.lua` except for an output a
+  `hyprland.lua` rule could name
+  ([05](05-persistence-and-profiles.md#hyprland)). A preset the user asks for
+  that falls back reads back as `srgb`, which the read-back reports as a
+  difference (asked `hdr`, got `srgb`): it is what Hyprland shows, and the
+  differences are said, not a failure, so the user learns the monitor did not
+  take it. Not seen on a monitor that can do HDR or 10 bits.
 - **Persist** by writing the `monitors.lua` beside the `hyprland.lua` Hyprland
   reads, found as Hyprland finds it (`HYPRLAND_CONFIG`, then
   `$XDG_CONFIG_HOME/hypr`, then `~/.config/hypr`;

@@ -237,7 +237,7 @@ fn entry(name: &str, line: usize, rule: Rule) -> Result<OutputEntry, ReadError> 
 
 /// `desc:X` as a description, anything else as a connector. `None` for an
 /// empty description, which Hyprland matches against every monitor.
-fn output_id(name: &str) -> Option<OutputId> {
+pub(super) fn output_id(name: &str) -> Option<OutputId> {
     match name.strip_prefix("desc:") {
         Some(description) => {
             let description = description.trim();

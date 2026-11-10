@@ -6,8 +6,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dsplr_model::{Layout, NEUTRAL_BIT_DEPTH, NEUTRAL_COLOUR_PRESET, OutputEntry};
+use dsplr_model::{Layout, NEUTRAL_BIT_DEPTH, NEUTRAL_COLOUR_PRESET, OutputEntry, OutputId};
 
+use super::read::output_id;
 use super::{
     MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name, read_monitors_lua,
 };
@@ -91,16 +92,17 @@ pub fn save(
         MainConfig::Hyprlang(path) => return Err(SaveError::Hyprlang(path)),
     };
     let main = fs::read_to_string(&main_config).map_err(FileError::io(&main_config))?;
+    let ruled = main_rules(&main);
     let path = main_config.with_file_name(MONITORS_FILE);
     let existing = read_existing(&path)?;
     let (file, kept, unreadable) = match existing.as_deref().map(read_monitors_lua) {
-        None => (with_nothing_kept(layout), Vec::new(), None),
+        None => (with_nothing_kept(layout, &ruled), Vec::new(), None),
         Some(Ok(old)) => {
-            let (file, kept) = merged(layout, &old);
+            let (file, kept) = merged(layout, &old, &ruled);
             (file, kept, None)
         }
         Some(Err(error)) => (
-            with_nothing_kept(layout),
+            with_nothing_kept(layout, &ruled),
             Vec::new(),
             Some(error.to_string()),
         ),
@@ -135,12 +137,64 @@ pub fn save(
 const KEPT_CATCH_ALL: &str =
     "its catch-all hl.monitor({ output = \"\" }) rule, which monitors it does not name take";
 
+/// The monitor rules of the main config (`hyprland.lua`), by the output each
+/// names: `None` for one whose output dsplr cannot read (a variable, an
+/// expression), which could be any. The catch-all (`output = ""`) is left
+/// out: a rule naming the output replaces it rather than merging onto it.
+///
+/// Read line by line as [`require_line`] is: each `hl.monitor(` outside a
+/// `--` comment, up to the next `)`, and in it `output =` and a quoted
+/// string. A call spelled with a space before `(`, one inside a multi-line
+/// comment, one built in a loop or a function, and one in a file the config
+/// requires are not seen.
+fn main_rules(main: &str) -> Vec<Option<OutputId>> {
+    let code: Vec<&str> = main.lines().map(code).collect();
+    let mut rules = Vec::new();
+    for (at, line) in code.iter().enumerate() {
+        for (start, _) in line.match_indices("hl.monitor(") {
+            let mut call = line[start..].to_owned();
+            for next in &code[at + 1..] {
+                if call.contains(')') {
+                    break;
+                }
+                call.push('\n');
+                call.push_str(next);
+            }
+            let call = call.split_once(')').map_or(call.as_str(), |(call, _)| call);
+            match output_named(call) {
+                Some(name) if name.is_empty() => {}
+                Some(name) => rules.extend(output_id(&name).map(Some)),
+                None => rules.push(None),
+            }
+        }
+    }
+    rules
+}
+
+/// The quoted string after `output =` in `call`, if it has one.
+fn output_named(call: &str) -> Option<String> {
+    let (_, after) = call.split_once("output")?;
+    let after = after.trim_start().strip_prefix('=')?.trim_start();
+    let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let rest = &after[1..];
+    rest.find(quote).map(|end| rest[..end].to_owned())
+}
+
 /// `entry` as the file holds it: Hyprland's default colour preset and bit
 /// depth ([`NEUTRAL_COLOUR_PRESET`], [`NEUTRAL_BIT_DEPTH`]) left out, as they
-/// are where a file names none. A runtime rule
-/// states them (`monitor_call`), since there it merges onto earlier ones;
-/// the file is read afresh, after the main config's own rules.
-fn without_defaults(mut entry: OutputEntry) -> OutputEntry {
+/// are where a file names none, unless one of the main config's own rules
+/// (`ruled`, [`main_rules`]) could name its output: the file's rule is
+/// merged onto that one, field by field, so a value left out would keep
+/// that rule's. A runtime rule states what the change sets
+/// (`monitor_call`), since there it merges onto earlier ones too.
+fn without_defaults(mut entry: OutputEntry, ruled: &[Option<OutputId>]) -> OutputEntry {
+    let named = ruled.iter().any(|rule| {
+        rule.as_ref()
+            .is_none_or(|id| id.matches_as_hyprland(&entry))
+    });
+    if named {
+        return entry;
+    }
     let state = &mut entry.state;
     if state.colour_preset.as_deref() == Some(NEUTRAL_COLOUR_PRESET) {
         state.colour_preset = None;
@@ -151,7 +205,7 @@ fn without_defaults(mut entry: OutputEntry) -> OutputEntry {
     entry
 }
 
-fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
+fn with_nothing_kept(layout: &Layout, ruled: &[Option<OutputId>]) -> MonitorsLua {
     MonitorsLua {
         layout: Layout {
             entries: in_hyprland_order(
@@ -159,7 +213,7 @@ fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
                     .entries
                     .iter()
                     .cloned()
-                    .map(without_defaults)
+                    .map(|entry| without_defaults(entry, ruled))
                     .collect(),
             ),
             ..Default::default()
@@ -205,7 +259,11 @@ fn in_hyprland_order(entries: Vec<OutputEntry>) -> Vec<OutputEntry> {
 /// monitor, so an old rule naming a port (`DP-1`) must not come after the
 /// new rule for the monitor that is next plugged into it. Within each group
 /// the rules are [`in_hyprland_order`].
-fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>) {
+fn merged(
+    layout: &Layout,
+    old: &MonitorsLua,
+    ruled: &[Option<OutputId>],
+) -> (MonitorsLua, Vec<OutputEntry>) {
     let live: Vec<OutputEntry> = layout
         .entries
         .iter()
@@ -227,7 +285,7 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
                     state.colour_preset.clone_from(&before.colour_preset);
                 }
             }
-            without_defaults(entry)
+            without_defaults(entry, ruled)
         })
         .collect();
     // Which monitor a rule is for is dsplr's question, so by whole words: a
@@ -662,6 +720,48 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         let file = read_monitors_lua(&config.read()).unwrap();
         assert_eq!(file.catch_alls, catch_alls);
         assert_eq!(file.layout.entries[1].state.y, 200);
+    }
+
+    #[test]
+    fn colour_and_depth_are_stated_for_an_output_the_main_config_has_a_rule_for() {
+        // Before the require, so the saved rule is merged onto it: left out,
+        // its 10 bits and wide gamut would hold at startup.
+        let main = "hl.monitor({\n  output = \"desc:AOC Q27G4\",\n  bitdepth = 10, cm = \"wide\" })\nrequire(\"monitors\")\n";
+        let config = Config::new(main);
+        let mut layout = live();
+        for entry in &mut layout.entries {
+            entry.state.colour_preset = Some("srgb".into());
+            entry.state.bit_depth = Some(8);
+        }
+        config.save(&layout, None).unwrap();
+        let file = read_monitors_lua(&config.read()).unwrap();
+        let aoc = &file.layout.entries[1].state;
+        assert_eq!(
+            (aoc.colour_preset.as_deref(), aoc.bit_depth),
+            (Some("srgb"), Some(8)),
+            "stated against the main config's rule"
+        );
+
+        // A rule for another output, or the catch-all, does not merge onto
+        // this one's.
+        let config = Config::new(
+            "hl.monitor({ output = \"DP-9\", bitdepth = 10 })\nhl.monitor({ output = \"\", cm = \"wide\" })\nrequire(\"monitors\")\n",
+        );
+        config.save(&layout, None).unwrap();
+        let text = config.read();
+        assert!(
+            !text.contains("cm =") && !text.contains("bitdepth"),
+            "{text}"
+        );
+
+        // A rule whose output dsplr cannot read could be any: every output
+        // is stated.
+        let config = Config::new(
+            "local aoc = \"HDMI-A-1\"\nhl.monitor({ output = aoc, bitdepth = 10 })\nrequire(\"monitors\")\n",
+        );
+        config.save(&layout, None).unwrap();
+        let text = config.read();
+        assert!(text.contains("    bitdepth = 8,\n"), "{text}");
     }
 
     #[test]

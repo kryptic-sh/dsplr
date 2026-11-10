@@ -43,7 +43,10 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   `vrr` is written only when on or automatic, so a fullscreen-only rule that
   Hyprland reports as off is never overwritten. `cm` and `bitdepth` are written
   only when not Hyprland's default (`srgb`, 8): the file is read afresh at
-  startup, where a rule naming neither gets the defaults. That is the preset and
+  startup, where a rule naming neither gets the defaults. Except for an output a
+  `hyprland.lua` `hl.monitor` call could name (read line by line; one whose
+  output is not a plain string counts as naming every output): the saved rule
+  merges onto that one, so the defaults are stated there. That is the preset and
   depth in force, as the snapshot reads them, so a rule the monitor cannot do
   (`cm = "hdr"` falling back to `srgb`, `bitdepth = 10` driven at 8) is not kept
   by a save (backlog).

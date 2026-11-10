@@ -230,6 +230,14 @@ mod tests {
         let state = &wide.entries[1].state;
         assert_eq!(state.colour_preset.as_deref(), Some("wide"));
         assert_eq!(state.bit_depth, Some(10));
+        // A format of neither family (half floats): not known, so neither
+        // compared nor written.
+        monitors[1].current_format = "XBGR16161616F".into();
+        let half = layout(&monitors).expect("converts");
+        assert_eq!(half.entries[1].state.bit_depth, None);
+        monitors[1].current_format = "ABGR2101010".into();
+        let abgr = layout(&monitors).expect("converts");
+        assert_eq!(abgr.entries[1].state.bit_depth, Some(10));
         // A Hyprland that reports neither: not known.
         monitors[1].current_format = String::new();
         monitors[1].color_management_preset = String::new();

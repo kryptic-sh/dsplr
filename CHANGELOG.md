@@ -34,10 +34,13 @@ and this project adheres to
 - On Hyprland, the colour preset and bit depth are read (`dsplr list --json`,
   the GUI) and set: the panel offers Hyprland's `cm` presets (`srgb`, `wide`,
   `edid`, `hdr`, `hdredid`, `auto`, `dcip3`, `dp3`, `adobe`) and 8 or 10 bits,
-  an apply states both on every monitor rule (so 8 bits turns 10 off again), and
+  an apply states them for a monitor whose change sets them (8 bits included,
+  which turns 10 off again) and leaves the rule in force alone otherwise, and
   `dsplr save` writes them to `monitors.lua` only when not Hyprland's default
-  (`srgb`, 8). What is read is what Hyprland drives: a preset the monitor cannot
-  do reads back as the one it fell back to, which the read-back reports.
+  (`srgb`, 8), or when `hyprland.lua` has its own rule for that monitor. What is
+  read is what Hyprland drives: a preset the monitor cannot do reads back as the
+  one it fell back to, which the read-back reports, and a format of neither 8
+  nor 10 bits per channel is not read as either.
 - A layout or profile from another desktop applies even where it names settings
   the desktop has not, when they are neutral: Hyprland's `srgb` preset and 8-bit
   depth, KDE's zero overscan and automatic RGB range are dropped on a desktop

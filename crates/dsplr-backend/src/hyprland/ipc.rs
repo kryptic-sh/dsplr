@@ -123,9 +123,15 @@ impl Hyprland {
     /// The rules are runtime-only, and a config reload drops them. As with
     /// [`Hyprland::eval`], the change shows on Hyprland's next frame, so read
     /// the state back to see what it made of it. Adaptive sync turned off is
-    /// not written (see [`dsplr_persist::hyprland::monitor_call`]).
+    /// not written (see [`dsplr_persist::hyprland::monitor_call`]), nor a
+    /// colour preset or bit depth the change leaves as Hyprland reads it
+    /// ([`colour_as_changed`]), which costs one read first.
     pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
-        self.eval(&monitor_rules(layout)?).await
+        // Refused before anything is asked, read or sent.
+        monitor_rules(layout)?;
+        let live = self.snapshot().await?;
+        self.eval(&monitor_rules(&colour_as_changed(layout, &live))?)
+            .await
     }
 
     /// The current state as a [`Layout`].
@@ -180,6 +186,30 @@ pub fn monitor_rules(layout: &Layout) -> Result<String, Error> {
     )?)
 }
 
+/// `asked` with each output's colour preset and bit depth left out where
+/// they are what `live` reads for it: Hyprland merges a rule onto the last
+/// for the same output, so a setting left out keeps the rule in force (a
+/// rule without `bitdepth` kept 10 bits, 0.57.2, CI run 42784568478), and
+/// restating what it reads would pin a rule such as `cm = "auto"` to the
+/// preset it resolved to. Stated, 8 bits and `srgb` included, where the
+/// change makes them differ.
+pub fn colour_as_changed(asked: &Layout, live: &Layout) -> Layout {
+    let mut sent = asked.clone();
+    for entry in &mut sent.entries {
+        let Some(now) = live.entries.iter().find(|now| now.id.matches(entry)) else {
+            continue;
+        };
+        let state = &mut entry.state;
+        if state.colour_preset == now.state.colour_preset {
+            state.colour_preset = None;
+        }
+        if state.bit_depth == now.state.bit_depth {
+            state.bit_depth = None;
+        }
+    }
+    sent
+}
+
 /// Where Hyprland's sockets are: `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE`.
 fn socket_dir(var: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf, Error> {
     let signature = var("HYPRLAND_INSTANCE_SIGNATURE").ok_or(Error::NotRunning)?;
@@ -195,7 +225,38 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
-    use super::{Error, Hyprland, socket_dir};
+    use super::{Error, Hyprland, colour_as_changed, socket_dir};
+
+    #[test]
+    fn colour_and_depth_are_stated_only_where_the_change_makes_them() {
+        use dsplr_model::{Layout, OutputEntry, OutputId, OutputState};
+        let entry = |name: &str, preset: &str, bits| OutputEntry {
+            id: OutputId::Connector(name.into()),
+            output: None,
+            state: OutputState {
+                colour_preset: Some(preset.into()),
+                bit_depth: Some(bits),
+                ..OutputState::default()
+            },
+        };
+        let live = Layout {
+            entries: vec![entry("DP-1", "srgb", 8), entry("DP-2", "srgb", 10)],
+            ..Default::default()
+        };
+        // DP-1 moved only (its preset a fallback of a rule such as `auto`,
+        // which restating would pin), DP-2 set to wide and to 8 bits.
+        let mut asked = live.clone();
+        asked.entries[0].state.x = 100;
+        asked.entries[1].state.colour_preset = Some("wide".into());
+        asked.entries[1].state.bit_depth = Some(8);
+        let sent = colour_as_changed(&asked, &live);
+        let state = |index: usize| {
+            let state = &sent.entries[index].state;
+            (state.colour_preset.as_deref(), state.bit_depth, state.x)
+        };
+        assert_eq!(state(0), (None, None, 100), "left to the rule in force");
+        assert_eq!(state(1), (Some("wide"), Some(8), 0), "stated, 8 included");
+    }
 
     fn vars<'a>(pairs: &'a [(&'a str, &'a Path)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |name| {
@@ -311,6 +372,8 @@ mod tests {
         requests.recv().await.expect("the snapshot's request");
 
         hyprland.apply(&layout).await.expect("applied");
+        // A read first, for the colour settings in force.
+        assert_eq!(requests.recv().await.as_deref(), Some("j/monitors all"));
         let request = requests.recv().await.expect("the apply's request");
         let rules = request.strip_prefix("/eval ").expect("an eval");
         assert_eq!(rules.matches("hl.monitor(").count(), 2, "{rules}");
@@ -327,6 +390,11 @@ mod tests {
             assert!(rules.contains(field), "{field} in {rules}");
         }
         assert!(!rules.contains("desc:"), "{rules}");
+        // Unchanged from what Hyprland reads: left to the rule in force.
+        assert!(
+            !rules.contains("cm =") && !rules.contains("bitdepth"),
+            "{rules}"
+        );
     }
 
     #[tokio::test]
