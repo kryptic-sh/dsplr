@@ -106,7 +106,7 @@ pub async fn import_kanshi(path: Option<PathBuf>, force: bool) -> Exit {
     for note in &read.notes {
         eprintln!("dsplr: {note}");
     }
-    let live = match dsplr_backend::detect().await.backend {
+    let live = match crate::detection().await.backend {
         Some(backend) => match backend.snapshot().await {
             Ok(layout) => Some(layout),
             Err(error) => {

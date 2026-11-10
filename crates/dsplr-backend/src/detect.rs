@@ -27,6 +27,92 @@ impl Check {
     }
 }
 
+/// A backend `dsplr --backend` names, which [`detect_named`] checks alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Named {
+    Hyprland,
+    Kde,
+    Gnome,
+    Wlr,
+    /// X11's, not written yet.
+    Randr,
+}
+
+impl Named {
+    /// Every name `--backend` takes: each backend's [`Backend::name`], and
+    /// `randr`, also spelled `x11`, for the one not written yet.
+    pub const NAMES: [&str; 6] = ["hyprland", "kde", "gnome", "wlr", "randr", "x11"];
+
+    /// The backend `name` names, one of [`Named::NAMES`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "hyprland" => Some(Self::Hyprland),
+            "kde" => Some(Self::Kde),
+            "gnome" => Some(Self::Gnome),
+            "wlr" => Some(Self::Wlr),
+            "randr" | "x11" => Some(Self::Randr),
+            _ => None,
+        }
+    }
+
+    /// Its name, as [`Backend::name`] spells the backend it finds.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Hyprland => "hyprland",
+            Self::Kde => "kde",
+            Self::Gnome => "gnome",
+            Self::Wlr => "wlr",
+            Self::Randr => "randr",
+        }
+    }
+}
+
+/// Checks only the backend `named`, as `dsplr --backend` asks: found when
+/// it is reachable here, else `None` with why, never another backend. The
+/// Hyprland rule of [`detect`] does not apply: asking for a backend by name
+/// is how one is driven where detection would not pick it.
+pub async fn detect_named(named: Named) -> Detection {
+    #[cfg(target_os = "linux")]
+    {
+        detect_named_with(named, |name| std::env::var_os(name)).await
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Detection {
+            checks: vec![Check::new(
+                named.name(),
+                "not available on this platform: dsplr's backends are Linux-only",
+            )],
+            backend: None,
+        }
+    }
+}
+
+/// [`detect_named`] on Linux, reading the environment through `var`.
+#[cfg(target_os = "linux")]
+async fn detect_named_with(
+    named: Named,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Detection {
+    let mut checks = Vec::new();
+    let backend = match named {
+        Named::Hyprland => match hyprland(&var, &mut checks).await {
+            Hyprland::Found(backend) => Some(backend),
+            Hyprland::NotRunning | Hyprland::Unreachable => None,
+        },
+        Named::Kde => kde(&var, &mut checks).await,
+        Named::Gnome => gnome(&var, &mut checks).await,
+        Named::Wlr => wlr(&var, &mut checks).await,
+        Named::Randr => {
+            checks.push(Check::new("X11", NOT_WRITTEN));
+            None
+        }
+    };
+    Detection { checks, backend }
+}
+
 /// What detection says about the desktop whose backend does not exist yet.
 #[cfg(target_os = "linux")]
 const NOT_WRITTEN: &str = "not written yet (planned for M7)";
@@ -251,7 +337,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixListener;
 
-    use super::detect_with;
+    use super::{Named, detect_named_with, detect_with};
 
     fn env(runtime: &Path) -> impl Fn(&str) -> Option<OsString> + '_ {
         move |name| match name {
@@ -388,5 +474,70 @@ mod tests {
                 .found
                 .contains("HYPRLAND_INSTANCE_SIGNATURE")
         );
+    }
+
+    #[test]
+    fn every_name_names_a_backend_spelled_as_the_backend_spells_it() {
+        for name in Named::NAMES {
+            let named = Named::from_name(name).unwrap_or_else(|| panic!("{name}"));
+            if name != "x11" {
+                assert_eq!(named.name(), name);
+            }
+        }
+        assert_eq!(Named::from_name("x11"), Some(Named::Randr));
+        assert_eq!(Named::from_name("sway"), None);
+        assert_eq!(Named::from_name("Wlr"), None);
+    }
+
+    #[tokio::test]
+    async fn a_named_backend_is_the_only_one_checked() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let names = |named| {
+            let runtime = runtime.path().as_os_str().to_owned();
+            async move {
+                // Hyprland's variable set, and nothing there: detection would
+                // stop at it; a backend asked for by name is checked anyway.
+                let detection = detect_named_with(named, |name| match name {
+                    "HYPRLAND_INSTANCE_SIGNATURE" => Some("sig".into()),
+                    "WAYLAND_DISPLAY" => Some("wayland-7".into()),
+                    "XDG_RUNTIME_DIR" => Some(runtime.clone()),
+                    _ => None,
+                })
+                .await;
+                assert!(detection.backend.is_none(), "{named:?}");
+                detection.checks
+            }
+        };
+        let only = |checks: Vec<super::Check>| -> Vec<&'static str> {
+            checks.iter().map(|c| c.what).collect()
+        };
+        assert_eq!(only(names(Named::Hyprland).await), ["Hyprland"]);
+        assert_eq!(only(names(Named::Kde).await), ["KDE"]);
+        assert_eq!(only(names(Named::Gnome).await), ["GNOME"]);
+        let wlr = names(Named::Wlr).await;
+        assert_eq!(only(wlr.clone()), ["wlroots"]);
+        assert!(wlr[0].found.contains("wayland-7"), "{wlr:?}");
+        let x11 = names(Named::Randr).await;
+        assert_eq!(only(x11.clone()), ["X11"]);
+        assert!(x11[0].found.contains("not written yet"), "{x11:?}");
+    }
+
+    #[tokio::test]
+    async fn a_named_hyprland_whose_socket_answers_is_found() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        let dir = runtime.path().join("hypr").join("sig");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let listener = UnixListener::bind(dir.join(".socket.sock")).expect("bind");
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let mut buf = vec![0; 64];
+            let _ = stream.read(&mut buf).await.expect("read");
+            stream
+                .write_all(br#"{"version": "0.56.2"}"#)
+                .await
+                .expect("write");
+        });
+        let detection = detect_named_with(Named::Hyprland, env(runtime.path())).await;
+        assert_eq!(detection.backend.expect("found").name(), "hyprland");
     }
 }

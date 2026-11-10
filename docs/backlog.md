@@ -337,10 +337,38 @@ milestone:
   `monitors.xml`), classified as a refusal from its source; GNOME Shell's dialog
   and its timeout on a real session; the manual checklist on GNOME (M6's exit
   check).
-- **`dsplr --backend` is not written**: plan 04 names it for desktops offering
-  more than one interface (GNOME on X11, KDE on X11); detection's order picks
-  for now. `dsplr identify` finds its backend through `find_backend` like every
-  other command, so it takes the flag when that does.
+- **`--backend wlr` on Hyprland is allowed** (decision for the owner): a backend
+  named with `--backend` is checked alone, so the rule that stops detection at
+  an unreachable Hyprland (plan 04) does not apply, and `--backend wlr` drives
+  Hyprland through `wlr-output-management`. What that gives there: the test step
+  (`--dry-run`, and the test before every apply) is Hyprland's stub, which
+  always succeeds, so it proves nothing about the layout; what an apply sets is
+  kept by Hyprland per monitor beside its monitor rules (plan 04's Hyprland
+  section); and saving is refused, since without `SWAYSOCK` or `NIRI_SOCKET`
+  answering the compositor counts as `wlr::Compositor::Other`
+  (`Backend::persist` returns `Unsupported`; read in the source, not run on
+  Hyprland). Chosen because the flag exists for testing and for desktops with
+  more than one interface, and the user asked for that one by name. The other
+  option is refusing `wlr` (and `kde`) while `HYPRLAND_INSTANCE_SIGNATURE` is
+  set, with why, exit 6. Not run on a Hyprland session.
+- **`--backend` takes the backends' own names only** (`hyprland`, `kde`,
+  `gnome`, `wlr`, `randr` or `x11`), as `dsplr backend` spells them; `sway`,
+  `niri` and the other wlroots compositors' names are usage errors listing
+  those. An alias would read as checking that the compositor is sway, which
+  `wlr` does not. Say if aliases are wanted anyway.
+- **`--backend`'s coverage**: unit tests for the names, the parse before and
+  after the command, unknown names (exit 2), each named backend being the only
+  one checked (Hyprland's stop included), and the watchdog's arguments carrying
+  it. The sway e2e checks `gnome`, `kde`, `hyprland` and `x11` exit `6` naming
+  the backend and its check without checking wlroots, `dsplr backend` likewise,
+  `--backend wlr` running `backend`, `set --yes` and `restore --revert`, and a
+  `--backend wlr set` killed at its prompt (on a `script` terminal), whose
+  watchdog, seen in `/proc` with `--backend wlr` on its command line, reverts it
+  and removes the revert point. Not driven end to end: the GUI, `watch` and
+  `identify` with the flag (each finds its backend through `find_backend`, which
+  reads it). The non-Linux arm of `detect_named` is checked only by
+  `cargo clippy -p dsplr-backend --target x86_64-pc-windows-gnu`. Not run on
+  Hyprland, KDE or GNOME with it.
 - **KDE custom modes**: KWin 6.8 takes them as a mode list per output
   (`create_mode_list`, `set_resolution`, `set_refresh_rate`, `add_mode`, then
   `set_custom_modes` on the configuration, from management version 18), which

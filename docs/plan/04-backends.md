@@ -26,7 +26,8 @@ session claims to be, the registry and the bus say what is there.
 more than one interface (KDE on X11 is `Randr`; GNOME on X11 offers both
 `DisplayConfig` and RandR, and `Gnome` wins because it persists, which the order
 above gives: Mutter 51.1 has no X11 backend, so this is an older GNOME; which
-release dropped it was not checked). `--backend` is not written yet.
+release dropped it was not checked). Only the backend named is checked, never
+another in its place ([07](07-cli.md)); `randr` is not written yet.
 
 No match is an error that lists what was checked and what was found, never an
 empty canvas.

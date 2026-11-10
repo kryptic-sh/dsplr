@@ -22,6 +22,17 @@ point is still written), `--dry-run` (validate, and test where the backend has a
 real test; on Hyprland, KDE and X11 it says it validated locally only),
 `--json`.
 
+`--backend <name>` is global: before or after the command, and on `dsplr` alone
+for the GUI. It takes the names `dsplr backend` prints (`hyprland`, `kde`,
+`gnome`, `wlr`, and `randr` or `x11`); another is a usage error (`2`) listing
+them. Only the backend named is checked, in place of detection's order and its
+stop at an unreachable Hyprland ([04](04-backends.md#detection)), and it is
+never replaced by another: when it is not reachable here, dsplr says which
+backend and what its check found, and exits `6`. `randr` says it is not written
+yet (M7). Every command that finds a backend uses it, including `dsplr watch`
+each time it reconnects, the GUI's backend thread, and the revert watchdog a
+change starts, which is given the flag.
+
 The confirm prompt on a terminal reads one line within the timeout; no TTY and
 no `--yes` is an error, never a silent keep. `dsplr restore` with a profile runs
 the same flow, so from an autostart it is `dsplr restore --yes`

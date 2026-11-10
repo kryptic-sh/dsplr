@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use dsplr_backend::Backend;
+use dsplr_backend::{Backend, Named};
 use dsplr_persist::revert::{self, RevertPoint};
 
 use dsplr_core::flow::report;
@@ -38,8 +38,9 @@ pub fn change_limit(request_timeout: Duration) -> Duration {
 }
 
 /// Starts the watchdog for the change `token` names: a detached
-/// `dsplr restore --revert --after <secs> --token <token>`. It inherits the
-/// environment, which is how it reaches the desktop.
+/// `dsplr restore --revert --after <secs> --token <token>`, with the
+/// `--backend` this one was given. It inherits the environment, which is how
+/// it reaches the desktop.
 ///
 /// # Errors
 ///
@@ -47,9 +48,7 @@ pub fn change_limit(request_timeout: Duration) -> Duration {
 pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
     let mut command = Command::new(env::current_exe()?);
     command
-        .args(["restore", "--revert", "--after"])
-        .arg(after.as_secs().to_string())
-        .args(["--token", token])
+        .args(watchdog_args(token, after, crate::forced()))
         // Nothing to talk to: the terminal may close while it waits.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -60,6 +59,19 @@ pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     command.spawn().map(drop)
+}
+
+/// The watchdog's arguments: [`spawn_watchdog`]'s command line after the
+/// executable, `--backend` passed on when this dsplr was given it, so the
+/// revert goes to the backend the change went to.
+fn watchdog_args(token: &str, after: Duration, forced: Option<Named>) -> Vec<String> {
+    let mut args: Vec<String> = ["restore", "--revert", "--after"].map(str::to_owned).into();
+    args.push(after.as_secs().to_string());
+    args.extend(["--token".to_owned(), token.to_owned()]);
+    if let Some(named) = forced {
+        args.extend(["--backend".to_owned(), named.name().to_owned()]);
+    }
+    args
 }
 
 /// Applies `point`'s layout, shows what did not come back as it was, and
@@ -160,8 +172,23 @@ fn load(
 mod tests {
     use std::time::Duration;
 
-    use super::{settle_limit, watchdog_delay};
+    use dsplr_backend::Named;
+
+    use super::{settle_limit, watchdog_args, watchdog_delay};
     use crate::apply::SETTLE;
+
+    #[test]
+    fn the_watchdog_is_given_the_backend_this_dsplr_was() {
+        let after = Duration::from_secs(25);
+        assert_eq!(
+            watchdog_args("t", after, None),
+            ["restore", "--revert", "--after", "25", "--token", "t"]
+        );
+        assert_eq!(
+            watchdog_args("t", after, Some(Named::Wlr))[6..],
+            ["--backend", "wlr"]
+        );
+    }
 
     #[test]
     fn the_watchdog_waits_past_two_slow_changes_and_the_prompt() {

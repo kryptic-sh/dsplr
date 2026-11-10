@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use dsplr_backend::Backend;
+use dsplr_backend::{Backend, Named};
 use std::time::SystemTime;
 
 use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, Transform};
@@ -36,7 +36,7 @@ mod support;
 #[path = "../../../tests/e2e/sway_support.rs"]
 mod sway_support;
 
-use support::{answered_on_a_terminal, edited, entry, entry_mut, plain};
+use support::{answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain};
 use sway_support::{
     FreshSway, config_home, harness_runtime, no_outputs_file, outputs_up_to, reload_until,
     sway_config, swaymsg,
@@ -128,6 +128,7 @@ async fn dsplr_applies_sets_and_reverts_on_sway() {
     profiles_are_saved_picked_and_restored(&backend).await;
     kanshi_profiles_are_imported_and_restored(&backend).await;
     watch_restores_profiles_as_outputs_come_and_go(&runtime).await;
+    backend_flag_uses_the_one_named_or_says_why_not(&backend).await;
     save_writes_outputs_and_asks_before_replacing_one(&backend).await;
 }
 
@@ -1040,6 +1041,139 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
     assert_eq!(code, Some(0), "{text}");
     let (code, text) = dsplr(&["profile", "list"]);
     assert_eq!((code, &*text), (Some(0), "no profiles\n"));
+}
+
+/// `--backend`: the one named is the only one checked, never another in its
+/// place, and a change made through it is reverted through it too.
+async fn backend_flag_uses_the_one_named_or_says_why_not(backend: &Backend) {
+    // Not a backend's name: a usage error.
+    let (code, text) = dsplr(&["--backend", "sway", "list"]);
+    assert_eq!(code, Some(USAGE), "{text}");
+    assert!(text.contains("wlr"), "{text}");
+
+    // Each other backend: not here, and wlroots, which is, never checked.
+    for (name, check) in [
+        ("gnome", "GNOME:"),
+        ("kde", "KDE:"),
+        ("hyprland", "Hyprland:"),
+        ("x11", "X11: not written yet"),
+    ] {
+        let (code, text) = dsplr(&["--backend", name, "list"]);
+        assert_eq!(code, Some(6), "{name}: {text}");
+        let named = Named::from_name(name).expect("a backend's name").name();
+        assert!(
+            text.contains(&format!("the {named} backend is not usable here")),
+            "{name}: {text}"
+        );
+        assert!(text.contains(check), "{name}: {text}");
+        assert!(!text.contains("wlroots"), "{name}: {text}");
+    }
+    let (code, text) = dsplr(&["backend", "--backend", "gnome"]);
+    assert_eq!(code, Some(6), "{text}");
+    assert!(!text.contains("wlroots"), "{text}");
+
+    // wlr, the one here: everything works through it.
+    let (code, text) = dsplr(&["--backend", "wlr", "backend"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("backend: wlr\n"), "{text}");
+    let start = backend.snapshot().await.expect("snapshot");
+    let (x, y) = {
+        let two = entry(&start, "HEADLESS-2");
+        (two.state.x, two.state.y + 100)
+    };
+    let pos = format!("{x},{y}");
+    let (code, text) = dsplr(&[
+        "--backend",
+        "wlr",
+        "set",
+        "HEADLESS-2",
+        "--pos",
+        &pos,
+        "--yes",
+    ]);
+    assert_eq!(code, Some(0), "{text}");
+    let moved = backend.snapshot().await.expect("snapshot");
+    assert_eq!(entry(&moved, "HEADLESS-2").state.y, y);
+    let (code, text) = dsplr(&["restore", "--revert", "--backend", "wlr"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(backend.snapshot().await.expect("snapshot"), start);
+
+    // A change under `--backend wlr` whose dsplr is killed at the prompt:
+    // its watchdog was started with the flag, and reverts it.
+    let pid_file = harness_runtime().join("dsplr-set.pid");
+    let mut terminal = on_a_terminal(&format!(
+        "echo $$ > {pid}; exec {dsplr} --backend wlr set HEADLESS-2 --pos {pos} \
+         --confirm-timeout {secs}",
+        pid = plain(&pid_file),
+        dsplr = plain(&dsplr_bin()),
+        secs = KILLED_CONFIRM.as_secs(),
+    ));
+    let started = Instant::now();
+    while entry(&backend.snapshot().await.expect("snapshot"), "HEADLESS-2")
+        .state
+        .y
+        != y
+    {
+        assert!(
+            started.elapsed() < KILLED_CONFIRM,
+            "the change never applied"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let token = revert_point().token;
+    let watchdogs = watchdog_command_lines(&token);
+    assert_eq!(watchdogs.len(), 1, "{watchdogs:?}");
+    assert!(watchdogs[0].ends_with(" --backend wlr"), "{watchdogs:?}");
+    let pid = std::fs::read_to_string(&pid_file).expect("dsplr wrote its pid");
+    let status = Command::new("kill")
+        .args(["-KILL", pid.trim()])
+        .status()
+        .expect("kill runs");
+    assert!(status.success(), "dsplr {} killed", pid.trim());
+    // Killed before its own countdown could revert it.
+    assert!(started.elapsed() < KILLED_CONFIRM, "killed too late");
+    terminal.wait().expect("script ended");
+    let deadline = Instant::now() + WATCHDOG;
+    while backend.snapshot().await.expect("snapshot") != start {
+        assert!(Instant::now() < deadline, "the watchdog did not revert it");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    while any_revert_point().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the watchdog removed the revert point"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The confirm timeout of the change killed at its prompt: long enough to
+/// see it applied and kill it first, short since the watchdog's delay counts
+/// it.
+const KILLED_CONFIRM: Duration = Duration::from_secs(15);
+/// How long that change's watchdog may take: `restore::watchdog_delay` for
+/// wlr's request timeout and [`KILLED_CONFIRM`], with room.
+const WATCHDOG: Duration = Duration::from_secs(120);
+
+/// The command lines of the running watchdogs for the change `token` names,
+/// read from `/proc`, their arguments joined with spaces.
+fn watchdog_command_lines(token: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for process in std::fs::read_dir("/proc").expect("/proc").flatten() {
+        // Processes come and go while it is read.
+        let Ok(line) = std::fs::read(process.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = line
+            .split(|&byte| byte == 0)
+            .filter(|arg| !arg.is_empty())
+            .map(|arg| String::from_utf8_lossy(arg).into_owned())
+            .collect();
+        if args.iter().any(|arg| arg == "--after") && args.iter().any(|arg| arg == token) {
+            found.push(args.join(" "));
+        }
+    }
+    found
 }
 
 async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {

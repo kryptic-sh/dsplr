@@ -32,7 +32,7 @@ pub mod wayland;
 #[cfg(target_os = "linux")]
 pub mod wlr;
 
-pub use detect::{Check, Detection, detect};
+pub use detect::{Check, Detection, Named, detect, detect_named};
 
 /// The backend for the running desktop, found by [`detect`].
 #[derive(Clone, Debug)]

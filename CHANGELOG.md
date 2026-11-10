@@ -31,6 +31,11 @@ and this project adheres to
 
 ### Added
 
+- `--backend <name>` (`hyprland`, `kde`, `gnome`, `wlr`; `randr`/`x11` says it
+  is not written yet) uses that backend instead of detecting one, on every
+  command and the GUI. Only that backend is checked: when it is not reachable,
+  dsplr says what its check found and exits `6` rather than use another. A
+  change's revert watchdog and `dsplr watch`'s reconnects keep it.
 - `dsplr profile import kanshi [PATH] [--force]` imports kanshi's profiles into
   dsplr's store, from kanshi's own config (`$XDG_CONFIG_HOME/kanshi/config`,
   else `~/.config/kanshi/config`) unless a path is given: each named profile

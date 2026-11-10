@@ -12,10 +12,12 @@ use std::io::{self, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
-use dsplr_backend::{Backend, Detection, detect};
+use dsplr_backend::{Backend, Detection, Named, detect, detect_named};
 use dsplr_config::Config;
 use dsplr_model::Layout;
 use dsplr_persist::profile::ProfileName;
@@ -36,8 +38,32 @@ mod watch;
 #[derive(Debug, Parser)]
 #[command(version, about)]
 struct Cli {
+    /// Use this backend instead of detecting one, for testing, or for a
+    /// desktop offering more than one way to drive its displays. It must be
+    /// reachable here: dsplr says what it found missing (exit 6) rather than
+    /// use another. `randr` (or `x11`) is not written yet.
+    #[arg(long, global = true, value_name = "NAME", value_parser = backend_name())]
+    backend: Option<Named>,
     #[command(subcommand)]
     command: Option<Command>,
+}
+
+/// `--backend`'s parser: one of [`Named::NAMES`], which clap lists when
+/// another is given.
+fn backend_name() -> impl TypedValueParser<Value = Named> {
+    PossibleValuesParser::new(Named::NAMES)
+        .try_map(|name| Named::from_name(&name).ok_or("not one of dsplr's backends"))
+}
+
+/// The backend `--backend` asked for, set once in [`main`] before any
+/// command runs, so every place that finds a backend honours it: each
+/// command, the GUI's backend thread, `dsplr watch` reconnecting, and the
+/// revert watchdog, which is started with it.
+static FORCED: OnceLock<Named> = OnceLock::new();
+
+/// The backend `--backend` asked for, if it did.
+fn forced() -> Option<Named> {
+    FORCED.get().copied()
 }
 
 #[derive(Debug, Subcommand)]
@@ -236,7 +262,11 @@ impl From<Exit> for ExitCode {
 }
 
 fn main() -> ExitCode {
-    let Some(command) = Cli::parse().command else {
+    let cli = Cli::parse();
+    if let Some(named) = cli.backend {
+        FORCED.get_or_init(|| named);
+    }
+    let Some(command) = cli.command else {
         return gui::run().into();
     };
     match runtime() {
@@ -260,7 +290,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, Exit> {
 async fn run(command: Command) -> Exit {
     match command {
         Command::Backend => {
-            let detection = detect().await;
+            let detection = detection().await;
             let code = if detection.backend.is_some() {
                 Exit::Success
             } else {
@@ -317,12 +347,23 @@ async fn run(command: Command) -> Exit {
     }
 }
 
-/// The backend for this desktop, or, when there is none, the checks that
-/// found none, reported, and the exit code.
+/// Detection, or with `--backend` only the backend it names.
+async fn detection() -> Detection {
+    match forced() {
+        Some(named) => detect_named(named).await,
+        None => detect().await,
+    }
+}
+
+/// The backend for this desktop, or the one `--backend` names; or, when
+/// there is none, the checks that found none, reported, and the exit code.
 async fn find_backend() -> Result<Backend, Exit> {
-    let Detection { checks, backend } = detect().await;
+    let Detection { checks, backend } = detection().await;
     backend.ok_or_else(|| {
-        eprintln!("dsplr: no backend for this desktop");
+        match forced() {
+            Some(named) => eprintln!("dsplr: the {} backend is not usable here", named.name()),
+            None => eprintln!("dsplr: no backend for this desktop"),
+        }
         eprint!("{}", backend::describe_checks(&checks));
         Exit::NoBackend
     })
@@ -452,6 +493,8 @@ mod tests {
     use std::process::ExitCode;
 
     use clap::{CommandFactory, Parser};
+
+    use dsplr_backend::Named;
 
     use super::{ApplyArgs, Cli, Command, Exit, ImportFrom, ProfileCommand};
 
@@ -720,6 +763,52 @@ mod tests {
         ] {
             let error = Cli::try_parse_from(["dsplr", "set", "DP-1", flag, value]).unwrap_err();
             assert_eq!(error.exit_code(), Exit::Usage as i32, "{flag} {value}");
+        }
+    }
+
+    #[test]
+    fn backend_takes_a_backend_s_name_before_or_after_the_command() {
+        let cli = Cli::try_parse_from(["dsplr", "--backend", "wlr", "list"]).unwrap();
+        assert_eq!(cli.backend, Some(Named::Wlr));
+        let cli = Cli::try_parse_from(["dsplr", "list", "--backend", "gnome"]).unwrap();
+        assert_eq!(cli.backend, Some(Named::Gnome));
+        // The GUI's too.
+        let cli = Cli::try_parse_from(["dsplr", "--backend", "kde"]).unwrap();
+        assert!(cli.command.is_none());
+        assert_eq!(cli.backend, Some(Named::Kde));
+        let cli = Cli::try_parse_from(["dsplr", "--backend", "x11", "backend"]).unwrap();
+        assert_eq!(cli.backend, Some(Named::Randr));
+        assert_eq!(
+            Cli::try_parse_from(["dsplr", "list"]).unwrap().backend,
+            None
+        );
+        // The watchdog's command line, as `restore::spawn_watchdog` builds it.
+        let cli = Cli::try_parse_from([
+            "dsplr",
+            "restore",
+            "--revert",
+            "--after",
+            "25",
+            "--token",
+            "t",
+            "--backend",
+            "hyprland",
+        ])
+        .unwrap();
+        assert_eq!(cli.backend, Some(Named::Hyprland));
+    }
+
+    #[test]
+    fn an_unknown_backend_is_a_usage_error_listing_the_names() {
+        for name in ["sway", "niri", "Wlr", ""] {
+            let error = Cli::try_parse_from(["dsplr", "--backend", name, "list"]).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{name:?}");
+            if !name.is_empty() {
+                let text = error.to_string();
+                for known in Named::NAMES {
+                    assert!(text.contains(known), "{known} in {text}");
+                }
+            }
         }
     }
 
