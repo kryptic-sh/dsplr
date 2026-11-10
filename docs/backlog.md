@@ -707,6 +707,15 @@ milestone:
   its own), a panel click ignored behind the quit prompt or the dialogs, and two
   navigation keys in one batch each getting a frame. Not run on niri, Hyprland,
   KWin, Mutter or X11, and the dialogs' X11 override-redirect panels never.
+- **The GUI e2e hung twice in CI, cause not found** (2026-11-10, runs
+  42793558495 and 42798488907, at a9db874 and after): the last output was
+  `swaymsg create_output`'s reply in the hotplug step, then nothing until the
+  VM's 30 min limit. Not reproduced locally (passed three times, once pinned to
+  one CPU), and the next run (42804379976) passed. The likeliest wait was the
+  window's exit after `q`, which a pending edit turns into the quit prompt;
+  which edit could be left pending only there is unknown. Every wait in
+  `gui_e2e.rs` is now bounded and a timeout prints sway's windows, the layout
+  and the window's stderr (`gui.log`), so a recurrence says which wait it was.
 - **The confirm's fallback toplevel has not run anywhere**: where the window
   system has no panels, the confirm is one toplevel, and closing it reverts
   (`dialog_answer`, unit-tested on the decision only). Every compositor the e2e
