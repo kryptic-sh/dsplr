@@ -25,8 +25,6 @@ const LINE: f32 = 18.0;
 const BORDER: f32 = 1.0;
 const SELECTED_BORDER: f32 = 2.0;
 const PENDING_BORDER: f32 = 2.0;
-/// What the bar says about the keys, after the backend's name.
-const KEYS_HINT: &str = "drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  u / C-r undo / redo  ·  q quit";
 
 /// A window's size in logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,18 +45,31 @@ pub struct Size {
 ///   when they leave it off the canvas; in the error or warning colour when
 ///   validating the pending layout found a problem with it;
 /// - the bar: `message` when there is one, else the first problem, else the
-///   backend and the keys.
+///   backend and `keys`, a line about the keys.
 ///
 /// Every rectangle and tile is a hit region for its output, and so is the
 /// inside of each pending place on the canvas, below them all: where a
 /// pending outline lies over another output's rectangle, the rectangle takes
 /// the click.
-pub fn draw(editor: &Editor, viewport: Size, theme: &Theme, message: Option<&str>) -> DrawList {
+pub fn draw(
+    editor: &Editor,
+    viewport: Size,
+    theme: &Theme,
+    message: Option<&str>,
+    keys: &str,
+) -> DrawList {
     let mut list = DrawList::default();
     let regions = regions(editor, viewport);
     let problems = editor.pending().validate(&editor.snapshot().capabilities);
     draw_canvas(&mut list, editor, &problems, &regions, theme);
-    draw_bar(&mut list, editor, &problems, message, regions.bar, theme);
+    draw_bar(
+        &mut list,
+        editor,
+        &problems,
+        (message, keys),
+        regions.bar,
+        theme,
+    );
     list
 }
 
@@ -225,12 +236,12 @@ fn tray_pitch(tiles: usize, width: f32) -> (f32, f32) {
 }
 
 /// The bar: `message`, else the first of `problems` and how many more there
-/// are, else the backend, whether edits are pending, and the keys.
+/// are, else the backend, whether edits are pending, and `keys`.
 fn draw_bar(
     list: &mut DrawList,
     editor: &Editor,
     problems: &[Problem],
-    message: Option<&str>,
+    (message, keys): (Option<&str>, &str),
     bar: Bounds,
     theme: &Theme,
 ) {
@@ -253,11 +264,11 @@ fn draw_bar(
         (format!("{backend}  ·  {first}{more}"), color)
     } else if editor.has_pending() {
         (
-            format!("{backend}  ·  pending edits  ·  {KEYS_HINT}"),
+            format!("{backend}  ·  pending edits  ·  {keys}"),
             theme.muted,
         )
     } else {
-        (format!("{backend}  ·  {KEYS_HINT}"), theme.muted)
+        (format!("{backend}  ·  {keys}"), theme.muted)
     };
     list.text(
         Point::new(bar.x + 2.0 * PAD, bar.y + (bar.height - LINE) / 2.0),
@@ -295,7 +306,7 @@ mod tests {
     use dsplr_model::{Capabilities, Layout, OutputId};
 
     use super::{Size, draw};
-    use crate::fixtures::{assert_snapshot, owners_machine, three_monitors};
+    use crate::fixtures::{KEYS, assert_snapshot, owners_machine, three_monitors};
     use crate::{Editor, Point, Snapshot, Theme};
 
     const WINDOW: Size = Size {
@@ -306,7 +317,7 @@ mod tests {
     #[test]
     fn the_owners_machine() {
         let editor = Editor::new(owners_machine());
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         assert_snapshot("owners-machine", &list.to_string());
     }
 
@@ -320,7 +331,7 @@ mod tests {
             state.x = 3072;
         });
         editor.select(Some(1));
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         assert_snapshot("three-monitors-pending", &list.to_string());
 
         // Undone, the outlines go and the frame is the untouched one.
@@ -329,10 +340,10 @@ mod tests {
         let untouched = {
             let mut fresh = Editor::new(three_monitors());
             fresh.select(Some(1));
-            draw(&fresh, WINDOW, &Theme::tokyo_night(), None)
+            draw(&fresh, WINDOW, &Theme::tokyo_night(), None, KEYS)
         };
         assert_eq!(
-            draw(&editor, WINDOW, &Theme::tokyo_night(), None),
+            draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS),
             untouched
         );
     }
@@ -344,7 +355,7 @@ mod tests {
             capabilities: Capabilities::default(),
             layout: Layout::default(),
         });
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         assert_snapshot("no-outputs", &list.to_string());
     }
 
@@ -352,7 +363,7 @@ mod tests {
     fn a_click_selects_the_output_under_it() {
         let mut editor = Editor::new(three_monitors());
         editor.edit(0, |state| state.y = 0);
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         let centre = |output: usize| {
             let hit = list.hits.iter().rev().find(|hit| hit.output == output);
             let bounds = hit.unwrap().bounds;
@@ -384,7 +395,7 @@ mod tests {
                 height: 300.0,
             },
         ] {
-            let list = draw(&editor, window, &Theme::tokyo_night(), None);
+            let list = draw(&editor, window, &Theme::tokyo_night(), None, KEYS);
             let dp1 = list.hits[0].bounds;
             let dp2 = list.hits[1].bounds;
             // DP-2 is 1440x2560 at 1.25: 1152x2048, beside DP-1's 1920x1080.
@@ -410,7 +421,7 @@ mod tests {
         let mut editor = Editor::new(three_monitors());
         // DP-1 moved onto DP-2.
         editor.edit(0, |state| state.x = 1920);
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         let dp2 = list.hits.iter().find(|hit| hit.output == 1).unwrap().bounds;
         // DP-2's centre (layout 2496,1024) is inside DP-1's pending place
         // (1920,360 to 3840,1440).
@@ -432,7 +443,13 @@ mod tests {
                 entry.id = OutputId::Connector(format!("DP-{}", n + 10));
                 snapshot.layout.entries.push(entry);
             }
-            let list = draw(&Editor::new(snapshot), WINDOW, &Theme::tokyo_night(), None);
+            let list = draw(
+                &Editor::new(snapshot),
+                WINDOW,
+                &Theme::tokyo_night(),
+                None,
+                KEYS,
+            );
             let tiles: Vec<_> = list.hits.iter().filter(|hit| hit.output >= 2).collect();
             assert_eq!(tiles.len(), disabled, "a hit region per tile");
             for tile in tiles {
@@ -453,13 +470,13 @@ mod tests {
     #[test]
     fn a_drag_onto_another_output() {
         let mut editor = Editor::new(three_monitors());
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         let dp1 = list.hits.iter().find(|hit| hit.output == 0).unwrap().bounds;
         let at = Point::new(dp1.x + dp1.width / 2.0, dp1.y + dp1.height / 2.0);
         assert!(editor.press(WINDOW, at));
         let scale = editor.drag_fit().unwrap().scale() as f32;
         editor.drag_to(Point::new(at.x + 600.0 * scale, at.y));
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None);
+        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS);
         let text = list.to_string();
         assert!(text.contains("#f7768e"), "an error outline:\n{text}");
         assert!(text.contains("overlaps DP-1"), "the bar says so:\n{text}");
@@ -471,7 +488,7 @@ mod tests {
     fn a_gap_is_a_warning_where_the_backend_allows_one() {
         let mut editor = Editor::new(three_monitors());
         editor.edit(0, |state| state.x = -500);
-        let text = draw(&editor, WINDOW, &Theme::tokyo_night(), None).to_string();
+        let text = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS).to_string();
         assert!(text.contains("#e0af68"), "a warning outline:\n{text}");
         assert_snapshot("gap-warning", &text);
     }
@@ -480,7 +497,13 @@ mod tests {
     #[test]
     fn a_message_takes_the_bar() {
         let editor = Editor::new(three_monitors());
-        let list = draw(&editor, WINDOW, &Theme::tokyo_night(), Some("Quit? y / n"));
+        let list = draw(
+            &editor,
+            WINDOW,
+            &Theme::tokyo_night(),
+            Some("Quit? y / n"),
+            KEYS,
+        );
         let bar = list.to_string();
         assert!(
             bar.contains(r##"#ff9e64 clip 0.0,768.0 1280.0x32.0 "Quit? y / n""##),

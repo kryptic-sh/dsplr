@@ -33,6 +33,30 @@ pub enum Backend {
     Wlr(wlr::Wlr),
 }
 
+/// Following a desktop's changes ([`Backend::watch`]).
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum Watch {
+    #[cfg(target_os = "linux")]
+    Hyprland(hyprland::Events),
+    #[cfg(target_os = "linux")]
+    Wlr(Box<wlr::Connection>),
+}
+
+impl Watch {
+    /// Waits, for as long as it takes, until the desktop says its outputs
+    /// may have changed. Cancel-safe, so it can wait beside other work in a
+    /// `tokio::select!`. An error ends the watch: the connection is gone.
+    pub async fn changed(&mut self) -> Result<(), Error> {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(ref mut events) => Ok(events.changed().await?),
+            #[cfg(target_os = "linux")]
+            Self::Wlr(ref mut connection) => Ok(connection.changed().await?),
+        }
+    }
+}
+
 /// What went wrong talking to the desktop.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -203,6 +227,19 @@ impl Backend {
                 wlr.compositor().await,
                 wlr::Compositor::Sway | wlr::Compositor::Niri
             ),
+        }
+    }
+
+    /// A way to follow the desktop's changes to its outputs: on wlroots a
+    /// connection of its own that dispatches the output manager's `done`
+    /// events, on Hyprland its event socket. Read the state again after each
+    /// [`Watch::changed`].
+    pub async fn watch(&self) -> Result<Watch, Error> {
+        match *self {
+            #[cfg(target_os = "linux")]
+            Self::Hyprland(ref hyprland) => Ok(Watch::Hyprland(hyprland.events().await?)),
+            #[cfg(target_os = "linux")]
+            Self::Wlr(ref wlr) => Ok(Watch::Wlr(Box::new(wlr.connect().await?))),
         }
     }
 

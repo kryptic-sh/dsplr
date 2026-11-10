@@ -18,7 +18,7 @@ mod scene;
 mod theme;
 
 pub use draw::{Bounds, Color, DrawList, Hit, Item, Point};
-pub use editor::{Direction, Editor, NUDGE_STEP, SNAP_DISTANCE, Snapshot, scale_choices};
+pub use editor::{Direction, Editor, NUDGE_STEP, Rebased, SNAP_DISTANCE, Snapshot, scale_choices};
 pub use fit::{BAR_HEIGHT, PANEL_WIDTH, Regions, regions};
 pub use scene::{Size, draw};
 pub use theme::Theme;

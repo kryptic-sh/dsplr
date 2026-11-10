@@ -280,6 +280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crcbl-font"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fff7b06e308facc10b51252f466eaeee17d4e27a11a749cd481bded005042fe"
+dependencies = [
+ "skrifa",
+]
+
+[[package]]
 name = "crcbl-frame"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -388,6 +397,7 @@ checksum = "9559486f92d669d0fb949796ddf5574f22a350ddcc773ef8773c73d6f9b20a34"
 dependencies = [
  "bytemuck",
  "crcbl-core",
+ "crcbl-font",
  "crcbl-image",
  "crcbl-reflect",
  "cssparser",
@@ -561,6 +571,7 @@ dependencies = [
  "hjkl-config",
  "serde",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -579,6 +590,7 @@ dependencies = [
  "crcbl-hal",
  "crcbl-shell",
  "crcbl-ui",
+ "dsplr-config",
  "dsplr-core",
  "dsplr-model",
  "glam",

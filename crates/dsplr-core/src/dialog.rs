@@ -8,7 +8,6 @@ use dsplr_model::Layout;
 
 use crate::draw::{Bounds, DrawList, Point};
 use crate::editor::on_canvas;
-use crate::panel::name;
 use crate::{Size, Theme};
 
 /// The dialog's size in logical pixels.
@@ -112,6 +111,43 @@ pub fn draw_dialog(output: Option<&str>, left: Duration, size: Size, theme: &The
     DialogFrame { list, buttons }
 }
 
+/// The identify overlay's size in logical pixels.
+pub const IDENTIFY_SIZE: Size = Size {
+    width: 560.0,
+    height: 168.0,
+};
+/// How long the identify overlay stays up.
+pub const IDENTIFY_TIME: Duration = Duration::from_secs(4);
+const IDENTIFY_NAME_SIZE: f32 = 52.0;
+const IDENTIFY_NAME_LINE: f32 = 64.0;
+
+/// The identify overlay for one monitor, in a window of `size`: its
+/// output's connector in large text, and its description under it.
+pub fn draw_identify(name: &str, description: Option<&str>, size: Size, theme: &Theme) -> DrawList {
+    let mut list = DrawList::default();
+    let window = Bounds::new(0.0, 0.0, size.width, size.height);
+    list.fill(window, theme.surface);
+    list.outline(window, BORDER, theme.accent);
+    let clip = window.inset(BORDER);
+    list.text(
+        Point::new(PAD, PAD),
+        name,
+        IDENTIFY_NAME_SIZE,
+        theme.text,
+        clip,
+    );
+    if let Some(description) = description {
+        list.text(
+            Point::new(PAD, PAD + IDENTIFY_NAME_LINE + 8.0),
+            description,
+            TITLE_SIZE,
+            theme.text_dim,
+            clip,
+        );
+    }
+    list
+}
+
 /// One of the window system's monitors, as dsplr matches it to an output.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
@@ -125,13 +161,13 @@ pub struct Screen {
     pub positions: Vec<Point>,
 }
 
-/// The name of the output of `layout` each of `screens` shows, `None` where
+/// The index in `layout` of the output each of `screens` shows, `None` where
 /// none matches: by connector where the screen has one, else an enabled
 /// output whose logical position is one of the screen's to within a pixel,
 /// its positions tried in order. A size is not compared: the window system
 /// may report a monitor's untransformed mode, which a turned output's
 /// logical size is not. Two outputs at one place (a mirror) name the first.
-pub fn match_screens(screens: &[Screen], layout: &Layout) -> Vec<Option<String>> {
+pub fn match_screens(screens: &[Screen], layout: &Layout) -> Vec<Option<usize>> {
     screens
         .iter()
         .map(|screen| {
@@ -139,18 +175,18 @@ pub fn match_screens(screens: &[Screen], layout: &Layout) -> Vec<Option<String>>
                 layout
                     .entries
                     .iter()
-                    .find(|entry| entry.connector() == Some(connector))
+                    .position(|entry| entry.connector() == Some(connector))
             });
             let by_place = || {
                 screen.positions.iter().find_map(|&at| {
-                    layout.entries.iter().find(|entry| {
+                    layout.entries.iter().position(|entry| {
                         on_canvas(&entry.state)
                             && near(entry.state.x, at.x)
                             && near(entry.state.y, at.y)
                     })
                 })
             };
-            by_connector.or_else(by_place).map(name)
+            by_connector.or_else(by_place)
         })
         .collect()
 }
@@ -186,6 +222,17 @@ mod tests {
             "rounded up:\n{text}"
         );
         assert_snapshot("dialog", &text);
+    }
+
+    #[test]
+    fn the_identify_overlay() {
+        let list = super::draw_identify(
+            "HDMI-A-1",
+            Some("AOC Q27G4 SERIAL0000001"),
+            super::IDENTIFY_SIZE,
+            &Theme::tokyo_night(),
+        );
+        assert_snapshot("identify", &list.to_string());
     }
 
     #[test]
@@ -226,13 +273,8 @@ mod tests {
         ];
         assert_eq!(
             match_screens(&screens, &layout),
-            [
-                Some("DP-2".to_owned()),
-                Some("DP-1".to_owned()),
-                None,
-                Some("DP-2".to_owned()),
-                Some("HDMI-A-1".to_owned()),
-            ]
+            [Some(1), Some(0), None, Some(1), Some(2)],
+            "DP-2, DP-1, none, DP-2, HDMI-A-1"
         );
     }
 }

@@ -6,24 +6,28 @@
 //! [`Request`]s; the backend thread does each with the same code as the
 //! CLI's commands (the confirm flow of [`apply::drive`], `dsplr save`'s and
 //! `dsplr save --profile`'s steps, `dsplr restore --revert`'s) and answers
-//! with [`Reply`]s. It does not follow the desktop's changes: it reads the
-//! displays again after each request, and when asked to.
+//! with [`Reply`]s. It reads the displays again after each request, when
+//! asked to, and after each change the desktop reports through
+//! [`Backend::watch`]. A watch that ends is not opened again: the bar says
+//! so, and Refresh and every request still read the displays
+//! (`docs/plan/02-architecture.md`).
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dsplr_backend::{Backend, Error};
+use dsplr_backend::{Backend, Error, Watch};
 use dsplr_core::flow::{self, Change, Outcome};
 use dsplr_core::link::{Answer, Question, Reply, Request};
 use dsplr_core::{Editor, Snapshot};
 use dsplr_model::Layout;
 use dsplr_persist::diff::line_diff;
 use dsplr_persist::profile::{self as store, ProfileName};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::apply::{self, Confirm};
 use crate::profile::{self, Blocked};
-use crate::{Exit, configured_timeout, find_backend, restore, runtime, save};
+use crate::{Exit, config, find_backend, restore, runtime, save};
 
 /// How long past the dialog's own timeout the backend thread waits for its
 /// answer before taking no answer as a revert: the window counts down and
@@ -34,10 +38,11 @@ const ANSWER_GRACE: Duration = Duration::from_secs(2);
 /// and runs it until the user quits. A desktop dsplr has no backend for, or
 /// displays it cannot read, end it before any window opens.
 pub fn run() -> Exit {
-    let confirm_timeout = match configured_timeout() {
-        Ok(timeout) => timeout,
+    let config = match config() {
+        Ok(config) => config,
         Err(exit) => return exit,
     };
+    let confirm_timeout = config.confirm.timeout();
     let (started, first) = mpsc::channel();
     let (requests, incoming) = mpsc::channel();
     let (answers, answered) = mpsc::channel();
@@ -48,7 +53,7 @@ pub fn run() -> Exit {
             .spawn(move || match runtime() {
                 Ok(runtime) => runtime.block_on(serve(
                     &started,
-                    (&incoming, &answered),
+                    (incoming, &answered),
                     &outgoing,
                     confirm_timeout,
                 )),
@@ -75,7 +80,7 @@ pub fn run() -> Exit {
         answers,
         replies,
     };
-    let exit = match dsplr_gui::run(Editor::new(snapshot), link) {
+    let exit = match dsplr_gui::run(Editor::new(snapshot), link, &config.keys) {
         Ok(()) => Exit::Success,
         Err(error) => {
             eprintln!("dsplr: {error}");
@@ -96,7 +101,7 @@ pub fn run() -> Exit {
 /// up, answering on `outgoing`; a confirm's answer comes on `answered`.
 async fn serve(
     started: &Sender<Result<Snapshot, Exit>>,
-    (incoming, answered): (&Receiver<Request>, &Receiver<Answer>),
+    (incoming, answered): (Receiver<Request>, &Receiver<Answer>),
     outgoing: &Sender<Reply>,
     confirm_timeout: Duration,
 ) {
@@ -121,13 +126,62 @@ async fn serve(
         confirm_timeout,
     };
     thread.profiles();
-    // A closed channel is the window gone: nothing left to do.
-    while let Ok(request) = incoming.recv() {
-        let outcome = thread.handle(request).await;
-        if outgoing.send(Reply::Done(outcome)).is_err() {
-            return;
+    let mut watch = match thread.backend.watch().await {
+        Ok(watch) => Some(watch),
+        Err(error) => {
+            thread.say(format!(
+                "cannot follow the displays' changes ({error}); Refresh reads them again"
+            ));
+            None
+        }
+    };
+    let mut requests = bridge(incoming);
+    loop {
+        tokio::select! {
+            request = requests.recv() => {
+                // A closed channel is the window gone: nothing left to do.
+                let Some(request) = request else {
+                    return;
+                };
+                let outcome = thread.handle(request).await;
+                if outgoing.send(Reply::Done(outcome)).is_err() {
+                    return;
+                }
+            }
+            changed = next_change(watch.as_mut()) => match changed {
+                Ok(()) => thread.refresh().await,
+                Err(error) => {
+                    thread.say(format!(
+                        "stopped following the displays' changes ({error}); Refresh reads them again"
+                    ));
+                    watch = None;
+                }
+            },
         }
     }
+}
+
+/// The next change `watch` reports; with no watch, never.
+async fn next_change(watch: Option<&mut Watch>) -> Result<(), dsplr_backend::Error> {
+    match watch {
+        Some(watch) => watch.changed().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The window's requests, from its std channel onto a tokio one, so the
+/// backend thread can wait on them and on the desktop's changes at once. The
+/// bridge ends when the window hangs up, and the channel closes with it.
+fn bridge(incoming: Receiver<Request>) -> UnboundedReceiver<Request> {
+    let (forward, requests) = tokio::sync::mpsc::unbounded_channel();
+    thread::spawn(move || {
+        while let Ok(request) = incoming.recv() {
+            if forward.send(request).is_err() {
+                return;
+            }
+        }
+    });
+    requests
 }
 
 /// Sends `reply` on `outgoing`. The only error is the window gone, which

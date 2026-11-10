@@ -233,8 +233,59 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
     backend.apply(&start).await.expect("sway applies it");
     assert_eq!(snapshot(&backend).await, start);
 
-    // Last, as a reload puts back whatever the saved file says.
+    // As a reload puts back whatever the saved file says.
     a_saved_layout_is_what_sway_reads_back_after_a_reload(&backend, &start).await;
+
+    // Last, as it adds an output and takes it away again.
+    a_watch_follows_hotplug_and_changes_made_elsewhere(&backend).await;
+}
+
+/// How long sway gets to report a change it was asked for.
+const CHANGE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The output manager's `done` follows an output plugged in, changed by
+/// another program, and unplugged: [`dsplr_backend::Watch::changed`] returns
+/// each time, and a snapshot then shows the change.
+async fn a_watch_follows_hotplug_and_changes_made_elsewhere(backend: &Backend) {
+    async fn changed(watch: &mut dsplr_backend::Watch, what: &str) {
+        tokio::time::timeout(CHANGE, watch.changed())
+            .await
+            .unwrap_or_else(|_| panic!("no change reported after {what}"))
+            .unwrap_or_else(|error| panic!("the watch failed after {what}: {error}"));
+    }
+    let before = snapshot(backend).await;
+    let mut watch = backend.watch().await.expect("a watch");
+
+    swaymsg(&["create_output"]);
+    changed(&mut watch, "create_output").await;
+    let plugged = snapshot(backend).await;
+    assert_eq!(
+        plugged.entries.len(),
+        before.entries.len() + 1,
+        "{plugged:#?}"
+    );
+    let new = plugged
+        .entries
+        .iter()
+        .map(|entry| entry.connector().expect("a connector").to_owned())
+        .find(|name| {
+            before
+                .entries
+                .iter()
+                .all(|old| old.connector() != Some(name))
+        })
+        .expect("the new output");
+
+    swaymsg(&["output", &new, "disable"]);
+    changed(&mut watch, "disable").await;
+    assert!(!entry(&snapshot(backend).await, &new).state.enabled);
+    swaymsg(&["output", &new, "enable"]);
+    changed(&mut watch, "enable").await;
+    assert!(entry(&snapshot(backend).await, &new).state.enabled);
+
+    swaymsg(&["output", &new, "unplug"]);
+    changed(&mut watch, "unplug").await;
+    assert_eq!(snapshot(backend).await.entries.len(), before.entries.len());
 }
 
 /// Saves a layout, changes the outputs at runtime only, and reloads: sway

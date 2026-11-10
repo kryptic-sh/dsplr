@@ -314,7 +314,7 @@ async fn set(output: &str, changes: &set::Changes, args: &ApplyArgs) -> Exit {
 fn apply_options(args: &ApplyArgs) -> Result<apply::Options, Exit> {
     let confirm_timeout = match args.confirm_timeout {
         Some(secs) => Duration::from_secs(secs.get().into()),
-        None => configured_timeout()?,
+        None => config()?.confirm.timeout(),
     };
     Ok(apply::Options {
         yes: args.yes,
@@ -323,11 +323,11 @@ fn apply_options(args: &ApplyArgs) -> Result<apply::Options, Exit> {
     })
 }
 
-/// The confirm timeout `config.toml` sets, or the default; when the config
-/// cannot be read, the error reported and the exit code.
-fn configured_timeout() -> Result<Duration, Exit> {
+/// `config.toml`'s settings, or the defaults; when the config cannot be
+/// read, the error reported and the exit code.
+fn config() -> Result<Config, Exit> {
     match Config::load() {
-        Ok((config, _)) => Ok(config.confirm.timeout()),
+        Ok((config, _)) => Ok(config),
         Err(error) => {
             eprintln!("dsplr: {error}");
             Err(Exit::Failure)

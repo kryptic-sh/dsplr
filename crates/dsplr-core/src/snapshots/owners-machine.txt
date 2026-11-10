@@ -10,6 +10,6 @@ text 32.0,700.0 15 #a9b1d6 clip 24.0,692.0 168.0x52.0 "eDP-1"
 text 32.0,718.0 13 #565f89 clip 24.0,692.0 168.0x52.0 "disabled"
 fill 0.0,768.0 1280.0x32.0 #16161e
 fill 0.0,768.0 1280.0x1.0 #292e42
-text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "hyprland  ·  drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  u / C-r undo / redo  ·  q quit"
+text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "hyprland  ·  drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  i identify  ·  a apply  ·  s save  ·  u C-r undo / redo  ·  q quit"
 hit 24.0,89.5 912.0x513.0 output 1
 hit 24.0,692.0 168.0x52.0 output 0

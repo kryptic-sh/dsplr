@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 
 use crcbl_app::text_input::TextPump;
 use crcbl_shell::{
-    ButtonState, CloseReply, CursorIcon, Keysym, Modifiers, PointerButton, Shell, ShellEvent,
-    WindowId,
+    ButtonState, CloseReply, CursorIcon, Keysym, Modifiers, PointerButton, Shell, ShellCaps,
+    ShellEvent, WindowId,
 };
 use crcbl_ui::draw_list::DrawList;
 use crcbl_ui::font::Font;
@@ -34,9 +34,10 @@ use glam::Vec2;
 
 use crate::confirm::Confirming;
 use crate::gpu::Gpu;
-use crate::keys::{self, Action};
+use crate::identify::Identifying;
+use crate::keys::{self, Action, Keymap};
 use crate::panel::{self as panel_ui, ActionDrafts, Actions, Built, Change, Command, Drafts};
-use crate::{GuiError, paint};
+use crate::{GuiError, fonts, paint};
 
 /// How long to wait for the window system after an out-of-date swapchain
 /// before drawing again: a new size is usually on its way.
@@ -70,7 +71,8 @@ pub struct MainWindow<'a> {
     window: WindowId,
     editor: Editor,
     theme: Theme,
-    font: &'static Font,
+    /// The face it writes in: the system's sans-serif, else dsplr's own.
+    font: Font,
     /// crcbl's built-in glyph atlas, which its UI pass takes alongside the
     /// parsed font's glyphs.
     atlas: FontAtlas,
@@ -110,6 +112,12 @@ pub struct MainWindow<'a> {
     action_drafts: ActionDrafts,
     /// The confirm dialogs, while a change waits for its answer.
     confirming: Option<Confirming>,
+    /// What the canvas's keys do.
+    keymap: Keymap,
+    /// The identify overlay, while it is up.
+    identifying: Option<Identifying>,
+    /// Identify was asked for: the loop opens it, which needs the GPU.
+    identify_asked: bool,
 }
 
 /// What the loop does after an event.
@@ -124,23 +132,30 @@ enum Step {
 }
 
 impl<'a> MainWindow<'a> {
-    /// The window on `editor`, talking to the backend thread on `channels`.
+    /// The window on `editor`, talking to the backend thread on `channels`,
+    /// its canvas's keys as `keymap` binds them.
     pub fn new(
         shell: &'a mut dyn Shell,
         window: WindowId,
-        editor: Editor,
+        (editor, keymap): (Editor, Keymap),
         extent: (u32, u32),
         channels: Channels,
     ) -> Self {
         let theme = Theme::tokyo_night();
         let mut ui = Ui::new();
         ui.add_stylesheet("dsplr", &panel_ui::stylesheet(&theme));
+        let faces = fonts::system_sans();
+        let mut notice = faces.note;
+        if let Err(error) = ui.register_font(fonts::FAMILY, faces.face.clone()) {
+            notice = Some(format!("the panel writes in the bitmap font: {error}"));
+        }
+        ui.set_fallback_fonts(faces.fallbacks);
         Self {
             shell,
             window,
             editor,
             theme,
-            font: Font::sans(),
+            font: faces.face,
             atlas: FontAtlas::built_in(),
             list: DrawList::new(),
             ui,
@@ -154,7 +169,7 @@ impl<'a> MainWindow<'a> {
             last_frame: Instant::now(),
             cursor: Some(CursorIcon::Default),
             quitting: false,
-            notice: None,
+            notice,
             channels,
             backend_gone: false,
             busy: false,
@@ -162,12 +177,29 @@ impl<'a> MainWindow<'a> {
             question: None,
             action_drafts: ActionDrafts::default(),
             confirming: None,
+            keymap,
+            identifying: None,
+            identify_asked: false,
         }
     }
 
     /// Runs until the user quits, drawing with `gpu`, which presents to the
-    /// window. `early` are events pumped before the loop started.
-    pub fn run(&mut self, gpu: &mut Gpu, mut early: Vec<ShellEvent>) -> Result<(), GuiError> {
+    /// window. `early` are events pumped before the loop started. Ended by an
+    /// error, it closes the dialogs and the overlay as a quit does, their
+    /// surfaces before the caller destroys `gpu`'s device, and returns the
+    /// error.
+    pub fn run(&mut self, gpu: &mut Gpu, early: Vec<ShellEvent>) -> Result<(), GuiError> {
+        let outcome = self.run_loop(gpu, early);
+        if outcome.is_err()
+            && let Err(error) = self.close()
+        {
+            // The error that ended the loop is the one returned.
+            eprintln!("dsplr: closing the dialogs after an error: {error}");
+        }
+        outcome
+    }
+
+    fn run_loop(&mut self, gpu: &mut Gpu, mut early: Vec<ShellEvent>) -> Result<(), GuiError> {
         let mut dirty = true;
         loop {
             let mut events = std::mem::take(&mut early);
@@ -181,6 +213,15 @@ impl<'a> MainWindow<'a> {
                         continue;
                     }
                     if event.window().is_some_and(|window| confirming.owns(window)) {
+                        continue;
+                    }
+                }
+                if let Some(identifying) = &mut self.identifying {
+                    identifying.handle(&event)?;
+                    if event
+                        .window()
+                        .is_some_and(|window| identifying.owns(window))
+                    {
                         continue;
                     }
                 }
@@ -212,12 +253,24 @@ impl<'a> MainWindow<'a> {
                 self.confirming = Some(confirming);
                 early.extend(events);
             }
+            if std::mem::take(&mut self.identify_asked) {
+                early.extend(self.identify(gpu)?);
+                dirty = true;
+            }
+            if self.identifying.as_ref().is_some_and(Identifying::expired)
+                && let Some(identifying) = self.identifying.take()
+            {
+                identifying.close(self.shell)?;
+            }
+            if let Some(identifying) = &mut self.identifying {
+                identifying.present(self.shell, &self.theme, &self.font, &self.atlas)?;
+            }
             if self.confirming.as_ref().is_some_and(Confirming::expired) {
                 self.answer(false)?;
                 dirty = true;
             }
             if let Some(confirming) = &mut self.confirming {
-                confirming.present(self.shell, &self.theme, self.font, &self.atlas)?;
+                confirming.present(self.shell, &self.theme, &self.font, &self.atlas)?;
             }
             if dirty && gpu.frame_due() {
                 let pointer = PointerInput {
@@ -249,12 +302,16 @@ impl<'a> MainWindow<'a> {
     /// it, or the panel's next tick.
     fn timeout(&self) -> Option<Duration> {
         let countdown = self.confirming.as_ref().map(Confirming::next_tick);
+        let identify = self.identifying.as_ref().map(Identifying::left);
         let poll = (self.busy && !self.channels.wakes).then_some(REPLY_POLL);
         let over_panel = regions(&self.editor, self.size())
             .panel
             .contains(self.pointer);
         let tick = (over_panel || self.ui.text_editing()).then_some(UI_TICK);
-        [countdown, poll, tick].into_iter().flatten().min()
+        [countdown, identify, poll, tick]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Whether the frame is drawn again after a wait that had a timeout.
@@ -267,7 +324,32 @@ impl<'a> MainWindow<'a> {
         if self.confirming.is_some() {
             self.answer(false)?;
         }
+        if let Some(identifying) = self.identifying.take() {
+            identifying.close(self.shell)?;
+        }
         Ok(())
+    }
+
+    /// Opens the identify overlay on the live layout, in place of one up
+    /// already. Returns the events pumped meanwhile.
+    fn identify(&mut self, gpu: &Gpu) -> Result<Vec<ShellEvent>, GuiError> {
+        if let Some(identifying) = self.identifying.take() {
+            identifying.close(self.shell)?;
+        }
+        if !self.shell.caps().contains(ShellCaps::PANEL) {
+            self.notice = Some(
+                "identify is unsupported here: this window system has no panels to show it on"
+                    .to_owned(),
+            );
+            return Ok(Vec::new());
+        }
+        let live = self.editor.live().clone();
+        let (identifying, events, skipped) = Identifying::open(self.shell, gpu, &live);
+        if let Some(last) = skipped.last() {
+            self.notice = Some(last.clone());
+        }
+        self.identifying = identifying;
+        Ok(events)
     }
 
     /// Takes the backend thread's replies waiting, up to a confirm, which it
@@ -320,9 +402,14 @@ impl<'a> MainWindow<'a> {
     /// and the layout applied) for the loop to open the dialogs with.
     fn reply(&mut self, reply: Reply) -> Option<Asked> {
         match reply {
-            // Edits stay over a change that was not kept; a kept one's
-            // `Done` clears them.
-            Reply::Snapshot(snapshot) => self.editor.rebase(snapshot, true),
+            // Edits stay over a change that was not kept, and over the
+            // desktop's own changes where their outputs are still there; a
+            // kept change's `Done` clears them.
+            Reply::Snapshot(snapshot) => {
+                if let Some(notice) = self.editor.rebase(snapshot, true).notice() {
+                    self.notice = Some(notice);
+                }
+            }
             Reply::Profiles(names) => self.profiles = names,
             // The bar has one line.
             Reply::Message(line) => self.notice = Some(line.replace('\n', "  ")),
@@ -337,7 +424,9 @@ impl<'a> MainWindow<'a> {
                 self.busy = false;
                 if outcome == Some(Outcome::Kept) {
                     let live = self.editor.snapshot().clone();
-                    self.editor.rebase(live, false);
+                    // Nothing pending is left to drop or keep.
+                    let rebased = self.editor.rebase(live, false);
+                    debug_assert_eq!(rebased, dsplr_core::Rebased::default());
                 }
             }
         }
@@ -403,6 +492,10 @@ impl<'a> MainWindow<'a> {
                 replace: false,
             }),
             Command::Restore(name) => self.request(Request::Restore(name)),
+            Command::Identify => {
+                self.identify_asked = true;
+                true
+            }
             Command::Revert => self.request(Request::Revert),
             Command::Refresh => self.request(Request::Refresh),
             Command::Approve => match self.question.take() {
@@ -566,7 +659,7 @@ impl<'a> MainWindow<'a> {
                 Step::Idle
             });
         }
-        Ok(match keys::action(keysym, modifiers) {
+        Ok(match self.keymap.action(keysym, modifiers) {
             Some(action) => self.act(action),
             None => Step::Idle,
         })
@@ -597,6 +690,7 @@ impl<'a> MainWindow<'a> {
             Action::ToggleEnabled => on_selected(editor, &|e, i| e.toggle_enabled(i)),
             Action::Undo => editor.undo(),
             Action::Redo => editor.redo(),
+            Action::Identify => self.command(Command::Identify),
             Action::Apply => self.command(Command::Apply),
             Action::Save => self.command(Command::Save),
             Action::Quit => return self.quit(),
@@ -692,10 +786,10 @@ impl<'a> MainWindow<'a> {
         } else {
             prompt.as_deref().or(self.notice.as_deref())
         };
-        let scene = draw(&self.editor, size, &self.theme, message);
+        let scene = draw(&self.editor, size, &self.theme, message, self.keymap.hint());
         self.list.clear();
         self.list.set_scale(self.scale);
-        paint::paint(&scene, &mut self.list, self.font);
+        paint::paint(&scene, &mut self.list, &self.font);
         self.ui.emit(&mut self.list);
 
         self.pump.serve(
@@ -811,7 +905,7 @@ mod tests {
     use dsplr_core::flow::Outcome;
     use dsplr_core::link::{Reply, Request};
 
-    use super::{Channels, MainWindow};
+    use super::{Channels, Keymap, MainWindow};
 
     /// The window's ends of a link, and the backend thread's.
     fn link() -> (Channels, Receiver<Request>, Sender<Reply>) {
@@ -868,7 +962,13 @@ mod tests {
         let mut shell = HeadlessShell::new();
         let window = shell.create_window(&WindowDesc::default()).unwrap();
         let (link, _sent, _reply) = link();
-        let mut main = MainWindow::new(&mut shell, window, editor(), (1280, 800), link);
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
         assert_eq!(main.editor.selected(), Some(0));
         for event in typed(&[KeyCode::KeyL, KeyCode::KeyL, KeyCode::KeyL]) {
             main.handle(event).unwrap();
@@ -881,7 +981,13 @@ mod tests {
         let mut shell = HeadlessShell::new();
         let window = shell.create_window(&WindowDesc::default()).unwrap();
         let (link, _sent, _reply) = link();
-        let mut main = MainWindow::new(&mut shell, window, editor(), (1280, 800), link);
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
         let at_rest = PointerInput::hovering(Vec2::new(-1.0, -1.0));
         main.frame(at_rest).unwrap();
         assert_eq!(main.drafts.output(), Some(0));
@@ -899,7 +1005,13 @@ mod tests {
         let mut shell = HeadlessShell::new();
         let window = shell.create_window(&WindowDesc::default()).unwrap();
         let (link, sent, reply) = link();
-        let mut main = MainWindow::new(&mut shell, window, editor(), (1280, 800), link);
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
 
         for event in typed(&[KeyCode::KeyA]) {
             main.handle(event).unwrap();
@@ -951,7 +1063,13 @@ mod tests {
         let mut shell = HeadlessShell::new();
         let window = shell.create_window(&WindowDesc::default()).unwrap();
         let (link, sent, _reply) = link();
-        let mut main = MainWindow::new(&mut shell, window, editor(), (1280, 800), link);
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
         let question = Question {
             what: "/h/.config/sway/outputs".into(),
             notes: vec!["was not written by dsplr".into()],
@@ -984,7 +1102,13 @@ mod tests {
         let mut shell = HeadlessShell::new();
         let window = shell.create_window(&WindowDesc::default()).unwrap();
         let (link, sent, reply) = link();
-        let mut main = MainWindow::new(&mut shell, window, editor(), (1280, 800), link);
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
         for event in typed(&[KeyCode::KeyL, KeyCode::KeyA]) {
             main.handle(event).unwrap();
         }
@@ -1007,5 +1131,35 @@ mod tests {
             main.handle(event).unwrap();
         }
         assert!(sent.try_recv().is_err(), "nothing sent to it");
+    }
+
+    /// The desktop's own change arrives as a snapshot: an output gone takes
+    /// its pending edits with it, and the bar says so.
+    #[test]
+    fn an_output_gone_from_the_desktop_drops_its_edits_with_a_note() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        // DP-1 is selected first: move it.
+        for event in typed(&[KeyCode::KeyL]) {
+            main.handle(event).unwrap();
+        }
+        assert!(main.editor.has_pending());
+        let mut unplugged = main.editor.snapshot().clone();
+        unplugged.layout.entries.remove(0);
+        reply.send(Reply::Snapshot(unplugged)).unwrap();
+        main.receive().unwrap();
+        assert!(!main.editor.has_pending(), "DP-1's edit went with it");
+        assert_eq!(
+            main.notice.as_deref(),
+            Some("DP-1 went away, and the pending edits to it with it")
+        );
     }
 }

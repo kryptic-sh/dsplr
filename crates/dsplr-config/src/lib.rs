@@ -1,15 +1,18 @@
 //! dsplr's own settings, read from `$XDG_CONFIG_HOME/dsplr/config.toml`.
 //!
-//! What is here: the confirm timeout override. Every key is optional, and a
-//! missing file means the defaults; an unknown key is an error, so a typo is
-//! reported rather than ignored. The theme, keys and the other settings in
-//! `docs/plan/02-architecture.md` are added with the code that reads them.
+//! What is here: the confirm timeout override and the GUI's keys
+//! ([`keys`]). Every key is optional, and a missing file means the defaults;
+//! an unknown key is an error, so a typo is reported rather than ignored.
+//! The theme and the other settings in `docs/plan/02-architecture.md` are
+//! added with the code that reads them.
 
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
+
+pub mod keys;
 
 pub use hjkl_config::{ConfigError, ConfigSource};
 
@@ -23,6 +26,7 @@ pub const CONFIRM_TIMEOUT_SECS: NonZeroU32 = NonZeroU32::new(20).unwrap();
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub confirm: Confirm,
+    pub keys: keys::Keys,
 }
 
 /// The `[confirm]` table: the keep-or-revert prompt after a change.
@@ -117,6 +121,34 @@ mod tests {
         assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
         let error = load("[confrim]\ntimeout_secs = 45\n").unwrap_err();
         assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
+    }
+
+    #[test]
+    fn a_key_can_be_rebound_and_the_others_keep_theirs() {
+        let config = load("[keys]\nnudge_left = [\"Left\", \"h\"]\nredo = [\"C-y\"]\n").unwrap();
+        let names = |list: &[super::keys::KeySpec]| {
+            list.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&config.keys.nudge_left), ["Left", "h"]);
+        assert_eq!(names(&config.keys.redo), ["C-y"]);
+        assert_eq!(names(&config.keys.undo), ["u"], "the default");
+    }
+
+    #[test]
+    fn an_unknown_action_or_key_or_a_key_bound_twice_is_refused() {
+        for (text, says) in [
+            ("[keys]\nnudge_sideways = [\"h\"]\n", "nudge_sideways"),
+            ("[keys]\nundo = [\"Ctrl-z\"]\n", "is not a key"),
+            ("[keys]\nundo = [\"S-u\"]\n", "Shift is part of a character"),
+            ("[keys]\nundo = [\"r\"]\n", "bound to both"),
+        ] {
+            let error = load(text).unwrap_err();
+            assert!(
+                matches!(error, ConfigError::Parse { .. }),
+                "{text}: {error}"
+            );
+            assert!(error.to_string().contains(says), "{text}: {error}");
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@ mod transform;
 mod validate;
 
 pub use arrange::PositionOutOfRange;
-pub use assign::assign;
+pub use assign::{assign, pair};
 pub use capabilities::Capabilities;
 pub use compare::{Difference, Setting};
 pub use id::OutputId;

@@ -58,6 +58,25 @@ and this project adheres to
   not write or one edited by hand. The panel also saves the displays as a named
   profile, restores a profile through the same flow, goes back to the revert
   point, and reads the displays again.
+- The GUI follows the desktop: an output plugged in, unplugged, turned on or off
+  or changed by another program shows up in the window as it happens (on
+  Hyprland, a monitor added or removed and a config reload; a rule changed with
+  `hyprctl eval` or `keyword` shows on Refresh). Pending edits survive it
+  setting by setting: what you changed keeps your value (the bar says so when
+  the desktop changed it too), everything else follows the desktop, and edits to
+  an output that went away are dropped, which the bar also says. A drag goes on
+  through it. If the window stops being able to follow the desktop, the bar says
+  so and Refresh still reads it.
+- `i` (or Identify) shows each output's connector and description in large text
+  on that output for a few seconds. Where the window system has no panels, the
+  bar says identify is unsupported there.
+- The GUI's keys are configurable in `config.toml`'s `[keys]` table, one list of
+  keys per action (`nudge_left = ["Left", "h"]`, `redo = ["C-y"]`); an action
+  left out keeps its default. An unknown action, an unknown key name or one key
+  bound to two actions is an error naming it. The bar's key hint follows the
+  configured keys.
+- The GUI writes in the system's sans-serif font, with its fallbacks for
+  characters it lacks, and in its own built-in font where the system has none.
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive
   sync and available modes (a refresh the desktop did not report reads as
   `refresh unknown`, not `0 Hz`); `dsplr list --json` prints the same layout in

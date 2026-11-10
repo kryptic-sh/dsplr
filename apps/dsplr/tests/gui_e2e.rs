@@ -1,6 +1,7 @@
 //! The GUI's Apply against a real, headless sway: a change kept with Enter in
-//! the confirm dialogs, one left to time out, and one whose dsplr is killed
-//! mid-confirm, which its watchdog reverts.
+//! the confirm dialogs, one left to time out, one whose dsplr is killed
+//! mid-confirm, which its watchdog reverts, and an output plugged in while
+//! the window is open, which it follows without losing the pending edit.
 //!
 //! Run through the harness, with Mesa's software Vulkan (lavapipe) and
 //! `wtype` installed:
@@ -87,22 +88,26 @@ fn start_gui() -> Running {
     )
 }
 
-/// HEADLESS-1's scale, as `dsplr list --json` reads it.
-fn scale() -> f64 {
+/// The layout, as `dsplr list --json` reads it.
+fn layout() -> Layout {
     let output = Command::new(dsplr_bin())
         .args(["list", "--json"])
         .output()
         .expect("dsplr list runs");
     assert!(output.status.success(), "{output:?}");
-    let layout = Layout::from_json(&String::from_utf8_lossy(&output.stdout)).expect("a layout");
-    entry(&layout, "HEADLESS-1").state.scale
+    Layout::from_json(&String::from_utf8_lossy(&output.stdout)).expect("a layout")
 }
 
 /// Waits up to `limit` for HEADLESS-1's scale to be `want`.
 fn until_scale(want: f64, limit: Duration, what: &str) {
+    until_scale_of("HEADLESS-1", want, limit, what);
+}
+
+/// Waits up to `limit` for `output`'s scale to be `want`.
+fn until_scale_of(output: &str, want: f64, limit: Duration, what: &str) {
     let deadline = Instant::now() + limit;
     loop {
-        let now = scale();
+        let now = entry(&layout(), output).state.scale;
         if (now - want).abs() < 1e-6 {
             return;
         }
@@ -164,4 +169,37 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
         !revert_point.exists(),
         "the watchdog removes the revert point"
     );
+
+    // Plugged in while the window is open: it shows up, Tab reaches it, and
+    // the edit made before it came is still pending.
+    let gui = start_gui();
+    std::thread::sleep(STARTUP);
+    wtype(&["+"]);
+    let before = layout().entries.len();
+    let status = Command::new("swaymsg")
+        .arg("create_output")
+        .status()
+        .unwrap();
+    assert!(status.success(), "swaymsg create_output");
+    let plugged = layout();
+    assert_eq!(plugged.entries.len(), before + 1, "a new output");
+    let new = plugged
+        .entries
+        .iter()
+        .filter_map(|e| e.output.as_ref().map(|o| o.connector.clone()))
+        .find(|name| name != "HEADLESS-1")
+        .expect("the new output");
+    std::thread::sleep(Duration::from_secs(2));
+    wtype(&["-k", "Tab"]);
+    wtype(&["+"]);
+    wtype(&["a"]);
+    until_scale_of(&new, 1.25, STEP, "the plugged output's edit");
+    until_scale(1.5, STEP, "the edit made before it came");
+    wtype(&["-k", "Return"]);
+    std::thread::sleep(Duration::from_secs(CONFIRM_SECS + 2));
+    until_scale_of(&new, 1.25, STEP, "kept");
+    wtype(&["q"]);
+    let mut gui = gui;
+    let status = gui.0.wait().unwrap();
+    assert!(status.success(), "quit after the hotplug: {status}");
 }

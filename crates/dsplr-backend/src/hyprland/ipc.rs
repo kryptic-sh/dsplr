@@ -75,6 +75,11 @@ impl Hyprland {
         })
     }
 
+    /// Its event socket, opened, to follow the outputs' changes.
+    pub async fn events(&self) -> Result<super::Events, Error> {
+        super::Events::open(&self.socket_dir.join(".socket2.sock")).await
+    }
+
     /// Hyprland's version, such as `0.56.2`. Also how detection checks that
     /// the socket answers.
     pub async fn version(&self) -> Result<String, Error> {

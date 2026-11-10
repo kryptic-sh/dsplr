@@ -38,7 +38,7 @@ impl Backend {
     pub fn test(&mut self, layout: &Layout) -> Result<(), BackendError>;
     pub fn apply(&mut self, layout: &Layout) -> Result<(), BackendError>;
     pub fn persist(&self, layout: &Layout, approved: Option<&str>) -> Result<Persisted, BackendError>;
-    // plus a change stream feeding the backend thread's loop
+    pub async fn watch(&self) -> Result<Watch, Error>; // the change stream
 }
 ```
 
@@ -83,7 +83,11 @@ So:
   `wlr-output-management` connection dsplr already holds: its `head` events and
   `done` fire for any mode, scale or position change, made by any tool, which
   `monitoraddedv2` / `monitorremovedv2` / `configreloaded` on `.socket2.sock`
-  would miss. Each `done` triggers a fresh `j/monitors all`.
+  would miss. Each `done` triggers a fresh `j/monitors all`. As built (M3): the
+  Hyprland backend holds no `wlr-output-management` connection (it applies
+  through `eval`), so its change stream is `.socket2.sock`'s monitor and reload
+  events (`hyprland::Events`), and a rule changed by another program through
+  `eval` or `keyword` is not followed; the backlog has the choice.
 - **Apply** through `wlr-output-management` (shared code with `Wlr`): atomic
   apply and adaptive sync, but no real test. Fields the protocol cannot express
   (mirroring, bit depth, colour-management preset) go through

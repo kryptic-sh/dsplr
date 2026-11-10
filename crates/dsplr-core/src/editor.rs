@@ -1,15 +1,18 @@
 //! The editor's state: the live layout the backend reported, the pending
 //! layout the user is editing over it, undo and redo over the pending edits,
-//! and which output is selected. The edits themselves are in `edits`, and
-//! dragging on the canvas in `drag`.
+//! and which output is selected. The edits themselves are in `edits`,
+//! dragging on the canvas in `drag`, and taking a new read of the desktop
+//! under the pending edits in `rebase`.
 
 mod drag;
 mod edits;
+mod rebase;
 
 use dsplr_model::{Capabilities, Layout, OutputState};
 
 pub use drag::SNAP_DISTANCE;
 pub use edits::{Direction, NUDGE_STEP, scale_choices};
+pub use rebase::Rebased;
 
 /// The desktop's state as the backend thread reports it
 /// (`docs/plan/02-architecture.md`): the layout, and what the backend that
@@ -55,30 +58,6 @@ impl Editor {
         };
         editor.selected = editor.order().first().copied();
         editor
-    }
-
-    /// Takes `snapshot`, the desktop as read again, as the live layout. The
-    /// pending edits stay when `keep_pending` and the snapshot has the same
-    /// outputs in the same order (a change declined, a refresh); otherwise
-    /// the pending layout starts again from the new live one, and the undo
-    /// history goes with the old one. A drag under way ends where it was.
-    pub fn rebase(&mut self, snapshot: Snapshot, keep_pending: bool) {
-        self.cancel_drag();
-        let same_outputs = snapshot.layout.entries.len() == self.pending.entries.len()
-            && snapshot
-                .layout
-                .entries
-                .iter()
-                .zip(&self.pending.entries)
-                .all(|(new, old)| new.id == old.id);
-        if !(keep_pending && same_outputs) {
-            self.pending = snapshot.layout.clone();
-            self.undo.clear();
-            self.redo.clear();
-        }
-        self.snapshot = snapshot;
-        let selected = self.selected;
-        self.select(selected);
     }
 
     pub const fn snapshot(&self) -> &Snapshot {
@@ -331,34 +310,6 @@ mod tests {
         assert!(!editor.redo());
         assert_eq!(editor.pending().entries[1].state.x, 1920);
         assert_eq!(editor.pending().entries[1].state.y, 100);
-    }
-
-    #[test]
-    fn a_new_snapshot_keeps_or_drops_the_pending_edits() {
-        let mut editor = editor();
-        editor.edit(1, |state| state.x = 2000);
-        let mut read = editor.snapshot().clone();
-        read.layout.entries[2].state.x = 50;
-
-        // Kept: the edit stays over the new live layout.
-        editor.rebase(read.clone(), true);
-        assert_eq!(editor.live().entries[2].state.x, 50);
-        assert_eq!(editor.pending().entries[1].state.x, 2000);
-        assert!(editor.undo(), "and can still be undone");
-
-        // Dropped: the pending layout is the live one, with no history.
-        editor.redo();
-        editor.rebase(read.clone(), false);
-        assert!(!editor.has_pending());
-        assert!(!editor.undo());
-
-        // Other outputs: dropped whatever was asked.
-        editor.edit(1, |state| state.x = 2000);
-        read.layout.entries.pop();
-        editor.select(Some(2));
-        editor.rebase(read, true);
-        assert!(!editor.has_pending());
-        assert_eq!(editor.selected(), None, "the selected output is gone");
     }
 
     #[test]

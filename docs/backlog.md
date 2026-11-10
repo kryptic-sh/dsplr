@@ -43,16 +43,20 @@ niri's config (`dsplr_persist::niri::save`); both niri e2e tests
 (2026-11-10), each alone and both in one harness in either order. The CI job is
 added and has not run yet.
 
-M3 (the GUI) is under way. `dsplr` with no command reads the displays on a
-backend thread and opens a crcbl window showing the canvas (outputs at their
-logical sizes, the tray of disabled ones, pending edits as outlines, validation
-problems in red and yellow) and an editable property panel (crcbl-ui widgets).
-Edits are pending, each undoable: dragging with snapping, the key table's moves,
-turns, scale steps and on/off, and the panel's fields; quitting with pending
-edits asks. `dsplr-core` holds the editor and builds a platform-free draw list
-with snapshot tests. It ran in `tests/e2e/headless-sway.sh` on Mesa's lavapipe
-(2026-11-10). Apply and save from the window, and the rest M3 still needs, are
-listed in `docs/plan/06-gui.md` ("Still to build in M3").
+M3 (the GUI) is built but for its exit check, the owner switching from
+nwg-displays. `dsplr` with no command reads the displays on a backend thread and
+opens a crcbl window showing the canvas (outputs at their logical sizes, the
+tray of disabled ones, pending edits as outlines, validation problems in red and
+yellow) and an editable property panel (crcbl-ui widgets). Edits are pending,
+each undoable: dragging with snapping, the key table's moves, turns, scale steps
+and on/off, and the panel's fields; quitting with pending edits asks.
+`dsplr-core` holds the editor and builds a platform-free draw list with snapshot
+tests. It ran in `tests/e2e/headless-sway.sh` on Mesa's lavapipe (2026-11-10).
+Apply, save, revert and profiles run the CLI's confirm flow from the window,
+with a confirm dialog per monitor; `i` shows each output's name on it; the
+backend thread follows the desktop's changes (`Backend::watch`); keys are
+rebound in `config.toml`'s `[keys]`; text is the system's sans-serif. What M3
+still lists is in `docs/plan/06-gui.md` ("Still to build in M3").
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -237,15 +241,22 @@ milestone:
   a real change stream. Moving any field onto it is a decision, since
   wlr-applied state overrides Hyprland's rules until restart (Hyprland facts
   below). Whether an `eval` mirror survives a protocol apply is unchecked.
-- **No change stream yet**: every `wlr` read, test and apply opens its own
-  connection (`Wlr::connect`) and closes it, so the serial guards only the
-  instant between reading the heads and sending the configuration, and a change
-  made after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
-  The GUI's backend thread (`apps/dsplr/src/gui.rs`) exists but reads one
-  snapshot and ends; holding one `wlr::Connection` there and following its
-  `done` events, waking the window with crcbl's waker (C4), is still M3's.
-  `Connection` reads nothing between calls today; it would need a dispatch loop
-  for that.
+- **Hyprland's change stream misses rule changes; owner's call**: the GUI
+  follows Hyprland through `.socket2.sock` (`hyprland::Events`: monitor added or
+  removed, config reloaded), as asked for M3, which carries no event for a
+  monitor rule changed with `hyprctl eval` / `keyword` by another program, so
+  the window shows such a change only on Refresh or after its own next request.
+  Plan 04 meant `wlr-output-management`'s `done` events instead, which see any
+  change; that is a `wlr::Connection` held on Hyprland for watching only
+  (`Watch::Wlr` already does it on wlroots), at the cost of a second connection
+  and Hyprland's protocol support becoming a dependency of the GUI. Options:
+  keep socket2, switch to wlr, or both. Only tested against a fake socket
+  (`hyprland::events` tests); never run on a real or headless Hyprland.
+- **Each `wlr` request still opens its own connection**: `Watch::Wlr` holds one
+  `wlr::Connection` for following changes, but every read, test and apply opens
+  its own (`Wlr::connect`) and closes it, so the serial guards only the instant
+  between reading the heads and sending the configuration, and a change made
+  after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
 - **A scale that is not a 256th is reported as changed after every `wlr`
   apply**: `set_scale` takes a `wl_fixed`, so 1.3 arrives as 1.30078125, and
   `Layout::differences` compares within `SCALE_EPSILON`. `dsplr apply` then
@@ -371,31 +382,57 @@ milestone:
   for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
-- **The rest of the GUI (M3)**: the identify overlay and `i`, configurable keys,
-  system fonts, the backend thread following the desktop's changes (it reads
-  them again after each request and on Refresh), reaching the panel's widgets
-  from the keyboard (Tab selects outputs; the widgets take the pointer, and keys
-  only once a field or list is engaged), and a place for the backend thread's
-  messages beyond the last (the bar shows one line, so `dsplr save`'s include
-  note can hide its "saved to"). Listed in `docs/plan/06-gui.md` ("Still to
-  build in M3").
+- **The rest of the GUI (M3)**: reaching the panel's widgets from the keyboard
+  (Tab selects outputs; the widgets take the pointer, and keys only once a field
+  or list is engaged), and a place for the backend thread's messages beyond the
+  last (the bar shows one line, so `dsplr save`'s include note can hide its
+  "saved to", and a dropped-edits note can be replaced by the next message).
+  Listed in `docs/plan/06-gui.md` ("Still to build in M3").
+- **Caps Lock turns `h` into `H`, and `C-r` into `C-R`**: keys are matched by
+  the keysym crcbl-shell reports, which is the one for the current xkb state
+  (`Xkb::keysym`, `xkb_state_key_get_one_sym`), Caps Lock included; crcbl 0.18.0
+  exposes no keysym for the level without Caps Lock. So with Caps Lock on, the
+  nudge keys move to the neighbour and redo does nothing. Guessing by swapping a
+  letter's case when `Modifiers::CAPS_LOCK` is set would be wrong for layouts
+  whose Caps Lock is a shift lock or does not touch some keys. To ask of crcbl:
+  the keysym without Caps Lock (xkbcommon's `xkb_state_key_get_one_sym` with the
+  Lock modifier consumed, or the level-0/1 keysym with Shift alone), then match
+  characters on it in `dsplr-gui`'s `keys::matches`.
+- **The change stream is not reopened once it ends**: the backend thread
+  (`apps/dsplr/src/gui.rs`) says "stopped following the displays' changes" and
+  drops its `Watch`; Refresh and every request still read the displays. It ends
+  only when the compositor's socket closes (the compositor gone) or on a
+  protocol error a new connection would likely repeat; plan 02 says why that is
+  acceptable. Reopening with a backoff is the change if a desktop turns out to
+  close it in normal use. Not seen: no run ended a watch.
+- **Key config limits**: `[keys]` takes Ctrl, Alt and Shift, not Super, and a
+  key name from `dsplr_config::keys::NAMES` or F1 to F12 (no arrows' keypad
+  forms, no Insert); the dialogs', quit prompt's and engaged panel field's keys
+  are fixed. A key bound to two actions is refused rather than one winning.
+  Character keys match the keysym's character, so they follow the keyboard
+  layout; Shift is never compared for them (`H` is Shift+h).
+- **Identify where there are no panels**: the window reports "identify is
+  unsupported here" in the bar where crcbl's shell lacks `ShellCaps::PANEL`
+  (GNOME is M6, plan 06). That path has no test: `MainWindow::identify` needs
+  the window's GPU, which the window's unit tests do not have. A monitor that
+  matches no output shows the window system's monitor name instead.
 - **The GUI's Replace is `dsplr save --force`**: the CLI asks a yes for a file
   someone else wrote and needs `--force` for one edited by hand or holding what
   dsplr cannot keep; the window shows why and the diff in every case and takes
   Replace (Enter) for all of them, since the user has seen what is lost. Say if
   the hand-edited case should take a second, stronger answer.
-- **The confirm dialogs match monitors to outputs by logical position**
-  (`dsplr_core::dialog::match_screens`, within a pixel), since crcbl 0.18.0
-  reports no connector name (C3, below). Read in crcbl-shell 0.18.0's
+- **The confirm dialogs and identify panels match monitors to outputs by logical
+  position** (`dsplr_core::dialog::match_screens`, within a pixel), since crcbl
+  0.18.0 reports no connector name (C3, below). Read in crcbl-shell 0.18.0's
   `wayland/mod.rs` (`info`): a monitor's position is its `xdg_output` logical
   position times its scale where the compositor has `xdg_output`, else
   `wl_output.geometry`'s logical position as it is, without saying which, so
-  `confirm::screen` offers both (the first divided by the scale), first first;
+  `panels::screen` offers both (the first divided by the scale), first first;
   its size is the current mode, untransformed, so a turned output's logical size
   is not it, and size is not compared. Only the `xdg_output` case has run
   (headless sway). Two outputs at one place (a mirror) name the first; a monitor
   matching none still gets its dialog, unnamed. Switching to the connector is
-  `confirm::screen` filling `Screen::connector` once released.
+  `panels::screen` filling `Screen::connector` once released.
 - **Key moves can leave negative positions**: `h j k l` and `H J K L` move one
   output and nothing else, so a nudge left of x 0 leaves it at -10, which
   wlroots and Hyprland take; only a drag's release lifts the layout off negative
@@ -425,20 +462,29 @@ milestone:
   needs Mesa's lavapipe (`vulkan-swrast`) and `wtype` in the sway VM's packages,
   and a CI entry running it with
   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Green locally under
-  `tests/e2e/headless-sway.sh` (2026-11-10): kept with Enter, timed out, and
-  killed mid-confirm then reverted by the watchdog, each read back with
-  `dsplr list --json`. Run by hand with `grim` screenshots the same day: the
-  dialog on both outputs, each named for its output; Save replacing a foreign
-  `outputs` file after its question (Enter); and the editing keys of the last
-  slice. Not driven by anything, since each needs a click (no pointer injector,
-  `wlrctl` or `ydotool`, is installed): dragging, the panel's drop-downs,
-  checkbox, number and text fields (custom mode, profile name), the profile
-  picker and Restore, the Revert and Refresh buttons, the dialogs' own Keep and
-  Revert buttons, the tooltips, and the pointer position from a pointer-enter.
-  They are covered by `dsplr-core`'s editor, hit-region, flow and dialog tests,
-  a build of the panel's tree, and the window's key and request tests against
-  crcbl's headless shell; Revert and profile restore run the CLI's own
-  `restore::revert` and `apply::bind`. Not covered by any test: a draft
+  `tests/e2e/headless-sway.sh` (2026-11-10): kept with Enter, timed out, killed
+  mid-confirm then reverted by the watchdog, and an output plugged in with
+  `swaymsg create_output` while the window is open, then reached with Tab,
+  edited and applied together with an edit made before it came, each read back
+  with `dsplr list --json`. The hotplug step fails with the backend thread's
+  watch switched off. One run with the watch switched off failed earlier, at the
+  first step's "kept", which does not use the watch: the scale applied and then
+  reverted, the Enter apparently lost before the dialog took the keyboard. Not
+  reproduced since; if it recurs, it is the harness's timing. Seen in `grim`
+  screenshots the same day: an output created and one disabled from outside
+  appearing in the window, and `i` showing each output's name and description on
+  it, closed after `IDENTIFY_TIME`. Run by hand with `grim` screenshots the same
+  day: the dialog on both outputs, each named for its output; Save replacing a
+  foreign `outputs` file after its question (Enter); and the editing keys of the
+  last slice. Not driven by anything, since each needs a click (no pointer
+  injector, `wlrctl` or `ydotool`, is installed): dragging, the panel's
+  drop-downs, checkbox, number and text fields (custom mode, profile name), the
+  profile picker and Restore, the Revert and Refresh buttons, the dialogs' own
+  Keep and Revert buttons, the tooltips, and the pointer position from a
+  pointer-enter. They are covered by `dsplr-core`'s editor, hit-region, flow and
+  dialog tests, a build of the panel's tree, and the window's key and request
+  tests against crcbl's headless shell; Revert and profile restore run the CLI's
+  own `restore::revert` and `apply::bind`. Not covered by any test: a draft
   committed to the output it was typed for when a canvas click moves the
   selection (`follow_selection` is tested for the reset, `Drafts::commits` on
   its own), a panel click ignored behind the quit prompt or the dialogs, and two

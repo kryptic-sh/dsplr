@@ -8,6 +8,9 @@ use std::path::PathBuf;
 
 use crate::Snapshot;
 
+/// The bar's line about the keys, as the GUI's default keymap writes it.
+pub const KEYS: &str = "drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  i identify  ·  a apply  ·  s save  ·  u C-r undo / redo  ·  q quit";
+
 pub fn output(connector: &str, description: &str, modes: Vec<Mode>) -> Output {
     Output {
         connector: connector.into(),

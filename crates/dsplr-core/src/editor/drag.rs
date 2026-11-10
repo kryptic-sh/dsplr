@@ -32,6 +32,28 @@ pub struct Drag {
     fit: Fit,
 }
 
+impl Drag {
+    /// The output being dragged.
+    pub(super) const fn output(&self) -> usize {
+        self.output
+    }
+
+    /// What a cancel restores.
+    pub(super) const fn before(&self) -> &Layout {
+        &self.before
+    }
+
+    /// The same drag, its grab and frozen fit, over a layout read again:
+    /// of `output`, cancelling to `before`.
+    pub(super) fn carried(self, output: usize, before: Layout) -> Self {
+        Self {
+            output,
+            before,
+            ..self
+        }
+    }
+}
+
 impl Editor {
     /// A press of the primary button at `at` in a window of `viewport`:
     /// selects the output there, and starts dragging it when it is placed on
@@ -40,7 +62,7 @@ impl Editor {
         if self.drag.is_some() {
             return false;
         }
-        let Some(output) = draw(self, viewport, &Theme::default(), None).hit(at) else {
+        let Some(output) = draw(self, viewport, &Theme::default(), None, "").hit(at) else {
             return false;
         };
         self.select(Some(output));
@@ -142,7 +164,7 @@ mod tests {
 
     /// The centre of where `output` is drawn.
     fn centre(editor: &Editor, output: usize) -> Point {
-        let list = draw(editor, WINDOW, &Theme::default(), None);
+        let list = draw(editor, WINDOW, &Theme::default(), None, "");
         let hit = list
             .hits
             .iter()
@@ -269,5 +291,44 @@ mod tests {
         assert!(editor.press(WINDOW, centre(&editor, 0)));
         assert!(!editor.release());
         assert!(!editor.undo());
+    }
+
+    #[test]
+    fn a_drag_goes_on_over_a_new_read_of_the_desktop() {
+        let mut editor = three_monitors_editor();
+        drag(&mut editor, 0, -200.0, 0.0);
+        let dragged = position(&editor, 0);
+        assert_ne!(dragged, (0, 360));
+
+        // Nothing changed (a reload, a stray event): the drag is untouched.
+        let same = editor.snapshot().clone();
+        editor.rebase(same, true);
+        assert_eq!(editor.dragging(), Some(0));
+        assert_eq!(position(&editor, 0), dragged);
+
+        // DP-2 changed elsewhere and listed first now: the drag goes on, on
+        // DP-1 where it now is in the list.
+        let mut read = editor.snapshot().clone();
+        read.layout.entries.swap(0, 1);
+        read.layout.entries[0].state.scale = 1.5;
+        editor.rebase(read, true);
+        assert_eq!(editor.dragging(), Some(1));
+        assert_eq!(position(&editor, 1), dragged, "where it was dragged");
+        assert!(editor.cancel_drag());
+        assert_eq!(position(&editor, 1), (0, 360), "a cancel puts it back");
+        assert_eq!(
+            editor.pending().entries[0].state.scale,
+            1.5,
+            "over the new read"
+        );
+
+        // Its output gone: the drag ends.
+        let mut editor = three_monitors_editor();
+        drag(&mut editor, 0, -200.0, 0.0);
+        let mut read = editor.snapshot().clone();
+        read.layout.entries.remove(0);
+        editor.rebase(read, true);
+        assert_eq!(editor.dragging(), None);
+        assert!(!editor.has_pending(), "its edit went with it");
     }
 }

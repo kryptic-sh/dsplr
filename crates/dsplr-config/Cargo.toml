@@ -13,6 +13,7 @@ readme.workspace = true
 [dependencies]
 hjkl-config = "0.45.0"
 serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
 
 [lints]
 workspace = true

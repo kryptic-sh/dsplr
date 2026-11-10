@@ -98,11 +98,12 @@ pub fn stylesheet(theme: &Theme) -> String {
         background,
         ..
     } = theme;
+    let family = crate::fonts::FAMILY;
     format!(
         "
 .panel {{ width: 100%; height: 100%; flex-direction: column; gap: 4px; padding: 12px 16px;
   background: {surface}; border-color: {divider}; border-width: 0 0 0 1px;
-  color: {text}; font-family: sans-serif; font-size: 13px; }}
+  color: {text}; font-family: {family}; font-size: 13px; }}
 .row {{ flex-direction: row; align-items: center; height: 22px; }}
 .label {{ width: 112px; flex-shrink: 0; color: {muted}; }}
 .label.changed {{ color: {pending}; }}
@@ -119,11 +120,11 @@ select:disabled, drag-value:disabled, text-input:disabled, checkbox:disabled {{ 
 checkbox {{ color: {text}; }}
 .checkbox-box {{ background: {background}; border-color: {border}; }}
 checkbox:checked > .checkbox-box > .checkbox-mark {{ background: {accent}; }}
-popup {{ background: {surface}; border-color: {border}; color: {text}; font-family: sans-serif;
+popup {{ background: {surface}; border-color: {border}; color: {text}; font-family: {family};
   font-size: 13px; }}
 .select-list > .select-option:hover {{ background: {output}; }}
 .select-list > .select-option:checked {{ background: {accent}; color: {surface}; }}
-tooltip {{ background: {output}; border-color: {border}; color: {text}; font-family: sans-serif;
+tooltip {{ background: {output}; border-color: {border}; color: {text}; font-family: {family};
   font-size: 13px; }}
 .fields {{ flex-direction: column; gap: 4px; flex-grow: 1; }}
 .actions {{ flex-direction: column; gap: 6px; padding: 10px 0 0 0; border-color: {divider};
@@ -155,6 +156,7 @@ pub struct Actions<'a> {
 /// What the user asked of the window in the panel, besides edits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    Identify,
     Apply,
     Save,
     Revert,
@@ -257,6 +259,7 @@ fn buttons(
                 ("#save", "Save (s)", Command::Save),
                 ("#revert", "Revert", Command::Revert),
                 ("#refresh", "Refresh", Command::Refresh),
+                ("#identify", "Identify (i)", Command::Identify),
             ] {
                 if ui.button(id, label).clicked {
                     commands.push(command);

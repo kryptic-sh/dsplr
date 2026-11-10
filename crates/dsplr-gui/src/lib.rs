@@ -9,10 +9,13 @@
 //! the desktop's changes.
 
 mod confirm;
+mod fonts;
 mod gpu;
+mod identify;
 mod keys;
 mod paint;
 mod panel;
+mod panels;
 mod window;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -24,6 +27,7 @@ use crcbl_app::present::PresentError;
 use crcbl_frame::graph::GraphError;
 use crcbl_hal::HalError;
 use crcbl_shell::{LogicalSize, Shell, ShellError, ShellEvent, WindowDesc, WindowId, WindowRole};
+use dsplr_config::keys::Keys;
 use dsplr_core::Editor;
 use dsplr_core::link::{Answer, Reply, Request};
 
@@ -68,10 +72,10 @@ pub struct Link {
     pub replies: Receiver<Reply>,
 }
 
-/// Opens the main window on `editor`, with `link` to the backend thread, and
-/// runs it until the user quits. Dropping `link` on the way out tells the
+/// Opens the main window on `editor`, with `link` to the backend thread and
+/// the canvas's keys as `keys` binds them, and runs it until the user quits. Dropping `link` on the way out tells the
 /// backend thread to finish.
-pub fn run(editor: Editor, link: Link) -> Result<(), GuiError> {
+pub fn run(editor: Editor, link: Link, keys: &Keys) -> Result<(), GuiError> {
     let mut shell = crcbl_shell::open()?;
     let window = shell.create_window(&WindowDesc {
         title: "dsplr",
@@ -87,7 +91,7 @@ pub fn run(editor: Editor, link: Link) -> Result<(), GuiError> {
     let outcome = window::MainWindow::new(
         shell.as_mut(),
         window,
-        editor,
+        (editor, keys::Keymap::new(keys)),
         extent,
         window::Channels {
             requests: link.requests,

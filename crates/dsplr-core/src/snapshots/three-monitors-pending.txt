@@ -15,7 +15,7 @@ outline 24.0,158.9 350.8x197.3 2.0 #ff9e64
 outline 585.2,158.9 350.8x197.3 2.0 #ff9e64
 fill 0.0,768.0 1280.0x32.0 #16161e
 fill 0.0,768.0 1280.0x1.0 #292e42
-text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "sway  ·  pending edits  ·  drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  u / C-r undo / redo  ·  q quit"
+text 16.0,775.0 13 #565f89 clip 0.0,768.0 1280.0x32.0 "sway  ·  pending edits  ·  drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  i identify  ·  a apply  ·  s save  ·  u C-r undo / redo  ·  q quit"
 hit 24.0,158.9 350.8x197.3 output 0
 hit 585.2,158.9 350.8x197.3 output 2
 hit 24.0,224.7 350.8x197.3 output 0

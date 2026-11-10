@@ -49,6 +49,22 @@ fn closeness(wanted: &OutputEntry, live: &OutputEntry) -> Option<u8> {
 /// output: those naming none, and those whose outputs all went to others
 /// in the largest pairing.
 pub fn assign(wanted: &[OutputEntry], live: &[OutputEntry]) -> Result<Vec<usize>, Vec<usize>> {
+    let assigned = pair(wanted, live);
+    let unassigned: Vec<usize> = (0..wanted.len())
+        .filter(|&index| assigned[index].is_none())
+        .collect();
+    if unassigned.is_empty() {
+        Ok(assigned.into_iter().flatten().collect())
+    } else {
+        Err(unassigned)
+    }
+}
+
+/// [`assign`]'s pairing as far as it goes: for each entry of `wanted`, in
+/// order, the index into `live` it was given, `None` for one left without.
+/// For pairing two layouts where outputs may have come and gone, such as
+/// two reads of the desktop.
+pub fn pair(wanted: &[OutputEntry], live: &[OutputEntry]) -> Vec<Option<usize>> {
     let candidates: Vec<Vec<usize>> = wanted
         .iter()
         .map(|entry| {
@@ -79,14 +95,7 @@ pub fn assign(wanted: &[OutputEntry], live: &[OutputEntry]) -> Result<Vec<usize>
             assigned[index] = Some(live_index);
         }
     }
-    let unassigned: Vec<usize> = (0..wanted.len())
-        .filter(|&index| assigned[index].is_none())
-        .collect();
-    if unassigned.is_empty() {
-        Ok(assigned.into_iter().flatten().collect())
-    } else {
-        Err(unassigned)
-    }
+    assigned
 }
 
 /// Finds `index` an output along an augmenting path: its closest free
@@ -125,7 +134,7 @@ fn augment(
 
 #[cfg(test)]
 mod tests {
-    use super::assign;
+    use super::{assign, pair};
     use crate::{Output, OutputEntry, OutputId, OutputState};
 
     fn live(connector: &str, description: &str, serial: &str) -> OutputEntry {
@@ -245,6 +254,11 @@ mod tests {
             Err(vec![0, 2])
         );
         assert_eq!(assign(&[], &now), Ok(vec![]));
+        assert_eq!(
+            pair(&[connector("DP-9"), connector("DP-1"), desc("AOC")], &now),
+            [None, Some(0), None],
+            "the pairing as far as it goes"
+        );
         assert_eq!(assign(&[connector("DP-1")], &[]), Err(vec![0]));
     }
 }

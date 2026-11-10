@@ -4,168 +4,67 @@ Drawn with crcbl: `crcbl-app` for the window and device, `crcbl-shell` for
 windows on Wayland and X11, `crcbl-ui` for widgets and the draw pass. Tokyo
 Night (folke's "Night" variant), as the rest of the suite.
 
-## Built so far (M3, parts 1 to 3, 2026-11-10)
+## Built (M3, 2026-11-10)
 
-- `dsplr` with no command reads the displays on a backend thread (a
-  current-thread tokio runtime, [02](02-architecture.md#process)), then opens
-  the main window. No backend exits `6` before any window opens; no window
-  system or no usable GPU exits `1` with the reason.
-- `dsplr-core` holds the editor (`Editor`: the live `Snapshot`, the pending
-  layout, undo and redo, the selection and its Tab order), every edit
-  (`editor/edits.rs`: nudge, move to a neighbour, rotate, step the scale, turn
-  on or off, and the panel's setters, each one undo step through
-  `Editor::edit`), dragging (`editor/drag.rs`), the panel as data (`panel`), and
-  builds the canvas and bar as its own `DrawList` of fills, outlines and clipped
-  text plus hit regions (`draw`). No crcbl types: `dsplr-gui` translates the
-  list into crcbl's (`paint`).
-- The canvas: each output enabled live and with a size, at its logical size,
-  scaled to fit together and centred, labelled with connector, description and
-  mode; disabled (or mode-less) outputs as tiles in a tray strip below, narrowed
-  so all of them stay inside the canvas. Each output whose pending settings
-  differ is outlined where they put it, or around its own rectangle or tile when
-  they leave it off the canvas. The pending layout is validated
-  (`Layout::validate`) every frame: an output in an error (both outputs of an
-  overlap) is outlined in the error colour, one with a warning (a gap, where the
-  backend allows gaps) in the warning colour, and the bar shows the first
-  problem and how many more there are.
-- Hit regions: rectangles and tiles first, then the inside of each pending place
-  below them, so a moved output can be grabbed where it now is, and an outline
-  over another output's rectangle never takes that output's clicks.
-- Dragging: a press on an output on the canvas selects and grabs it; the
-  canvas's fit is frozen for the drag; each move snaps through `Layout::snap`
-  with `SNAP_DISTANCE` (window pixels) divided by the zoom; the release lifts
-  the layout off negative positions (`Layout::make_non_negative`, so no other
-  output moves unless the drag left one negative; plan 03) and records the drag
-  as one undo step; `Esc` during a drag puts the output back. A layout that
-  cannot be lifted without a position leaving `i32` refuses the drag.
-- The property panel, crcbl-ui widgets (C5) for the selected output: enabled
-  (checkbox), mode (size) and refresh (drop-downs, refresh filtered by the
-  size), custom mode (a text field, `WxH@R`, made on Enter or a click
-  elsewhere), position (read-only: drag or keys), scale (a drop-down of the
-  offered scales and a number to drag or type, made when the drag or typing
-  ends), transform, adaptive sync, mirror source (drop-downs). A click on the
-  canvas takes the keyboard out of the panel (`Ui::clear_focus`); what was being
-  typed or dragged there is made on the output it was for, even when the click
-  selects another, and the panel's drafts start afresh whenever the selection
-  moves. While the quit prompt is up the panel makes no change. A field the
-  backend cannot set, and every field but enabled on an output that is off, is
-  disabled with why as its tooltip. A field a pending edit changed has its label
-  in the pending colour. Hyprland's colour preset and bit depth and KDE's
-  overscan and RGB range are shown, not edited.
-- The rules are `dsplr set`'s, shared: `dsplr_model::default_mode` (an output
-  turned on without a mode) and `dsplr_model::pick_mode` (a size keeps its
-  refresh; a custom mode needs its refresh and a backend that takes them),
-  `is_valid_scale`, adaptive sync only as the backend lists it, and no setting
-  changed on an output that is off. Offered scales (`scale_choices`): the mode's
-  own list (GNOME), else quarter steps from 0.5 to 3 on a backend with
-  fractional scaling, else 1, 2 and 3.
-- Keys: the whole table below except `i`, `a`, `s`. `h j k l` move by
-  `NUDGE_STEP` (10 layout pixels); `H J K L` move until touching the nearest
-  output that way that shares some of the span across, stopping at one it
-  already touches; `space` turns the output on (its default mode, moved right of
-  the others when it would overlap one) or off. `q` / `Esc` with pending edits
-  asks in the bar (`y` / Enter quits, `n` / `Esc` does not); so does closing the
-  window. While a field takes typing or a drop-down is open, keys go to the
-  panel: Enter accepts, `Esc` backs out, the arrows move in a list, Tab moves
-  between fields.
-- Text is crcbl-ui's committed sans-serif (`Font::sans`, the `parsed-font`
-  feature); no system font lookup yet.
+The window, canvas, property panel, keys, undo, Apply / Save / Revert / profiles
+through the shared confirm flow, the confirm dialogs and the identify overlay
+are built; the code is the account of them (`dsplr-core`'s editor, scene, panel,
+dialog and link modules, `dsplr-gui`, `apps/dsplr/src/gui.rs`). What still binds
+later work is below.
 
-- Apply, Save, Revert and profiles (part 3). The backend thread
-  (`apps/dsplr/src/gui.rs`) holds the backend and takes the window's `Request`s
-  (`dsplr_core::link`: apply, save, save as a profile, restore a profile,
-  revert, refresh), one at a time, answering with `Reply`s that a relay thread
-  hands to the window with crcbl-shell's waker (C4). It reads the displays again
-  after each request and on Refresh; it does not follow the desktop's changes.
-- Apply (`a`, or the button) drives the one confirm flow `dsplr apply` drives
-  (`dsplr_core::flow`, a state machine with no I/O, and
-  `apps/dsplr/src/apply.rs`'s `drive`): validate, test, revert point and
-  watchdog, apply, read back, confirm, keep or revert, with the CLI's messages,
-  shown in the bar. The watchdog is the CLI's detached
-  `dsplr restore --revert --after`, so a GUI killed mid-confirm is reverted.
-- The confirm dialog: a crcbl panel per monitor (layer-shell overlay, centred),
-  on the main window's GPU device, counting down to the backend thread's own
-  deadline, which `Reply::Confirm` carries; each names the output at its
-  monitor's logical position (`dsplr_core::dialog::match_screens`, which prefers
-  a connector name once crcbl reports one, C3), and a monitor that matches none
-  shows it unnamed. A panel that cannot be opened is closed and skipped, the bar
-  saying so; with none open, one toplevel dialog; with none at all, the bar
-  asks. The bar asks too while the dialogs are up. Enter or Keep keeps; Esc,
-  Revert, the countdown or closing the main window reverts. The answer goes back
-  on a channel of its own, tagged with the confirm's id, so no request is
-  dropped while the backend thread waits for it. Should the backend thread stop
-  (a panic), the window says so with the watchdog's time left and sends nothing
-  more: the watchdog is then the only way back.
-- Save (`s`, or the button) saves the displays as they are, as `dsplr save`
-  does, so with pending edits it asks for them to be applied first. A file dsplr
-  did not write, or one edited by hand, is a question in the panel: what would
-  be replaced, why, the diff, and Replace (Enter) or Cancel (Esc). An explicit
-  Replace there is the GUI's `--force`.
-- Save as profile (a name and the button) and, when profiles exist, a picker and
-  Restore, which applies the profile through the same flow; Revert goes back to
-  the revert point as `dsplr restore --revert` does. These buttons sit at the
-  foot of the panel, not in the bottom bar the plan drew: the bar is the
-  canvas's draw list, and the buttons are crcbl-ui widgets.
+- The backend thread follows the desktop's changes (`Backend::watch`): on
+  wlroots a `wlr-output-management` connection of its own, on Hyprland its event
+  socket ([04](04-backends.md#hyprland)). Each change reads the displays again,
+  paired with the last read by `dsplr_model::pair` (twins keep their
+  connectors), and merged setting by setting under the pending edits
+  (`Editor::rebase`): a setting the user changed keeps the user's value, saying
+  so in the bar when the desktop changed it too, and every other setting takes
+  the desktop's. Edits to outputs that went away are dropped, also in the bar. A
+  read that changed nothing leaves the edits, their history and a drag alone;
+  otherwise a drag goes on over the new read while its output is there. The
+  watch is not reopened once it ends ([02](02-architecture.md#process)).
+- Text is the system's sans-serif through fontconfig, with its fallbacks
+  (crcbl-ui's `system-fonts`, C7), else crcbl's committed `Font::sans`, with a
+  note in the bar.
+- The confirm dialogs and the identify overlay are one per-monitor panel set
+  (`dsplr-gui`'s `panels.rs`), each panel naming the output at its monitor's
+  logical position until crcbl reports connectors (C3).
 
 ## Still to build in M3
 
-- The identify overlay and `i` (C2, C3).
-- The backend thread following the desktop's changes, so the window updates on a
-  hotplug; today it reads them again after each request and on Refresh.
-- Keys configurable in `config.toml`.
-- System fonts with fallbacks (C7), for descriptions outside the committed
-  font's coverage.
+- **The exit check: the owner switches from nwg-displays.** The owner's step.
 - Reaching the panel's widgets from the keyboard: Tab selects outputs, so today
   the widgets take the pointer only, and the keys only once a field or list is
   engaged (the profile name and picker among them).
 - The backend thread's messages beyond the last: the bar shows one line.
 
-## Main window
-
-A toplevel window with two regions:
-
-- **Canvas** (left, most of the window): every output as a rectangle at its
-  logical size, scaled to fit, labelled with connector, description and mode.
-  Disabled outputs sit in a tray strip below, greyed. Drag to move, with
-  snapping ([03](03-display-model.md#snapping)); click to select.
-- **Property panel** (right): for the selected output — enabled, mode (list),
-  refresh (list filtered by mode), custom mode (if the backend allows), scale
-  (list of the backend's valid scales plus a number entry), transform, adaptive
-  sync, mirror source. A backend-specific section below (Hyprland colour preset
-  and bit depth, KDE overscan and RGB range). Fields the backend cannot set are
-  disabled with the reason as a tooltip.
-- **Bottom bar:** backend name and how it will save, `Identify`, `Revert`,
-  `Apply`, `Save`, and a profile picker when profiles exist.
-
-Pending edits are drawn as an outline over the live state until applied. Undo
-and redo over pending edits (`u`, `C-r`).
-
 ## Keys
 
-Mouse-first for dragging, but every action has a key:
+Mouse-first for dragging, but every action has a key. The defaults:
 
-| Key             | Action                                          |
-| --------------- | ----------------------------------------------- |
-| `Tab` / `S-Tab` | select next / previous output                   |
-| `h j k l`       | nudge the selected output by one snap step      |
-| `H J K L`       | move the selected output to touch its neighbour |
-| `r` / `R`       | rotate clockwise / counter-clockwise            |
-| `+` / `-`       | next / previous scale                           |
-| `space`         | enable / disable                                |
-| `i`             | identify                                        |
-| `a` / `s`       | apply / save                                    |
-| `u` / `C-r`     | undo / redo                                     |
-| `q` / `Esc`     | quit (asks if there are pending edits)          |
+| Key             | Action                                          | `[keys]` name                                  |
+| --------------- | ----------------------------------------------- | ---------------------------------------------- |
+| `Tab` / `S-Tab` | select next / previous output                   | `select_next` / `select_previous`              |
+| `h j k l`       | nudge the selected output by one snap step      | `nudge_left` / `_down` / `_up` / `_right`      |
+| `H J K L`       | move the selected output to touch its neighbour | `touch_left` / `_down` / `_up` / `_right`      |
+| `r` / `R`       | rotate clockwise / counter-clockwise            | `rotate_clockwise` / `rotate_counterclockwise` |
+| `+` / `-`       | next / previous scale (and the keypad's)        | `scale_up` / `scale_down`                      |
+| `space`         | enable / disable                                | `toggle_enabled`                               |
+| `i`             | identify                                        | `identify`                                     |
+| `a` / `s`       | apply / save                                    | `apply` / `save`                               |
+| `u` / `C-r`     | undo / redo                                     | `undo` / `redo`                                |
+| `q` / `Esc`     | quit (asks if there are pending edits)          | `quit`                                         |
 
-Keys are configurable in `config.toml`.
+Each is rebound in `config.toml`'s `[keys]` table as a list
+(`nudge_left = ["Left", "h"]`); an action left out keeps its defaults. A key is
+a character, `space`, `F1` to `F12` or a key's name
+(`dsplr_config::keys::NAMES`), with `C-`, `A-` or `S-` in front; Shift is part
+of a character (`H`, not `S-h`). An unknown action, an unknown key or one key
+for two actions is an error naming it. The keys of the dialogs, the quit prompt
+and an engaged panel field (Enter, `Esc`, `y`, `n`, the arrows, Tab) are not
+rebound.
 
 ## Confirm dialog
-
-After an apply that can hide or move a screen, a small dialog opens **on every
-enabled output** (so it is on screen whichever one still shows): "Keep these
-display settings?" with `Keep` and `Revert` and a countdown. `Enter` keeps,
-`Esc` reverts, the timeout reverts. Implemented as crcbl panels (layer-shell on
-Wayland, override-redirect on X11) placed per monitor.
 
 **GNOME has no layer-shell**, so there the confirm is a normal toplevel dialog
 that GNOME places, and the revert watchdog covers the case where it lands on a
@@ -174,12 +73,11 @@ GNOME Shell shows its own confirm dialog instead of dsplr's.
 
 ## Identify overlay
 
-`Identify` shows each output's connector and description in large text on that
-output for a few seconds, as a crcbl panel per monitor. On GNOME, where panels
-are not available, it asks GNOME Shell to show its own monitor labels
-(`org.gnome.Shell` `ShowMonitorLabels`, which gnome-control-center uses; whether
-Shell accepts the call from another client is to verify at M6), else identify is
-`Unsupported` there.
+On GNOME, where panels are not available, identify is to ask GNOME Shell to show
+its own monitor labels (`org.gnome.Shell` `ShowMonitorLabels`, which
+gnome-control-center uses; whether Shell accepts the call from another client is
+to verify at M6), else it is `Unsupported` there, as it is today on any window
+system without panels.
 
 ## What crcbl must provide
 
@@ -190,12 +88,12 @@ raised in the crcbl repo rather than worked around in dsplr:
 | #   | Need                                                         | Seen in crcbl                                                                                             | M3                                                                                                                                                                                                                                                                         |
 | --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | C1  | Toplevel window on Wayland and X11                           | `WindowRole::Toplevel`; Wayland and X11 shells                                                            | Confirmed on Wayland: the main window runs in headless sway (2026-11-10). X11 not run                                                                                                                                                                                      |
-| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  | Built on 0.18.0: a confirm dialog per monitor, layer-shell overlay, in headless sway; X11 and the identify overlay not run                                                                                                                                                 |
+| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  | Built on 0.18.0: the confirm dialogs and the identify overlay, a layer-shell overlay per monitor, run in headless sway; X11 not run                                                                                                                                        |
 | C3  | Monitor enumeration matching the backend's outputs by name   | `crcbl-shell` `MonitorInfo`; whether it carries the connector name is to check                            | Not built on yet; the `connector` field is requested of crcbl (backlog)                                                                                                                                                                                                    |
 | C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                  | Used: a relay thread wakes the window for each reply from the backend thread; without a waker the loop polls                                                                                                                                                               |
 | C5  | Widgets: button, select/list, number entry, toggle, tooltip  | `crcbl-ui` `widgets/` (`button`, `select`, `list`, `number_entry`), `tooltip`                             | Built on 0.17.2, still on 0.18.0: `select`, `checkbox`, `drag_value` (typing into it is the number entry), `text_input`, `tooltip`, and `Ui::enabled` for disabled fields; no plain list or toggle needed. Run in headless sway; never clicked there (no pointer injector) |
 | C6  | Free-form drag canvas: draw rects and text, raw pointer drag | `crcbl-ui` `DrawList`, `grid_drag`; whether `grid_drag` fits or the canvas is hand-built is decided at M3 | Hand-built, not `grid_drag`: dsplr-core draws the canvas, its hit regions and the drag (fit frozen, `Layout::snap`); crcbl gives only the raw pointer                                                                                                                      |
-| C7  | System font lookup                                           | `crcbl-ui` `system-fonts` feature (pikr precedent)                                                        | Not used yet: text is `Font::sans`                                                                                                                                                                                                                                         |
+| C7  | System font lookup                                           | `crcbl-ui` `system-fonts` feature (pikr precedent)                                                        | Used: the system's sans-serif and its fallbacks, `Font::sans` where there is none                                                                                                                                                                                          |
 
 ## Not in the GUI
 

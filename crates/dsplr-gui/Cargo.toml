@@ -15,7 +15,8 @@ crcbl-app = "0.18.0"
 crcbl-frame = "0.18.0"
 crcbl-hal = "0.18.0"
 crcbl-shell = "0.18.0"
-crcbl-ui = { version = "0.18.0", features = ["parsed-font"] }
+crcbl-ui = { version = "0.18.0", features = ["parsed-font", "system-fonts"] }
+dsplr-config.workspace = true
 dsplr-core.workspace = true
 dsplr-model.workspace = true
 glam = "0.34"

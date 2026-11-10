@@ -61,9 +61,10 @@ enum Outcome {
 /// read up to a `done`.
 ///
 /// It keeps the serial of the `done` it last dispatched, and configurations
-/// are made against that. Nothing is read between calls, so after the
-/// outputs change a configuration made here is `cancelled`: read them again
-/// on a new connection. It cannot leave the thread it was opened on.
+/// are made against that. Nothing is read between calls, except in
+/// [`Connection::changed`], so after the outputs change a configuration made
+/// here is `cancelled`: read them again on a new connection, or follow them
+/// with `changed`. It cannot leave the thread it was opened on.
 #[derive(Debug)]
 pub struct Connection {
     /// Dropped after [`State`] is freed and its proxies destroyed (see
@@ -157,6 +158,23 @@ impl Connection {
     /// may have rounded a setting (a scale), so read the state back to see.
     pub async fn apply(&mut self, layout: &Layout) -> Result<(), Error> {
         self.configure(layout, Request::Apply).await
+    }
+
+    /// Waits, for as long as it takes, until the compositor reports that
+    /// its outputs changed: a `done` after the one last dispatched. Its heads
+    /// then describe the outputs as they are now. Cancel-safe: dropped while
+    /// waiting, it has dispatched every event it read, and the read it began
+    /// is cancelled ([`crcbl_wayland`]'s `ReadGuard`).
+    pub async fn changed(&mut self) -> Result<(), Error> {
+        let seen = self.state().serial;
+        loop {
+            let state = self.state();
+            if state.serial != seen {
+                return Ok(());
+            }
+            state.check()?;
+            self.read_once().await?;
+        }
     }
 
     /// Sends `layout` as one configuration, against the last `done`'s
