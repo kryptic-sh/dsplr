@@ -372,12 +372,23 @@ async fn dsplr_watch_restores_a_profile_when_an_output_is_plugged_in() {
     let has = |name: &'static str| {
         move |layout: &Layout| layout.entries.iter().any(|e| has_connector(e, name))
     };
-    let alone = backend.snapshot().await.expect("snapshot");
-    assert!(!has("DSPLR-PLUG")(&alone));
+    let now = backend.snapshot().await.expect("snapshot");
+    assert!(!has("DSPLR-PLUG")(&now));
+    // A profile for the outputs now with WAYLAND-1 100 lower, so restoring
+    // it changes something: watch does not apply a profile that is on
+    // screen already (it says so). Hyprland in CI's VM drives the VM's own
+    // display (`Virtual-1`) too, which both profiles keep as it is.
+    let y0 = entry(&now, "WAYLAND-1").state.y;
+    let alone = edited(&now, |layout| {
+        entry_mut(layout, "WAYLAND-1").state.y = y0 + 100;
+    });
+    let alone_shown = |layout: &Layout| {
+        !has("DSPLR-PLUG")(layout) && entry(layout, "WAYLAND-1").state.y == y0 + 100
+    };
 
-    // A profile for the outputs now, and one for them and DSPLR-PLUG, which
-    // puts it 300 down from the top, against the right edge: read with it
-    // plugged in, then unplugged again.
+    // And one for them and DSPLR-PLUG, as they are now, which puts it 300
+    // down from the top, against the right edge: read with it plugged in,
+    // then unplugged again.
     let reply = hyprctl("/output create headless DSPLR-PLUG");
     assert_eq!(reply.trim(), "ok", "creating DSPLR-PLUG: {reply}");
     let plugged = snapshot_until(&backend, "DSPLR-PLUG", has("DSPLR-PLUG")).await;
@@ -425,16 +436,14 @@ async fn dsplr_watch_restores_a_profile_when_an_output_is_plugged_in() {
         assert_eq!(code, Some(0), "{text}");
         Layout::from_json(&text).expect("a layout")
     };
-    watcher
-        .restored(listed, 1, "alone", |layout| !has("DSPLR-PLUG")(layout))
-        .await;
+    watcher.restored(listed, 1, "alone", alone_shown).await;
 
     // Plugged in: "docked", the new output where it says.
     let reply = hyprctl("/output create headless DSPLR-PLUG");
     assert_eq!(reply.trim(), "ok", "creating DSPLR-PLUG: {reply}");
     watcher
         .restored(listed, 2, "docked", |layout| {
-            has("DSPLR-PLUG")(layout) && {
+            has("DSPLR-PLUG")(layout) && entry(layout, "WAYLAND-1").state.y == y0 && {
                 let state = &entry(layout, "DSPLR-PLUG").state;
                 (state.x, state.y) == (right, 300)
             }
@@ -444,10 +453,9 @@ async fn dsplr_watch_restores_a_profile_when_an_output_is_plugged_in() {
     // Unplugged: back to "alone".
     let reply = hyprctl("/output remove DSPLR-PLUG");
     assert_eq!(reply.trim(), "ok", "removing DSPLR-PLUG: {reply}");
-    watcher
-        .restored(listed, 3, "alone", |layout| !has("DSPLR-PLUG")(layout))
-        .await;
+    watcher.restored(listed, 3, "alone", alone_shown).await;
     watcher.stop();
+    backend.apply(&now).await.expect("put back");
     for name in ["alone", "docked"] {
         std::fs::remove_file(store.join(format!("{name}.json"))).expect("profile removed");
     }
