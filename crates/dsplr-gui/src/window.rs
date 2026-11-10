@@ -32,12 +32,12 @@ use dsplr_core::{Editor, Point, Size, Theme, draw, regions};
 use dsplr_model::{Layout, ModeSpec};
 use glam::Vec2;
 
-use crate::confirm::Confirming;
+use crate::confirm::{CONFIRM_TITLE, Confirming};
 use crate::gpu::Gpu;
 use crate::identify::Identifying;
 use crate::keys::{self, Action, Keymap};
 use crate::panel::{self as panel_ui, ActionDrafts, Actions, Built, Change, Command, Drafts};
-use crate::{GuiError, fonts, paint};
+use crate::{GuiError, TITLE, fonts, paint};
 
 /// How long to wait for the window system after an out-of-date swapchain
 /// before drawing again: a new size is usually on its way.
@@ -50,6 +50,19 @@ const QUIT_PROMPT: &str = "Quit and drop the pending edits?  y / n";
 /// How often the loop looks for the backend thread's replies when the
 /// window system cannot wake it.
 const REPLY_POLL: Duration = Duration::from_millis(50);
+
+/// What a key pressed in a confirm dialog answers: Enter keeps, Esc reverts
+/// ([`keys::answer`]); `None` for any other event.
+fn dialog_answer(event: &ShellEvent) -> Option<bool> {
+    match *event {
+        ShellEvent::Key {
+            keysym,
+            state: ButtonState::Pressed,
+            ..
+        } => keys::answer(keysym),
+        _ => None,
+    }
+}
 
 /// A [`Reply::Confirm`]'s id, its deadline and its watchdog's, and the
 /// layout applied: what the dialogs open with.
@@ -213,6 +226,13 @@ impl<'a> MainWindow<'a> {
                         continue;
                     }
                     if event.window().is_some_and(|window| confirming.owns(window)) {
+                        // The first dialog takes the keyboard, so its keys
+                        // answer it as the main window's do; the rest of its
+                        // events are its own.
+                        if let Some(keep) = dialog_answer(&event) {
+                            self.answer(keep)?;
+                            dirty = true;
+                        }
                         continue;
                     }
                 }
@@ -251,6 +271,7 @@ impl<'a> MainWindow<'a> {
                     self.notice = Some(last.clone());
                 }
                 self.confirming = Some(confirming);
+                self.shell.set_title(self.window, CONFIRM_TITLE)?;
                 early.extend(events);
             }
             if std::mem::take(&mut self.identify_asked) {
@@ -389,6 +410,7 @@ impl<'a> MainWindow<'a> {
             Some(confirming) => {
                 let left = confirming.watchdog_left().as_secs();
                 confirming.close(self.shell)?;
+                self.shell.set_title(self.window, TITLE)?;
                 format!("the backend stopped; the watchdog will revert the change in {left} s")
             }
             None => "the backend stopped; nothing can be applied or saved".to_owned(),
@@ -440,6 +462,7 @@ impl<'a> MainWindow<'a> {
         };
         let id = confirming.id();
         confirming.close(self.shell)?;
+        self.shell.set_title(self.window, TITLE)?;
         // Gone, the backend thread is noticed with the next replies.
         self.channels
             .answers
@@ -956,6 +979,19 @@ mod tests {
         events.retain(|event| matches!(event, ShellEvent::Key { .. }));
         assert_eq!(events.len(), 2 * keys.len());
         events
+    }
+
+    /// A confirm dialog holds the keyboard, so its key presses are the
+    /// answer: dropping them as its other events are left Enter and Esc
+    /// doing nothing while it was up (the GUI e2e's lost Enter).
+    #[test]
+    fn a_key_pressed_in_a_dialog_answers_it() {
+        let answers: Vec<_> = typed(&[KeyCode::Enter, KeyCode::Escape, KeyCode::KeyL])
+            .iter()
+            .map(super::dialog_answer)
+            .collect();
+        // Press and release of each: only the presses answer, and L none.
+        assert_eq!(answers, [Some(true), None, Some(false), None, None, None]);
     }
 
     #[test]

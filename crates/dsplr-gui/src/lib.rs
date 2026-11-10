@@ -33,6 +33,11 @@ use dsplr_core::link::{Answer, Reply, Request};
 
 use crate::gpu::Gpu;
 
+/// The main window's title, and its app id.
+pub const TITLE: &str = "dsplr";
+
+pub use confirm::CONFIRM_TITLE;
+
 /// The window's size when it opens, in logical pixels.
 const WINDOW_SIZE: LogicalSize = LogicalSize {
     width: 1280.0,
@@ -78,8 +83,8 @@ pub struct Link {
 pub fn run(editor: Editor, link: Link, keys: &Keys) -> Result<(), GuiError> {
     let mut shell = crcbl_shell::open()?;
     let window = shell.create_window(&WindowDesc {
-        title: "dsplr",
-        app_id: "dsplr",
+        title: TITLE,
+        app_id: TITLE,
         size: WINDOW_SIZE,
         resizable: true,
         role: WindowRole::Toplevel,

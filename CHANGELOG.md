@@ -73,11 +73,13 @@ and this project adheres to
   as `dsplr apply`: tested, guarded by the revert point and its watchdog, read
   back, and kept only once "Keep these display settings?" is answered on one of
   the dialogs shown on every monitor (Enter keeps; Esc, the countdown, or dsplr
-  dying reverts). `s` (or Save) saves the displays where the desktop reads them,
-  as `dsplr save` does, asking in the window before replacing a file dsplr did
-  not write or one edited by hand. The panel also saves the displays as a named
-  profile, restores a profile through the same flow, goes back to the revert
-  point, and reads the displays again.
+  dying reverts; the keys work in the dialog that has the keyboard and in the
+  window, and while the change waits the window's title is "dsplr: keep these
+  display settings?"). `s` (or Save) saves the displays where the desktop reads
+  them, as `dsplr save` does, asking in the window before replacing a file dsplr
+  did not write or one edited by hand. The panel also saves the displays as a
+  named profile, restores a profile through the same flow, goes back to the
+  revert point, and reads the displays again.
 - The GUI follows the desktop: an output plugged in, unplugged, turned on or off
   or changed by another program shows up in the window as it happens (on
   Hyprland, a monitor added or removed and a config reload; a rule changed with

@@ -29,9 +29,13 @@ pub struct Confirming {
     frames: Vec<Option<DialogFrame>>,
 }
 
+/// The dialogs' title, and the main window's while a change waits on its
+/// answer: what a window list shows, wherever the keyboard is.
+pub const CONFIRM_TITLE: &str = "dsplr: keep these display settings?";
+
 const KIND: Kind = Kind {
     namespace: "dsplr-confirm",
-    title: "dsplr: keep these display settings?",
+    title: CONFIRM_TITLE,
     size: DIALOG_SIZE,
     // Enter and Esc work from any; one takes the keys.
     takes_keys: true,

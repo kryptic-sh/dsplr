@@ -142,7 +142,7 @@ impl Panels {
         };
         let window = shell.create_window(&WindowDesc {
             title: kind.title,
-            app_id: "dsplr",
+            app_id: crate::TITLE,
             size: crcbl_shell::LogicalSize::new(
                 f64::from(kind.size.width),
                 f64::from(kind.size.height),
