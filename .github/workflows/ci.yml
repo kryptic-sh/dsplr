@@ -172,9 +172,12 @@ jobs:
   #
   # An entry runs each package's `<desktop>_e2e` test under
   # `tests/e2e/headless-<desktop>.sh`, unless it names its own `test` and
-  # `harness`; `env` is NAME=VALUE words the tests run with. `gui` is the
-  # GUI's test in headless sway: Vulkan through Mesa's lavapipe, keys through
-  # wtype. Mutter
+  # `harness`; `env` is NAME=VALUE words the tests run with; `lib` names
+  # packages whose library tests run too, their ignored ones only (the
+  # harness passes --ignored), for tests that need what the VM has. `gui` is
+  # the GUI's test in headless sway: Vulkan through Mesa's lavapipe, keys
+  # through wtype, captures through grim; and dsplr-gui's tests that need a
+  # Vulkan device. Mutter
   # runs headless with virtual monitors, on a D-Bus session bus of the
   # harness's own (dbus-run-session, from the dbus package).
   e2e:
@@ -203,8 +206,9 @@ jobs:
           - desktop: gui
             harness: sway
             test: gui_e2e
-            packages: sway vulkan-swrast wtype
+            packages: sway vulkan-swrast wtype grim
             tests: dsplr
+            lib: dsplr-gui
             env: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
     env:
       IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
@@ -230,6 +234,12 @@ jobs:
               | jq -r --arg test "$TEST" 'select(.reason == "compiler-artifact" and .target.name == $test) | .executable')
             [ -x "$test_bin" ] || { echo "no $TEST test in $package"; exit 1; }
             cp "$test_bin" "$share/tests/$package"
+          done
+          for package in ${{ matrix.lib }}; do
+            test_bin=$(cargo test --locked -p "$package" --lib --no-run --message-format=json \
+              | jq -r 'select(.reason == "compiler-artifact" and .profile.test) | .executable')
+            [ -x "$test_bin" ] || { echo "no library tests in $package"; exit 1; }
+            cp "$test_bin" "$share/tests/$package-lib"
           done
           cargo build --locked -p dsplr
           cp target/debug/dsplr "$share/"

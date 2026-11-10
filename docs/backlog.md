@@ -339,7 +339,8 @@ milestone:
   check).
 - **`dsplr --backend` is not written**: plan 04 names it for desktops offering
   more than one interface (GNOME on X11, KDE on X11); detection's order picks
-  for now.
+  for now. `dsplr identify` finds its backend through `find_backend` like every
+  other command, so it takes the flag when that does.
 - **KDE custom modes**: KWin 6.8 takes them as a mode list per output
   (`create_mode_list`, `set_resolution`, `set_refresh_rate`, `add_mode`, then
   `set_custom_modes` on the configuration, from management version 18), which
@@ -581,9 +582,28 @@ milestone:
 - **Identify where there are no panels**: the window reports "identify is
   unsupported here" in the bar where crcbl's shell lacks `ShellCaps::PANEL`,
   GNOME included (GNOME Shell's `ShowMonitorLabels` refuses other callers, plan
-  06). That path has no test: `MainWindow::identify` needs the window's GPU,
-  which the window's unit tests do not have. A monitor that matches no output
+  06), and `dsplr identify` exits `3` saying the same. The window's path has no
+  test: `MainWindow::identify` needs the window's GPU, which the window's unit
+  tests do not have; the standalone one does (`identify::show` against crcbl's
+  headless shell without `ShellCaps::PANEL`). A monitor that matches no output
   shows the window system's monitor name instead.
+- **`dsplr identify`'s coverage**: the GUI e2e runs it in headless sway and sees
+  its panel in a `grim` capture (pixels of the theme's surface colour, none
+  before or after) within `IDENTIFY_TIME` of the stderr line that names every
+  enabled output, and checks it exits `0` no sooner than `IDENTIFY_TIME` after
+  it started and within `STEP` after that line. Without a GUI session it checks:
+  `CRCBL_SHELL=x11` with no `DISPLAY` (the backend still reachable over Wayland)
+  exits `1` saying it needs one; no `WAYLAND_DISPLAY` or `DISPLAY` exits `6`,
+  since detection finds no backend before a window is tried; and
+  `CRCBL_SHELL=headless` exits `1`, as does the GUI, which would otherwise run
+  there unseen (`dsplr_gui::seen`). CI's `gui` entry installs `grim`, and runs
+  dsplr-gui's ignored library tests (its `lib` key), the two that need a Vulkan
+  device: `identify::tests::a_click_on_a_panel_closes_it_early` and
+  `shown_alone_it_stays_its_time_and_names_what_it_shows`. The click is not
+  driven end to end, since headless sway has no pointer
+  (`swaymsg seat - cursor press` delivered nothing to the panel, tried
+  2026-11-10) and no injector is installed. Not tested: the NotShown path (every
+  panel refused). Not run on X11.
 - **The GUI's Replace is `dsplr save --force`**: the CLI asks a yes for a file
   someone else wrote and needs `--force` for one edited by hand or holding what
   dsplr cannot keep; the window shows why and the diff in every case and takes

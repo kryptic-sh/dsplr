@@ -107,7 +107,12 @@ and this project adheres to
   so and Refresh still reads it.
 - `i` (or Identify) shows each output's connector and description in large text
   on that output for a few seconds. Where the window system has no panels, the
-  bar says identify is unsupported there.
+  bar says identify is unsupported there. `dsplr identify` shows the same panels
+  without opening the window, until their time is up or one is clicked; it exits
+  `3` where the window system has no panels and `1` without a GUI session.
+  Neither it nor the GUI runs on crcbl's headless shell
+  (`CRCBL_SHELL=headless`), where nothing would be seen: both exit `1` saying
+  so.
 - The GUI's keys are configurable in `config.toml`'s `[keys]` table, one list of
   keys per action (`nudge_left = ["Left", "h"]`, `redo = ["C-y"]`); an action
   left out keeps its default, except a default key the file binds to another

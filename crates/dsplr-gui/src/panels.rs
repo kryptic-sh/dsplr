@@ -1,7 +1,8 @@
 //! A small window on every monitor, each a crcbl panel (layer-shell on
-//! Wayland, override-redirect on X11) drawing on the main window's device:
-//! what the confirm dialogs and the identify overlay are made of. Each knows
-//! which output its monitor shows.
+//! Wayland, override-redirect on X11) drawing on the main window's device,
+//! or, with no main window, on one the first panel opens: what the confirm
+//! dialogs and the identify overlay are made of. Each knows which output its
+//! monitor shows.
 
 use crcbl_shell::{
     ButtonState, MonitorInfo, PanelAnchor, PanelDesc, PanelKeyboard, PanelLayer, PointerButton,
@@ -59,6 +60,16 @@ pub struct Panel {
     list: DrawList,
 }
 
+impl Panel {
+    /// What it names: the output its monitor shows, or, for a monitor that
+    /// matched none, the window system's own name for it.
+    pub fn label(&self) -> &str {
+        self.shown
+            .as_ref()
+            .map_or(&self.monitor, |shown| &shown.name)
+    }
+}
+
 /// The panels of one dialog or overlay.
 pub struct Panels {
     panels: Vec<Panel>,
@@ -66,15 +77,16 @@ pub struct Panels {
 
 impl Panels {
     /// Opens a panel of `kind` on every monitor `shell` knows, each knowing
-    /// the output of `layout` it shows, drawing on `main`'s device. A panel
-    /// that cannot be opened (a monitor gone since the list was read, a
+    /// the output of `layout` it shows, drawing on `main`'s device; without
+    /// a main window, on a device the first panel opens and the rest share.
+    /// A panel that cannot be opened (a monitor gone since the list was read, a
     /// presenter refused) is closed and skipped, and the rest go on. Returns
     /// the events pumped while the windows were sized, for the caller to
     /// handle, and what was skipped: the monitor (`None` for the toplevel)
     /// and why.
     pub fn open(
         shell: &mut dyn Shell,
-        main: &Gpu,
+        main: Option<&Gpu>,
         kind: &Kind,
         layout: &Layout,
     ) -> (Self, Vec<ShellEvent>, Vec<Skipped>) {
@@ -121,7 +133,7 @@ impl Panels {
     fn add(
         &mut self,
         shell: &mut dyn Shell,
-        main: &Gpu,
+        main: Option<&Gpu>,
         kind: &Kind,
         monitor: Option<(usize, &MonitorInfo)>,
         shown: Option<Shown>,
@@ -156,7 +168,11 @@ impl Panels {
         })?;
         let drawable = wait_for_size(shell, window).and_then(|(extent, pumped)| {
             events.extend(pumped);
-            Ok((main.open_shared(shell, window, extent)?, extent))
+            let gpu = match main.or_else(|| self.panels.first().map(|panel| &panel.gpu)) {
+                Some(device) => device.open_shared(shell, window, extent)?,
+                None => Gpu::open(shell, window, extent)?,
+            };
+            Ok((gpu, extent))
         });
         match drawable {
             Ok((gpu, extent)) => {
@@ -183,6 +199,14 @@ impl Panels {
 
     pub fn is_empty(&self) -> bool {
         self.panels.is_empty()
+    }
+
+    /// What each panel names ([`Panel::label`]), in their order.
+    pub fn labels(&self) -> Vec<String> {
+        self.panels
+            .iter()
+            .map(|panel| panel.label().to_owned())
+            .collect()
     }
 
     /// Whether `window` is the toplevel opened where there are no panels.

@@ -15,7 +15,7 @@ completions and a man page generated at release.
 | `dsplr profile list [--json]`, `show NAME [--json]`, `rm NAME`                                                                             | Manage the profile store                                                                                                                                                                                            |
 | `dsplr profile import kanshi [PATH] [--force]`                                                                                             | Import kanshi's profiles into the store ([05](05-persistence-and-profiles.md#importing-kanshi-profiles)); exits `1` when one is skipped or not written, saying why                                                  |
 | `dsplr watch [--force]`                                                                                                                    | Hotplug profile daemon: restores the picked profile, kept without asking, whenever the connected outputs change ([05](05-persistence-and-profiles.md#hotplug-profiles)); refused on KDE and GNOME without `--force` |
-| `dsplr identify`                                                                                                                           | Show the identify overlay (needs a GUI session)                                                                                                                                                                     |
+| `dsplr identify`                                                                                                                           | Show the identify overlay without the main window, for its time or until a panel is clicked (needs a GUI session with panels: `3` where the window system has none, `1` where no window opens)                      |
 
 Common flags: `--backend <name>`, `--yes` (skip the confirm prompt; the revert
 point is still written), `--dry-run` (validate, and test where the backend has a
@@ -34,6 +34,16 @@ cannot express it, and a save the backend cannot do there), `4` the desktop
 refused, `5` reverted (timeout or declined), `6` no backend, `7` no profile for
 the connected outputs (`dsplr restore` without a name; nothing changed). Named
 in one enum in `apps/dsplr`.
+
+`dsplr identify` reads the layout from the backend like the other commands (`6`
+without one), then shows the GUI's identify panels and exits `0` once they
+close. A window system without panels (GNOME, any without layer-shell) is `3`,
+as a save the backend cannot do there is; no GUI session to open (no display, or
+a window or GPU that cannot be opened, or crcbl's headless shell chosen with
+`CRCBL_SHELL`, which shows nothing) is `1`, saying it needs one. With no display
+at all, detection finds no backend first: `6`. No new exit code was added for
+it. It takes no `--time`: the overlay's time is the GUI's (`IDENTIFY_TIME`), and
+nothing asked for it to differ.
 
 `dsplr watch` exits only when stopped or when it cannot go on: `0` on SIGINT or
 SIGTERM, `3` on KDE or GNOME without `--force`, `6` when no backend is found at

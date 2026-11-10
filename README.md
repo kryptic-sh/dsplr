@@ -25,8 +25,8 @@ Part of the [kryptic.sh](https://kryptic.sh) suite.
   reverts on its own, identify, profiles, and live updates when the desktop
   changes.
 - **CLI**: `list`, `backend`, `set`, `apply`, `save`, `restore` (and
-  `--revert`), `profile list|show|rm`, `profile import kanshi`, and `watch`,
-  which restores the matching profile whenever monitors are plugged in.
+  `--revert`), `profile list|show|rm`, `profile import kanshi`, `identify`, and
+  `watch`, which restores the matching profile whenever monitors are plugged in.
 
 Open: X11 window managers (M7) and the first release (M9), with packages and
 install instructions. The plan is in [`docs/plan/`](docs/plan/00-index.md); what

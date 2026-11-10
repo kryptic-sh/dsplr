@@ -36,7 +36,7 @@ use glam::Vec2;
 
 use crate::confirm::{CONFIRM_TITLE, Confirming};
 use crate::gpu::Gpu;
-use crate::identify::Identifying;
+use crate::identify::{IDENTIFY_UNSUPPORTED, Identifying};
 use crate::keys::{self, Action, Keymap};
 use crate::panel::{self as panel_ui, ActionDrafts, Actions, Built, Change, Command, Drafts};
 use crate::{GuiError, TITLE, fonts, paint};
@@ -280,6 +280,7 @@ impl<'a> MainWindow<'a> {
                     }
                 }
                 if let Some(identifying) = &mut self.identifying {
+                    // A click on it changes nothing in the window.
                     identifying.handle(&event)?;
                     if event
                         .window()
@@ -404,14 +405,11 @@ impl<'a> MainWindow<'a> {
             identifying.close(self.shell)?;
         }
         if !self.shell.caps().contains(ShellCaps::PANEL) {
-            self.notice = Some(
-                "identify is unsupported here: this window system has no panels to show it on"
-                    .to_owned(),
-            );
+            self.notice = Some(IDENTIFY_UNSUPPORTED.to_owned());
             return Ok(Vec::new());
         }
         let live = self.editor.live().clone();
-        let (identifying, events, skipped) = Identifying::open(self.shell, gpu, &live);
+        let (identifying, events, skipped) = Identifying::open(self.shell, Some(gpu), &live);
         if let Some(last) = skipped.last() {
             self.notice = Some(last.clone());
         }

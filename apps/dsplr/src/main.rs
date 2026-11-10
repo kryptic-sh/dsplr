@@ -4,7 +4,8 @@
 //! it from a layout file and `dsplr set` one output at a time,
 //! `dsplr restore --revert` goes back, `dsplr save` makes the current state
 //! last, and `dsplr save --profile`, `dsplr restore` and `dsplr profile` keep
-//! named layouts. `dsplr` alone opens the GUI.
+//! named layouts; `dsplr identify` names each monitor's output on it.
+//! `dsplr` alone opens the GUI.
 
 use std::fs;
 use std::io::{self, Write};
@@ -22,6 +23,7 @@ use dsplr_persist::profile::ProfileName;
 mod apply;
 mod backend;
 mod gui;
+mod identify;
 mod list;
 mod profile;
 mod restore;
@@ -132,6 +134,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Show each output's name and description on its monitor for a few
+    /// seconds, or until one is clicked. Needs a GUI session with panels
+    /// (layer-shell on Wayland, as GNOME lacks): exits 3 where there are
+    /// none, 1 where no window can be opened.
+    Identify,
     /// List, show and remove the profiles `dsplr save --profile` saves, and
     /// import kanshi's.
     Profile {
@@ -296,6 +303,7 @@ async fn run(command: Command) -> Exit {
             Ok(config) => watch::run(force, config.confirm.timeout()).await,
             Err(exit) => exit,
         },
+        Command::Identify => identify::run().await,
         Command::Profile { command } => match command {
             ProfileCommand::List { json } => profile::list(json),
             ProfileCommand::Show { name, json } => profile::show(&name, json),
@@ -712,6 +720,16 @@ mod tests {
         ] {
             let error = Cli::try_parse_from(["dsplr", "set", "DP-1", flag, value]).unwrap_err();
             assert_eq!(error.exit_code(), Exit::Usage as i32, "{flag} {value}");
+        }
+    }
+
+    #[test]
+    fn identify_takes_no_arguments() {
+        let cli = Cli::try_parse_from(["dsplr", "identify"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Identify)));
+        for extra in ["DP-1", "--time", "--json"] {
+            let error = Cli::try_parse_from(["dsplr", "identify", extra]).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{extra}");
         }
     }
 

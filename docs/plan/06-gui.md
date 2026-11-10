@@ -92,6 +92,10 @@ confirm dialog instead of dsplr's ([05](05-persistence-and-profiles.md#gnome)).
 
 ## Identify overlay
 
+`i` in the window, or `dsplr identify` alone ([07](07-cli.md)): the same panels,
+one per monitor, for `IDENTIFY_TIME`. They take no keys. Shown alone, a click on
+one closes them early; in the window a click on one does nothing.
+
 On GNOME identify is **unsupported**: the window says so in the bar, as on any
 window system without panels. GNOME Shell's `ShowMonitorLabels` (which
 gnome-control-center uses) answers only callers owning `org.gnome.Settings`,

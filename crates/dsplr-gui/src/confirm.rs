@@ -59,7 +59,7 @@ impl Confirming {
         (deadline, watchdog): (Instant, Instant),
         layout: &Layout,
     ) -> (Self, Vec<ShellEvent>, Vec<String>) {
-        let (panels, events, skipped) = Panels::open(shell, main, &KIND, layout);
+        let (panels, events, skipped) = Panels::open(shell, Some(main), &KIND, layout);
         let skipped = skipped
             .into_iter()
             .map(|(monitor, error)| match monitor {

@@ -2,10 +2,13 @@
 //! the confirm dialogs, one left to time out, one whose dsplr is killed
 //! mid-confirm, which its watchdog reverts, and an output plugged in while
 //! the window is open, which it follows without losing the pending edit,
-//! and then turned off from the panel by keys alone.
+//! and then turned off from the panel by keys alone. And `dsplr identify`,
+//! its panel seen in a `grim` capture while it is up, gone after, and the
+//! exits where there is no GUI session (no X display for the X11 shell, no
+//! display at all, crcbl's headless shell).
 //!
-//! Run through the harness, with Mesa's software Vulkan (lavapipe) and
-//! `wtype` installed:
+//! Run through the harness, with Mesa's software Vulkan (lavapipe), `wtype`
+//! and `grim` installed:
 //!
 //! ```text
 //! VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
@@ -19,10 +22,14 @@
 
 #![cfg(target_os = "linux")]
 
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use dsplr_core::Theme;
+use dsplr_core::dialog::{IDENTIFY_SIZE, IDENTIFY_TIME};
 use dsplr_gui::{CONFIRM_TITLE, TITLE};
 use dsplr_model::Layout;
 
@@ -294,4 +301,175 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     let mut gui = gui;
     let status = gui.0.wait().unwrap();
     assert!(status.success(), "quit after the hotplug: {status}");
+}
+
+/// How many of `output`'s pixels are `color`, in a `grim` capture of it.
+/// grim writes PPM (`P6`, then width, height and the maximum value, then the
+/// pixels as RGB bytes), which needs no decoder.
+fn pixels_of(output: &str, color: dsplr_core::Color) -> usize {
+    let capture = Command::new("grim")
+        .args(["-t", "ppm", "-o", output, "-"])
+        .output()
+        .expect("grim runs (the gui entry installs it)");
+    assert!(capture.status.success(), "{capture:?}");
+    let ppm = capture.stdout;
+    // The header is four whitespace-separated fields, then one whitespace
+    // byte before the pixels.
+    let mut fields = 0;
+    let mut at = 0;
+    while fields < 4 {
+        while ppm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        while !ppm[at].is_ascii_whitespace() {
+            at += 1;
+        }
+        fields += 1;
+    }
+    assert!(ppm.starts_with(b"P6"), "not a PPM capture");
+    ppm[at + 1..]
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .filter(|rgb| **rgb == [color.r, color.g, color.b])
+        .count()
+}
+
+#[test]
+#[ignore = "needs the headless sway harness, lavapipe and grim: tests/e2e/headless-sway.sh"]
+fn identify_shows_each_output_s_panel_for_its_time() {
+    harness_runtime();
+    let outputs: Vec<String> = layout()
+        .entries
+        .iter()
+        .filter(|e| e.state.enabled)
+        .filter_map(|e| e.output.as_ref().map(|o| o.connector.clone()))
+        .collect();
+    assert!(!outputs.is_empty());
+    let surface = Theme::tokyo_night().surface;
+    for output in &outputs {
+        assert_eq!(pixels_of(output, surface), 0, "{output} before identify");
+    }
+
+    let started = Instant::now();
+    let mut identify = Running(
+        Command::new(dsplr_bin())
+            .arg("identify")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("dsplr identify starts"),
+    );
+    // Its lines, each with when it came, read on a thread of their own so
+    // waiting for one has a limit.
+    let stderr = identify.0.stderr.take().unwrap();
+    let (lines, said) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            if lines.send((Instant::now(), line)).is_err() {
+                return;
+            }
+        }
+    });
+    // Said once the panels are open: their time runs from just before it.
+    // Detection, the device and the first frame all come before, so READY
+    // allows for them.
+    let (opened_at, opened) = loop {
+        let (at, line) = said
+            .recv_timeout(READY)
+            .expect("identify says what it shows");
+        if line.starts_with("dsplr: identifying ") {
+            break (at, line);
+        }
+    };
+    for output in &outputs {
+        assert!(opened.contains(output.as_str()), "{output} in {opened:?}");
+    }
+
+    // Most of each panel is its surface colour, once it has drawn, before
+    // its time is up.
+    let panel = (IDENTIFY_SIZE.width * IDENTIFY_SIZE.height) as usize;
+    for output in &outputs {
+        while pixels_of(output, surface) < panel / 2 {
+            assert!(
+                opened_at.elapsed() < IDENTIFY_TIME,
+                "no identify panel seen on {output} while it was up"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    let status = identify.0.wait().unwrap();
+    let rest: Vec<String> = said.try_iter().map(|(_, line)| line).collect();
+    assert!(status.success(), "{status}: {rest:?}");
+    let took = started.elapsed();
+    assert!(took >= IDENTIFY_TIME, "closed after {took:?}");
+    let after = opened_at.elapsed();
+    assert!(
+        after < IDENTIFY_TIME + STEP,
+        "closed {after:?} after opening"
+    );
+    for output in &outputs {
+        assert_eq!(pixels_of(output, surface), 0, "{output} after identify");
+    }
+
+    // No GUI session: the X11 shell asked for with no X display, while the
+    // backend is still reachable over Wayland.
+    let (code, stderr) = identify_with(&[("CRCBL_SHELL", Some("x11")), ("DISPLAY", None)]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("needs a GUI session"), "{stderr}");
+    // No display at all: detection finds no backend before a window is
+    // tried, so it is the no-backend exit.
+    let (code, stderr) = identify_with(&[
+        ("CRCBL_SHELL", Some("wayland")),
+        ("WAYLAND_DISPLAY", None),
+        ("DISPLAY", None),
+    ]);
+    assert_eq!(code, Some(6), "{stderr}");
+    assert!(stderr.contains("no backend"), "{stderr}");
+    // crcbl's headless shell would show the panels to no one and report
+    // them shown: refused as no GUI session.
+    let (code, stderr) = identify_with(&[("CRCBL_SHELL", Some("headless"))]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(stderr.contains("needs a GUI session"), "{stderr}");
+    assert!(stderr.contains("headless"), "{stderr}");
+    // And the GUI, which would otherwise run there unseen until killed.
+    let mut gui = Running(
+        Command::new(dsplr_bin())
+            .env("CRCBL_SHELL", "headless")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + STEP;
+    let status = loop {
+        if let Some(status) = gui.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the GUI ran on the headless shell"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status.code(), Some(1), "the GUI on the headless shell");
+}
+
+/// `dsplr identify`'s exit code and stderr, run with each variable set
+/// (`Some`) or removed (`None`).
+fn identify_with(vars: &[(&str, Option<&str>)]) -> (Option<i32>, String) {
+    let mut command = Command::new(dsplr_bin());
+    command.arg("identify");
+    for (name, value) in vars {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let output = command.output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
 }

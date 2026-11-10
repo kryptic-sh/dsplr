@@ -2,11 +2,9 @@
 //! canvas dsplr-core draws, where outputs are dragged and moved with keys,
 //! and the property panel, crcbl-ui widgets editing the selected output and
 //! the actions (Apply, Save, Revert, profiles), every edit pending with undo
-//! and redo; and the confirm dialogs, one per monitor. The backend is on a
+//! and redo; the confirm dialogs and the identify overlay, one panel per
+//! monitor, the overlay also shown alone ([`identify`]). The backend is on a
 //! thread of its own ([`Link`]).
-//!
-//! Not here yet: the identify overlays, configurable keys, and following
-//! the desktop's changes.
 
 mod confirm;
 mod fonts;
@@ -26,10 +24,13 @@ use crcbl_app::backend::GpuError;
 use crcbl_app::present::PresentError;
 use crcbl_frame::graph::GraphError;
 use crcbl_hal::HalError;
-use crcbl_shell::{LogicalSize, Shell, ShellError, ShellEvent, WindowDesc, WindowId, WindowRole};
+use crcbl_shell::{
+    LogicalSize, Shell, ShellBackend, ShellError, ShellEvent, WindowDesc, WindowId, WindowRole,
+};
 use dsplr_config::keys::Keys;
 use dsplr_core::Editor;
 use dsplr_core::link::{Answer, Reply, Request};
+use dsplr_model::Layout;
 
 use crate::gpu::Gpu;
 
@@ -37,6 +38,7 @@ use crate::gpu::Gpu;
 pub const TITLE: &str = "dsplr";
 
 pub use confirm::CONFIRM_TITLE;
+pub use identify::{IDENTIFY_UNSUPPORTED, Identified};
 
 /// The window's size when it opens, in logical pixels.
 const WINDOW_SIZE: LogicalSize = LogicalSize {
@@ -52,6 +54,9 @@ const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(5);
 pub enum GuiError {
     #[error("cannot open a window: {0}")]
     Shell(#[from] ShellError),
+    /// `CRCBL_SHELL` chose crcbl's headless shell, whose windows no one sees.
+    #[error("CRCBL_SHELL chose crcbl's headless shell, which has no screen to show anything on")]
+    Headless,
     #[error("the window system never gave the window a size")]
     NeverSized,
     /// No GPU backend opened. Kept apart from [`GuiError::NoGpu`] because
@@ -81,7 +86,7 @@ pub struct Link {
 /// the canvas's keys as `keys` binds them, and runs it until the user quits. Dropping `link` on the way out tells the
 /// backend thread to finish.
 pub fn run(editor: Editor, link: Link, keys: &Keys) -> Result<(), GuiError> {
-    let mut shell = crcbl_shell::open()?;
+    let mut shell = seen(crcbl_shell::open()?)?;
     let window = shell.create_window(&WindowDesc {
         title: TITLE,
         app_id: TITLE,
@@ -110,6 +115,25 @@ pub fn run(editor: Editor, link: Link, keys: &Keys) -> Result<(), GuiError> {
     gpu.destroy();
     drop(shell);
     outcome
+}
+
+/// Shows the identify overlay for the outputs of `layout` on every monitor,
+/// without the main window (`dsplr identify`), until its time is up or a
+/// panel is clicked; what there is to tell goes to `say`, a line each. An
+/// error opening the window system means there is no GUI session to show it
+/// in.
+pub fn identify(layout: &Layout, say: impl FnMut(&str)) -> Result<Identified, GuiError> {
+    let mut shell = seen(crcbl_shell::open()?)?;
+    identify::show(shell.as_mut(), layout, say)
+}
+
+/// `shell`, unless it is crcbl's headless one: `CRCBL_SHELL=headless` opens
+/// it, and dsplr would run there, shown to no one, rather than fail.
+fn seen(shell: Box<dyn Shell>) -> Result<Box<dyn Shell>, GuiError> {
+    if shell.backend() == ShellBackend::Headless {
+        return Err(GuiError::Headless);
+    }
+    Ok(shell)
 }
 
 /// Relays `replies` to the loop, waking it as each arrives, as pikr's
@@ -154,5 +178,18 @@ fn wait_for_size(
             return Err(GuiError::NeverSized);
         }
         shell.wait_events(Some(Duration::from_millis(8)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crcbl_shell::HeadlessShell;
+
+    use super::*;
+
+    #[test]
+    fn the_headless_shell_is_no_gui_session() {
+        let shown = seen(Box::new(HeadlessShell::new()));
+        assert!(matches!(shown, Err(GuiError::Headless)));
     }
 }
