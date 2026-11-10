@@ -1,7 +1,8 @@
 //! The GUI's Apply against a real, headless sway: a change kept with Enter in
 //! the confirm dialogs, one left to time out, one whose dsplr is killed
 //! mid-confirm, which its watchdog reverts, and an output plugged in while
-//! the window is open, which it follows without losing the pending edit.
+//! the window is open, which it follows without losing the pending edit,
+//! and then turned off from the panel by keys alone.
 //!
 //! Run through the harness, with Mesa's software Vulkan (lavapipe) and
 //! `wtype` installed:
@@ -269,6 +270,26 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     until_confirming(false, "Enter answering the confirm");
     std::thread::sleep(Duration::from_secs(CONFIRM_SECS + 2));
     until_scale_of(&new, 1.25, STEP, "kept");
+
+    // The panel from the keyboard: `p` takes the keys into it, landing on
+    // the selected output's Enabled box, Enter turns it off (Enter is no
+    // canvas key, so only the panel can have done it), Escape gives the
+    // keys back to the canvas, and `a` applies.
+    wtype(&["p"]);
+    wtype(&["-k", "Return"]);
+    wtype(&["-k", "Escape"]);
+    wtype(&["a"]);
+    until_confirming(true, "the confirm of turning it off from the panel");
+    wtype(&["-k", "Return"]);
+    until_confirming(false, "Enter answering the confirm");
+    let deadline = Instant::now() + STEP;
+    while entry(&layout(), &new).state.enabled {
+        assert!(
+            Instant::now() < deadline,
+            "{new} still on after the panel's apply"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
     wtype(&["q"]);
     let mut gui = gui;
     let status = gui.0.wait().unwrap();

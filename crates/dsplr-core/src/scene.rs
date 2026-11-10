@@ -9,7 +9,7 @@ use crate::draw::{Bounds, Color, DrawList, Hit, Point};
 use crate::editor::on_canvas;
 use crate::fit::{MARGIN, TILE_HEIGHT, fit, rects, regions};
 use crate::panel::name;
-use crate::{Editor, Theme};
+use crate::{Editor, Messages, Theme};
 
 /// A tray tile's width, and the space between two.
 const TILE_WIDTH: f32 = 168.0;
@@ -71,6 +71,41 @@ pub fn draw(
         theme,
     );
     list
+}
+
+/// Where [`draw_messages`] draws `messages`: across the bottom of the
+/// canvas, a line each (one when there are none) and a margin, cut at the
+/// canvas's top.
+pub fn messages_bounds(editor: &Editor, viewport: Size, messages: &Messages) -> Bounds {
+    let canvas = regions(editor, viewport).canvas;
+    let lines = messages.lines().len().max(1);
+    let height = (lines as f32 * LINE + 2.0 * PAD).min(canvas.height);
+    Bounds::new(canvas.x, canvas.bottom() - height, canvas.width, height)
+}
+
+/// The backend thread's recent `messages` over the bottom of the canvas,
+/// above the bar, oldest first, the newest by the bar; or a line saying
+/// there are none. Drawn over `list`, a frame [`draw`] made for `editor` in
+/// `viewport`. It adds no hit region: it is read, not clicked.
+pub fn draw_messages(
+    list: &mut DrawList,
+    editor: &Editor,
+    viewport: Size,
+    messages: &Messages,
+    theme: &Theme,
+) {
+    let lines: Vec<(String, f32, Color)> = if messages.lines().len() == 0 {
+        vec![("no messages yet".to_owned(), TEXT_SIZE, theme.muted)]
+    } else {
+        messages
+            .lines()
+            .map(|line| (line.to_owned(), TEXT_SIZE, theme.text_dim))
+            .collect()
+    };
+    let log = messages_bounds(editor, viewport, messages);
+    list.fill(log, theme.surface);
+    list.fill(Bounds::new(log.x, log.y, log.width, 1.0), theme.divider);
+    label(list, log, lines);
 }
 
 /// The worst problem validation found with each output, by index. An
@@ -491,6 +526,24 @@ mod tests {
         let text = draw(&editor, WINDOW, &Theme::tokyo_night(), None, KEYS).to_string();
         assert!(text.contains("#e0af68"), "a warning outline:\n{text}");
         assert_snapshot("gap-warning", &text);
+    }
+
+    /// The message log lies over the bottom of the canvas, the newest line
+    /// last, and says so when there is nothing in it.
+    #[test]
+    fn the_message_log() {
+        let editor = Editor::new(three_monitors());
+        let theme = Theme::tokyo_night();
+        let mut messages = crate::Messages::default();
+        let mut empty = crate::DrawList::default();
+        super::draw_messages(&mut empty, &editor, WINDOW, &messages, &theme);
+        assert!(empty.to_string().contains("\"no messages yet\""), "{empty}");
+        messages.push("applied the layout\nread back: nothing differs");
+        messages.push("kept");
+        let mut list = crate::DrawList::default();
+        super::draw_messages(&mut list, &editor, WINDOW, &messages, &theme);
+        assert!(list.hits.is_empty(), "nothing in it is clicked");
+        assert_snapshot("message-log", &list.to_string());
     }
 
     /// A message (a prompt, or why an edit was refused) takes the bar.

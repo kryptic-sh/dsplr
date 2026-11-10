@@ -193,6 +193,8 @@ pub enum Action {
     ScaleDown,
     ToggleEnabled,
     Identify,
+    Panel,
+    Messages,
     Apply,
     Save,
     Undo,
@@ -208,13 +210,17 @@ macro_rules! keys {
         #[serde(try_from = "RawKeys")]
         pub struct Keys {
             $(pub $field: Vec<KeySpec>,)*
+            /// Default keys the file's own bindings took from the actions
+            /// it leaves out, one line each, for the user to be told.
+            pub warnings: Vec<String>,
         }
 
-        /// [`Keys`] as the file gives it, before it is checked.
-        #[derive(Deserialize)]
-        #[serde(default, deny_unknown_fields)]
+        /// [`Keys`] as the file gives it, before it is checked: `None` for
+        /// an action it leaves out.
+        #[derive(Default, Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct RawKeys {
-            $($field: Vec<KeySpec>,)*
+            $(#[serde(default)] $field: Option<Vec<KeySpec>>,)*
         }
 
         /// The plan's table.
@@ -222,14 +228,8 @@ macro_rules! keys {
             fn default() -> Self {
                 Self {
                     $($field: vec![$($key.parse().expect("a default key")),*],)*
+                    warnings: Vec::new(),
                 }
-            }
-        }
-
-        impl Default for RawKeys {
-            fn default() -> Self {
-                let Keys { $($field,)* } = Keys::default();
-                Self { $($field,)* }
             }
         }
 
@@ -252,13 +252,17 @@ macro_rules! keys {
         impl TryFrom<RawKeys> for Keys {
             type Error = String;
 
-            /// Refuses one key for two actions: which would win is not
-            /// obvious from the file.
+            /// The file's bindings, and the defaults of the actions it
+            /// leaves out. One key the file binds to two actions is
+            /// refused: which would win is not obvious from the file. A key
+            /// the file binds that an action it leaves out has by default
+            /// goes to the file's action, and that action keeps its other
+            /// defaults (none left, it has no key), with a warning.
             fn try_from(raw: RawKeys) -> Result<Self, Self::Error> {
-                let keys = Self { $($field: raw.$field,)* };
-                let mut seen: HashMap<KeySpec, &'static str> = HashMap::new();
-                $(for key in &keys.$field {
-                    if let Some(other) = seen.insert(*key, stringify!($field)) {
+                let defaults = Self::default();
+                let mut bound: HashMap<KeySpec, &'static str> = HashMap::new();
+                $(for key in raw.$field.iter().flatten() {
+                    if let Some(other) = bound.insert(*key, stringify!($field)) {
                         if other != stringify!($field) {
                             return Err(format!(
                                 "the key {key} is bound to both {other} and {}",
@@ -267,7 +271,30 @@ macro_rules! keys {
                         }
                     }
                 })*
-                Ok(keys)
+                let mut warnings = Vec::new();
+                $(let $field = match raw.$field {
+                    Some(keys) => keys,
+                    None => {
+                        let (kept, taken): (Vec<KeySpec>, Vec<KeySpec>) = defaults
+                            .$field
+                            .iter()
+                            .partition(|key| !bound.contains_key(key));
+                        for key in &taken {
+                            warnings.push(format!(
+                                "{key} is bound to {} here, so it no longer does {}{}",
+                                bound[key],
+                                stringify!($field),
+                                if kept.is_empty() {
+                                    ", which has no key now"
+                                } else {
+                                    ""
+                                }
+                            ));
+                        }
+                        kept
+                    }
+                };)*
+                Ok(Self { $($field,)* warnings })
             }
         }
     };
@@ -290,6 +317,8 @@ keys! {
     scale_down: ScaleDown = ["-", "KP_Subtract"],
     toggle_enabled: ToggleEnabled = ["space"],
     identify: Identify = ["i"],
+    panel: Panel = ["p", "F6"],
+    messages: Messages = ["m"],
     apply: Apply = ["a"],
     save: Save = ["s"],
     undo: Undo = ["u"],
@@ -374,7 +403,8 @@ mod tests {
     }
 
     impl Keys {
-        /// The defaults, through the same check a file's keys get.
+        /// The defaults, through the same check a file's keys get: a file
+        /// that sets no action.
         fn try_from_defaults() -> Result<Self, String> {
             Self::try_from(super::RawKeys::default())
         }

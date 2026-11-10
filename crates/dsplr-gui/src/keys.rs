@@ -1,11 +1,12 @@
 //! What a key press does (`docs/plan/06-gui.md`'s key table). Keys are read
 //! from the keysym, so a keymap's layout decides what a key is.
 //!
-//! Three readings, by what has the keyboard: the canvas ([`Keymap`], from
+//! Four readings, by what has the keyboard: the canvas ([`Keymap`], from
 //! `config.toml`'s `[keys]`), the confirm dialogs, the quit prompt and a
-//! question ([`answer`]), and the panel while a field takes typing or a
-//! drop-down is open ([`nav`]). Only the first is configurable: the others
-//! are the keys every dialog takes.
+//! question ([`answer`]), the panel while a field takes typing or a
+//! drop-down is open ([`nav`]), and the panel the `panel` key moved the
+//! keyboard into ([`panel_nav`]). Only the first is configurable: the
+//! others are the keys every dialog and form takes.
 
 use crcbl_shell::{Keysym, Modifiers};
 use crcbl_ui::tree::{Direction as NavDirection, NavInput};
@@ -33,6 +34,10 @@ pub enum Action {
     Redo,
     /// Show each output's name on it.
     Identify,
+    /// Take the keyboard into the panel, or back out of it.
+    Panel,
+    /// Show or hide the backend's recent messages.
+    Messages,
     /// Apply the pending edits through the confirm flow.
     Apply,
     /// Save the displays where the desktop reads them.
@@ -60,6 +65,8 @@ impl From<config::Action> for Action {
             A::ScaleDown => Self::Scale { up: false },
             A::ToggleEnabled => Self::ToggleEnabled,
             A::Identify => Self::Identify,
+            A::Panel => Self::Panel,
+            A::Messages => Self::Messages,
             A::Apply => Self::Apply,
             A::Save => Self::Save,
             A::Undo => Self::Undo,
@@ -78,6 +85,9 @@ pub struct Keymap {
     bindings: Vec<(KeySpec, Action)>,
     /// The bar's line about the keys.
     hint: String,
+    /// Default keys the config's own bindings took over
+    /// ([`Keys::warnings`]).
+    warnings: Vec<String>,
 }
 
 impl Keymap {
@@ -90,7 +100,13 @@ impl Keymap {
         Self {
             bindings,
             hint: hint(keys),
+            warnings: keys.warnings.clone(),
         }
+    }
+
+    /// Default keys the config's own bindings took over, one line each.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// The action a press of `keysym` with `modifiers` held stands for.
@@ -174,6 +190,8 @@ fn hint(keys: &Keys) -> String {
         group(&[A::ScaleUp, A::ScaleDown], "scale"),
         group(&[A::ToggleEnabled], "on/off"),
         group(&[A::Identify], "identify"),
+        group(&[A::Panel], "panel"),
+        group(&[A::Messages], "messages"),
         group(&[A::Apply], "apply"),
         group(&[A::Save], "save"),
         group(&[A::Undo, A::Redo], "undo / redo"),
@@ -215,6 +233,19 @@ pub fn nav(keysym: Keysym, modifiers: Modifiers) -> Option<NavInput> {
         Keysym::TAB if shift => NavInput::PREV,
         Keysym::TAB => NavInput::NEXT,
         _ => return None,
+    })
+}
+
+/// The panel's navigation for a press of `keysym` once the `panel` key has
+/// moved the keyboard into it and nothing in it is engaged: as [`nav`],
+/// with Left and Right moving too, and space accepting as Enter does (a
+/// button fires, a checkbox flips, a drop-down opens).
+pub fn panel_nav(keysym: Keysym, modifiers: Modifiers) -> Option<NavInput> {
+    nav(keysym, modifiers).or_else(|| match keysym {
+        Keysym::LEFT => Some(NavInput::toward(NavDirection::Left)),
+        Keysym::RIGHT => Some(NavInput::toward(NavDirection::Right)),
+        _ if keysym.to_char() == Some(' ') => Some(NavInput::ACCEPT),
+        _ => None,
     })
 }
 
@@ -305,6 +336,21 @@ mod tests {
     }
 
     #[test]
+    fn in_the_panel_left_right_and_space_navigate_too_and_letters_do_not() {
+        use super::panel_nav;
+        let none = Modifiers::empty();
+        assert_eq!(panel_nav(key(' '), none), Some(NavInput::ACCEPT));
+        assert_eq!(panel_nav(Keysym::RETURN, none), Some(NavInput::ACCEPT));
+        assert!(panel_nav(Keysym::LEFT, none).is_some_and(|nav| nav.direction.is_some()));
+        assert!(panel_nav(Keysym::RIGHT, none).is_some_and(|nav| nav.direction.is_some()));
+        assert_eq!(panel_nav(Keysym::TAB, none), Some(NavInput::NEXT));
+        assert_eq!(panel_nav(key('h'), none), None);
+        // While typing, Left, Right and space are the field's.
+        assert_eq!(nav(Keysym::LEFT, none), None);
+        assert_eq!(nav(key(' '), none), None);
+    }
+
+    #[test]
     fn a_rebound_key_replaces_the_default() {
         use dsplr_config::keys::Keys;
 
@@ -339,7 +385,7 @@ mod tests {
     fn the_default_hint_names_each_action_s_first_key() {
         assert_eq!(
             Keymap::default().hint(),
-            "drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  i identify  ·  a apply  ·  s save  ·  u C-r undo / redo  ·  q quit"
+            "drag or h j k l move  ·  r rotate  ·  + - scale  ·  space on/off  ·  i identify  ·  p panel  ·  m messages  ·  a apply  ·  s save  ·  u C-r undo / redo  ·  q quit"
         );
     }
 }

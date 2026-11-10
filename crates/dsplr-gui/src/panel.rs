@@ -133,6 +133,8 @@ tooltip {{ background: {output}; border-color: {border}; color: {text}; font-fam
 button {{ padding: 3px 8px; background: {output}; border-color: {border}; color: {text}; }}
 button:hover {{ background: {background}; border-color: {accent}; }}
 button:disabled {{ background: {surface}; color: {muted}; }}
+select:focus, drag-value:focus, text-input:focus, button:focus, checkbox:focus > .checkbox-box {{
+  border-color: {accent}; }}
 .buttons text-input {{ width: 140px; }}
 .buttons select {{ width: 140px; }}
 .note {{ color: {pending}; }}

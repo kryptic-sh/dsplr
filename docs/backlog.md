@@ -542,12 +542,18 @@ milestone:
   for.
 - **Testing on the owner's desktop**: only after the headless suite passes, and
   only with the owner's go-ahead (owner's rule, 2026-11-04). Not done yet.
-- **The rest of the GUI (M3)**: reaching the panel's widgets from the keyboard
-  (Tab selects outputs; the widgets take the pointer, and keys only once a field
-  or list is engaged), and a place for the backend thread's messages beyond the
-  last (the bar shows one line, so `dsplr save`'s include note can hide its
-  "saved to", and a dropped-edits note can be replaced by the next message).
-  Listed in `docs/plan/06-gui.md` ("Still to build in M3").
+- **The panel from the keyboard, how far it is checked**: `p` / `F6` takes the
+  keys into the panel (crcbl-ui's focus traversal), unit-tested against the
+  headless shell (landing, space on the Enabled box, Tab moving focus, Escape
+  back to the canvas) and driven in `gui_e2e` for one path (`p`, Enter on the
+  Enabled box, Escape, apply). Not driven in a window: the arrows inside an open
+  list, typing into a field reached by Tab, and the drag-values. The focus ring
+  (`:focus` in the panel's stylesheet) was not looked at on screen.
+- **The message log, how far it is checked**: `m` shows the last
+  `MESSAGE_HISTORY` lines of the backend thread's messages and the window's
+  dropped-edit notes over the canvas (`draw_messages`, a draw-list snapshot);
+  not looked at on screen. A click on it does nothing (`messages_bounds`); a
+  click elsewhere on the canvas works as usual and leaves it shown.
 - **Caps Lock turns `h` into `H`, and `C-r` into `C-R`**: keys are matched by
   the keysym crcbl-shell reports, which is the one for the current xkb state
   (`Xkb::keysym`, `xkb_state_key_get_one_sym`), Caps Lock included; crcbl 0.18.0
@@ -568,9 +574,10 @@ milestone:
 - **Key config limits**: `[keys]` takes Ctrl, Alt and Shift, not Super, and a
   key name from `dsplr_config::keys::NAMES` or F1 to F12 (no arrows' keypad
   forms, no Insert); the dialogs', quit prompt's and engaged panel field's keys
-  are fixed. A key bound to two actions is refused rather than one winning.
-  Character keys match the keysym's character, so they follow the keyboard
-  layout; Shift is never compared for them (`H` is Shift+h).
+  are fixed. A key the file binds to two actions is refused rather than one
+  winning; one the file binds that another action has by default is taken from
+  it, with a warning. Character keys match the keysym's character, so they
+  follow the keyboard layout; Shift is never compared for them (`H` is Shift+h).
 - **Identify where there are no panels**: the window reports "identify is
   unsupported here" in the bar where crcbl's shell lacks `ShellCaps::PANEL`,
   GNOME included (GNOME Shell's `ShowMonitorLabels` refuses other callers, plan

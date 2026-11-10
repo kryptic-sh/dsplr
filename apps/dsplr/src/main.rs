@@ -372,7 +372,12 @@ fn apply_options(args: &ApplyArgs) -> Result<apply::Options, Exit> {
 /// read, the error reported and the exit code.
 fn config() -> Result<Config, Exit> {
     match Config::load() {
-        Ok((config, _)) => Ok(config),
+        Ok((config, _)) => {
+            for warning in &config.keys.warnings {
+                eprintln!("dsplr: config.toml: {warning}");
+            }
+            Ok(config)
+        }
         Err(error) => {
             eprintln!("dsplr: {error}");
             Err(Exit::Failure)

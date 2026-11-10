@@ -28,7 +28,9 @@ use dsplr_core::dialog::{Choice, confirm_prompt};
 use dsplr_core::flow::Outcome;
 use dsplr_core::link::{Answer, Question, Reply, Request};
 use dsplr_core::panel::panel;
-use dsplr_core::{Editor, Point, Size, Theme, draw, regions};
+use dsplr_core::{
+    Editor, Messages, Point, Size, Theme, draw, draw_messages, messages_bounds, regions,
+};
 use dsplr_model::{Layout, ModeSpec};
 use glam::Vec2;
 
@@ -50,6 +52,9 @@ const QUIT_PROMPT: &str = "Quit and drop the pending edits?  y / n";
 /// How often the loop looks for the backend thread's replies when the
 /// window system cannot wake it.
 const REPLY_POLL: Duration = Duration::from_millis(50);
+
+/// What the bar says while the keyboard is in the panel.
+const PANEL_NOTICE: &str = "panel: Tab / S-Tab move, Enter or space work a widget, arrows move and choose, Esc back to the canvas";
 
 /// What an event on a confirm dialog answers: a key pressed, as the main
 /// window's keys do (Enter keeps, Esc reverts, [`keys::answer`]), and the
@@ -115,6 +120,14 @@ pub struct MainWindow<'a> {
     /// The last thing worth telling: why an edit could not be made, or a
     /// line from the backend thread. Until the next.
     notice: Option<String>,
+    /// The backend thread's recent messages, and whether they are shown.
+    messages: Messages,
+    messages_shown: bool,
+    /// The `panel` key moved the keyboard into the panel: keys move focus
+    /// among its widgets and work them, until Escape or the key again, or
+    /// until anything else drops the panel's focus (`key` checks). A click
+    /// on a widget focuses it too, but leaves the keys with the canvas.
+    panel_keys: bool,
     /// To the backend thread, and from it.
     channels: Channels,
     /// The backend thread has stopped (a panic): nothing that needs it can
@@ -168,6 +181,21 @@ impl<'a> MainWindow<'a> {
             notice = Some(format!("the panel writes in the bitmap font: {error}"));
         }
         ui.set_fallback_fonts(faces.fallbacks);
+        // What the window starts with to tell is kept in the log. A key the
+        // config took from the defaults takes the bar first, so a key that
+        // stopped working is explained; else the note about the font.
+        let mut messages = Messages::default();
+        if let Some(note) = &notice {
+            messages.push(note);
+        }
+        for warning in keymap.warnings() {
+            messages.push(&format!("config.toml: {warning}"));
+        }
+        let notice = keymap
+            .warnings()
+            .first()
+            .map(|warning| format!("config.toml: {warning} (m shows all)"))
+            .or(notice);
         Self {
             shell,
             window,
@@ -188,6 +216,9 @@ impl<'a> MainWindow<'a> {
             cursor: Some(CursorIcon::Default),
             quitting: false,
             notice,
+            messages,
+            messages_shown: false,
+            panel_keys: false,
             channels,
             backend_gone: false,
             busy: false,
@@ -273,10 +304,7 @@ impl<'a> MainWindow<'a> {
                 let Some((id, times, layout)) = confirm else {
                     break;
                 };
-                // The canvas lets go: nothing is edited while a change waits
-                // on its answer.
-                self.editor.cancel_drag();
-                self.ui.clear_focus();
+                self.let_go();
                 // One change waits at a time (`busy` holds back the next
                 // request), but a confirm still open is closed, not leaked:
                 // its dialogs would outlive it.
@@ -447,12 +475,16 @@ impl<'a> MainWindow<'a> {
             // kept change's `Done` clears them.
             Reply::Snapshot(snapshot) => {
                 if let Some(notice) = self.editor.rebase(snapshot, true).notice() {
+                    self.messages.push(&notice);
                     self.notice = Some(notice);
                 }
             }
             Reply::Profiles(names) => self.profiles = names,
             // The bar has one line.
-            Reply::Message(line) => self.notice = Some(line.replace('\n', "  ")),
+            Reply::Message(line) => {
+                self.messages.push(&line);
+                self.notice = Some(line.replace('\n', "  "));
+            }
             Reply::Ask(question) => self.question = Some(question),
             Reply::Confirm {
                 id,
@@ -636,14 +668,21 @@ impl<'a> MainWindow<'a> {
         self.frame(pointer)?;
         self.pointer_down = down;
         if down {
-            let on_canvas = regions(&self.editor, self.size())
-                .canvas
-                .contains(self.pointer);
+            // The message log lies over the canvas and is read, not
+            // clicked: a click on it reaches nothing under it.
+            let over_log = self.messages_shown
+                && messages_bounds(&self.editor, self.size(), &self.messages)
+                    .contains(self.pointer);
+            let on_canvas = !over_log
+                && regions(&self.editor, self.size())
+                    .canvas
+                    .contains(self.pointer);
             if on_canvas && !popup && !self.quitting && self.confirming.is_none() {
                 self.notice = None;
                 // The keyboard has left the panel: a field being typed into
                 // is committed, to the output it was for (`frame`).
                 self.ui.clear_focus();
+                self.panel_keys = false;
                 self.editor.press(self.size(), self.pointer);
             }
         } else {
@@ -660,6 +699,12 @@ impl<'a> MainWindow<'a> {
         modifiers: Modifiers,
         editing: bool,
     ) -> Result<Step, GuiError> {
+        // The panel has the keys only while something in it has focus:
+        // whatever dropped the focus (a confirm opening, a question
+        // replacing the panel, the selected output going) gave them back.
+        if self.panel_keys && self.ui.focused().is_none() {
+            self.leave_panel();
+        }
         if self.confirming.is_some() {
             return Ok(match keys::answer(keysym) {
                 Some(keep) => {
@@ -687,8 +732,20 @@ impl<'a> MainWindow<'a> {
                 None => Step::Idle,
             });
         }
-        if editing {
-            let Some(nav) = keys::nav(keysym, modifiers) else {
+        let action = self.keymap.action(keysym, modifiers);
+        if self.panel_keys
+            && !editing
+            && (keysym == Keysym::ESCAPE || action == Some(Action::Panel))
+        {
+            return Ok(self.leave_panel());
+        }
+        if editing || self.panel_keys {
+            let nav = if editing {
+                keys::nav(keysym, modifiers)
+            } else {
+                keys::panel_nav(keysym, modifiers)
+            };
+            let Some(nav) = nav else {
                 return Ok(Step::Idle);
             };
             // The tree takes one navigation per frame, so each press gets a
@@ -707,10 +764,59 @@ impl<'a> MainWindow<'a> {
                 Step::Idle
             });
         }
-        Ok(match self.keymap.action(keysym, modifiers) {
+        if self.messages_shown && keysym == Keysym::ESCAPE {
+            self.messages_shown = false;
+            return Ok(Step::Redraw);
+        }
+        Ok(match action {
+            Some(Action::Panel) => self.enter_panel()?,
             Some(action) => self.act(action),
             None => Step::Idle,
         })
+    }
+
+    /// Moves the keyboard into the panel: focus lands on its first widget,
+    /// or where it was last (crcbl-ui lands it when navigation speaks and
+    /// nothing is focused), and the bar says so. With nothing in
+    /// it to focus, the keyboard stays on the canvas.
+    fn enter_panel(&mut self) -> Result<Step, GuiError> {
+        // crcbl-ui focuses only nodes the previous frame built, so a panel
+        // not built yet, or built anew since, takes a second frame.
+        for _ in 0..2 {
+            if self.ui.focused().is_some() {
+                break;
+            }
+            self.nav = NavInput::NEXT;
+            self.frame(PointerInput {
+                down: self.pointer_down,
+                ..PointerInput::hovering(vec(self.pointer))
+            })?;
+        }
+        if self.ui.focused().is_some() {
+            self.panel_keys = true;
+            self.notice = Some(PANEL_NOTICE.to_owned());
+        } else {
+            self.notice = Some("nothing in the panel takes the keyboard".to_owned());
+        }
+        Ok(Step::Redraw)
+    }
+
+    /// What the window lets go of when a change starts waiting on its
+    /// answer: a drag, and the keyboard's place in the panel. Nothing is
+    /// edited meanwhile.
+    fn let_go(&mut self) {
+        self.editor.cancel_drag();
+        self.ui.clear_focus();
+    }
+
+    /// Gives the keyboard back to the canvas.
+    fn leave_panel(&mut self) -> Step {
+        self.ui.clear_focus();
+        self.panel_keys = false;
+        if self.notice.as_deref() == Some(PANEL_NOTICE) {
+            self.notice = None;
+        }
+        Step::Redraw
     }
 
     fn act(&mut self, action: Action) -> Step {
@@ -742,6 +848,12 @@ impl<'a> MainWindow<'a> {
             Action::Apply => self.command(Command::Apply),
             Action::Save => self.command(Command::Save),
             Action::Quit => return self.quit(),
+            Action::Messages => {
+                self.messages_shown = !self.messages_shown;
+                true
+            }
+            // Taken by `key` before an action reaches here.
+            Action::Panel => false,
         };
         if changed { Step::Redraw } else { Step::Idle }
     }
@@ -834,7 +946,10 @@ impl<'a> MainWindow<'a> {
         } else {
             prompt.as_deref().or(self.notice.as_deref())
         };
-        let scene = draw(&self.editor, size, &self.theme, message, self.keymap.hint());
+        let mut scene = draw(&self.editor, size, &self.theme, message, self.keymap.hint());
+        if self.messages_shown {
+            draw_messages(&mut scene, &self.editor, size, &self.messages, &self.theme);
+        }
         self.list.clear();
         self.list.set_scale(self.scale);
         paint::paint(&scene, &mut self.list, &self.font);
@@ -1053,6 +1168,242 @@ mod tests {
         }
         assert!(!main.quitting, "no quit prompt");
         assert!(main.editor.has_pending(), "the edit is still pending");
+    }
+
+    /// The `panel` key takes the keyboard into the panel, where Tab moves
+    /// among its widgets and space works one, without the canvas's keys
+    /// acting; Escape gives it back to the canvas.
+    #[test]
+    fn the_panel_key_reaches_the_widgets_and_escape_returns_to_the_canvas() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        assert!(main.editor.pending().entries[0].state.enabled);
+        for event in typed(&[KeyCode::KeyP]) {
+            main.handle(event).unwrap();
+        }
+        assert!(main.panel_keys, "in the panel: {:?}", main.notice);
+        let first = main.ui.focused().expect("focus landed on the first widget");
+        assert!(!main.editor.has_pending(), "landing moved nothing");
+
+        // Space works the first widget, the selected output's Enabled box,
+        // and h is no canvas key here.
+        for event in typed(&[KeyCode::Space, KeyCode::KeyH]) {
+            main.handle(event).unwrap();
+        }
+        assert!(
+            !main.editor.pending().entries[0].state.enabled,
+            "turned off"
+        );
+        assert_eq!(
+            main.editor.pending().entries[0].state.x,
+            0,
+            "h moved nothing"
+        );
+
+        for event in typed(&[KeyCode::Tab]) {
+            main.handle(event).unwrap();
+        }
+        let second = main.ui.focused().expect("focus moved on");
+        assert_ne!(first, second);
+
+        for event in typed(&[KeyCode::Escape]) {
+            main.handle(event).unwrap();
+        }
+        assert!(
+            !main.panel_keys && main.ui.focused().is_none(),
+            "back on the canvas"
+        );
+        main.editor.undo();
+        for event in typed(&[KeyCode::KeyL]) {
+            main.handle(event).unwrap();
+        }
+        assert_eq!(
+            main.editor.pending().entries[0].state.x,
+            NUDGE_STEP,
+            "l nudges again"
+        );
+    }
+
+    /// Focus dropped from the panel by anything but the panel's own keys (a
+    /// confirm opening, a question replacing the panel, the selected output
+    /// going) takes the panel's keys with it: the canvas's keys work again,
+    /// rather than going to a panel nothing in which has the keyboard.
+    #[test]
+    fn the_canvas_keys_come_back_when_the_panel_loses_focus_elsewhere() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        for event in typed(&[KeyCode::KeyP]) {
+            main.handle(event).unwrap();
+        }
+        assert!(main.panel_keys && main.ui.focused().is_some());
+        // What opening a confirm does (`run_loop`).
+        main.let_go();
+        for event in typed(&[KeyCode::KeyL]) {
+            main.handle(event).unwrap();
+        }
+        assert_eq!(
+            main.editor.pending().entries[0].state.x,
+            NUDGE_STEP,
+            "l nudges"
+        );
+        assert!(!main.panel_keys);
+        assert_ne!(
+            main.notice.as_deref(),
+            Some(super::PANEL_NOTICE),
+            "the bar no longer says so"
+        );
+    }
+
+    /// The message log is read, not clicked: a click on it selects
+    /// nothing under it, where the same click with the log hidden does.
+    #[test]
+    fn a_click_on_the_message_log_reaches_nothing_under_it() {
+        use crcbl_shell::{ButtonState, PhysicalPoint, PointerButton};
+
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            // Short enough that the outputs reach down under the log.
+            (1280, 560),
+            link,
+        );
+        main.messages_shown = true;
+        for n in 0..dsplr_core::MESSAGE_HISTORY {
+            main.reply(Reply::Message(format!("line {n}")));
+        }
+        // A point of the log over the output not selected.
+        let size = main.size();
+        let log = dsplr_core::messages_bounds(&main.editor, size, &main.messages);
+        let scene = dsplr_core::draw(&main.editor, size, &main.theme, None, "");
+        let selected = main.editor.selected();
+        let under = (0..log.height as u32)
+            .step_by(8)
+            .flat_map(|y| {
+                (0..log.width as u32)
+                    .step_by(8)
+                    .map(move |x| dsplr_core::Point::new(log.x + x as f32, log.y + y as f32))
+            })
+            .find(|&at| scene.hit(at).is_some_and(|hit| Some(hit) != selected))
+            .unwrap_or_else(|| {
+                panic!(
+                    "an output lies under the log {log:?}: {:?} selected {selected:?}",
+                    scene.hits
+                )
+            });
+        let click = |main: &mut MainWindow<'_>| {
+            let mut source = HeadlessShell::new();
+            let w = source.create_window(&WindowDesc::default()).unwrap();
+            source.pump(&mut |_| {});
+            let at = PhysicalPoint::new(f64::from(under.x), f64::from(under.y));
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                source
+                    .button(w, PointerButton::Left, state, Some(at))
+                    .unwrap();
+            }
+            let mut events = Vec::new();
+            source.pump(&mut |event| events.push(event));
+            for event in events {
+                main.handle(event).unwrap();
+            }
+        };
+        click(&mut main);
+        assert_eq!(main.editor.selected(), selected, "the log took the click");
+        main.messages_shown = false;
+        click(&mut main);
+        assert_ne!(
+            main.editor.selected(),
+            selected,
+            "without it, the click selects"
+        );
+    }
+
+    /// A default key the config took over is told in the bar and kept in
+    /// the message log, so a key that stopped working is explained.
+    #[test]
+    fn keys_the_config_took_from_the_defaults_are_told() {
+        let mut keys = dsplr_config::keys::Keys::default();
+        keys.warnings
+            .push("r is bound to undo here, so it no longer does rotate_clockwise".into());
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::new(&keys)),
+            (1280, 800),
+            link,
+        );
+        let notice = main.notice.as_deref().unwrap_or_default();
+        assert!(
+            notice.contains("no longer does rotate_clockwise"),
+            "{notice}"
+        );
+        assert_eq!(
+            main.messages.lines().last(),
+            Some("config.toml: r is bound to undo here, so it no longer does rotate_clockwise")
+        );
+    }
+
+    /// The backend thread's messages are kept, and `m` shows them over the
+    /// canvas until `m` or Escape hides them; Escape does not quit then.
+    #[test]
+    fn the_message_log_keeps_the_backend_s_lines_and_m_shows_it() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        main.reply(Reply::Message("applied\nread back: nothing differs".into()));
+        main.reply(Reply::Message("kept".into()));
+        assert_eq!(main.notice.as_deref(), Some("kept"), "the bar has the last");
+        let lines: Vec<&str> = main.messages.lines().collect();
+        // After whatever the window started with (a note about the font).
+        assert_eq!(
+            lines[lines.len() - 3..],
+            ["applied", "read back: nothing differs", "kept"]
+        );
+        for event in typed(&[KeyCode::KeyM]) {
+            main.handle(event).unwrap();
+        }
+        assert!(main.messages_shown);
+        let mut quit = false;
+        for event in typed(&[KeyCode::Escape]) {
+            quit |= matches!(main.handle(event).unwrap(), Step::Quit);
+        }
+        assert!(
+            !main.messages_shown && !quit,
+            "Escape hid the log, and did not quit"
+        );
+        for event in typed(&[KeyCode::KeyM, KeyCode::KeyM]) {
+            main.handle(event).unwrap();
+        }
+        assert!(!main.messages_shown, "m twice: shown and hidden");
     }
 
     /// A confirm dialog holds the keyboard, so its key presses are the

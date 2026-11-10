@@ -1,0 +1,5 @@
+fill 0.0,698.0 960.0x70.0 #16161e
+fill 0.0,698.0 960.0x1.0 #292e42
+text 8.0,706.0 13 #a9b1d6 clip 0.0,698.0 960.0x70.0 "applied the layout"
+text 8.0,724.0 13 #a9b1d6 clip 0.0,698.0 960.0x70.0 "read back: nothing differs"
+text 8.0,742.0 13 #a9b1d6 clip 0.0,698.0 960.0x70.0 "kept"

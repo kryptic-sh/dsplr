@@ -78,11 +78,15 @@ and this project adheres to
   with why as its tooltip. The pending layout is checked as it changes: an
   overlap is outlined in red and a gap in yellow, with the problem in the bar.
   `Tab` and `Shift+Tab` step through the outputs, a click selects one, and `q`
-  or `Escape` quits, asking first when edits are pending. It reads the displays
-  on a backend thread before the window opens, so a desktop with no backend
-  exits `6` with no window; no window system or no usable GPU exits `1` with the
-  reason. `a` (or Apply) applies the pending edits through the same confirm flow
-  as `dsplr apply`: tested, guarded by the revert point and its watchdog, read
+  or `Escape` quits, asking first when edits are pending. `p` (or `F6`) takes
+  the keyboard into the panel, where `Tab` / `S-Tab` move between its widgets,
+  the arrows move and choose, Enter or space works one, and `Escape` gives the
+  keys back to the canvas; `m` shows the last few messages from the backend over
+  the canvas, which the bar shows one at a time. It reads the displays on a
+  backend thread before the window opens, so a desktop with no backend exits `6`
+  with no window; no window system or no usable GPU exits `1` with the reason.
+  `a` (or Apply) applies the pending edits through the same confirm flow as
+  `dsplr apply`: tested, guarded by the revert point and its watchdog, read
   back, and kept only once "Keep these display settings?" is answered on one of
   the dialogs shown on every monitor (Enter keeps; Esc, the countdown, or dsplr
   dying reverts; the keys work in the dialog that has the keyboard and in the
@@ -106,9 +110,11 @@ and this project adheres to
   bar says identify is unsupported there.
 - The GUI's keys are configurable in `config.toml`'s `[keys]` table, one list of
   keys per action (`nudge_left = ["Left", "h"]`, `redo = ["C-y"]`); an action
-  left out keeps its default. An unknown action, an unknown key name or one key
-  bound to two actions is an error naming it. The bar's key hint follows the
-  configured keys.
+  left out keeps its default, except a default key the file binds to another
+  action, which goes to that action with a warning (printed by the CLI; in the
+  GUI's bar and message log). An unknown action, an unknown key name or one key
+  the file binds to two actions is an error naming it. The bar's key hint
+  follows the configured keys.
 - The GUI writes in the system's sans-serif font, with its fallbacks for
   characters it lacks, and in its own built-in font where the system has none.
 - `dsplr list` prints each output's mode, position, scale, transform, adaptive

@@ -132,6 +132,35 @@ mod tests {
         assert_eq!(names(&config.keys.nudge_left), ["Left", "h"]);
         assert_eq!(names(&config.keys.redo), ["C-y"]);
         assert_eq!(names(&config.keys.undo), ["u"], "the default");
+        assert_eq!(config.keys.warnings, Vec::<String>::new());
+    }
+
+    /// A key the file binds wins over another action's default: that action
+    /// keeps its other keys, or has none, and the user is told which.
+    #[test]
+    fn a_key_the_file_binds_takes_it_from_a_default() {
+        let names = |list: &[super::keys::KeySpec]| {
+            list.iter().map(ToString::to_string).collect::<Vec<_>>()
+        };
+        let config = load("[keys]\nundo = [\"r\", \"Escape\"]\n").unwrap();
+        assert_eq!(names(&config.keys.undo), ["r", "Escape"]);
+        assert_eq!(names(&config.keys.rotate_clockwise), Vec::<String>::new());
+        assert_eq!(names(&config.keys.quit), ["q"], "its other default stays");
+        assert_eq!(
+            config.keys.warnings,
+            [
+                "r is bound to undo here, so it no longer does rotate_clockwise, which has no key now",
+                "Escape is bound to undo here, so it no longer does quit",
+            ]
+        );
+        let actions: Vec<_> = config
+            .keys
+            .bindings()
+            .into_iter()
+            .filter(|(key, _)| key.to_string() == "r")
+            .map(|(_, action)| action)
+            .collect();
+        assert_eq!(actions, [super::keys::Action::Undo], "r does one thing");
     }
 
     #[test]
@@ -140,7 +169,10 @@ mod tests {
             ("[keys]\nnudge_sideways = [\"h\"]\n", "nudge_sideways"),
             ("[keys]\nundo = [\"Ctrl-z\"]\n", "is not a key"),
             ("[keys]\nundo = [\"S-u\"]\n", "Shift is part of a character"),
-            ("[keys]\nundo = [\"r\"]\n", "bound to both"),
+            (
+                "[keys]\nundo = [\"r\"]\nrotate_clockwise = [\"r\"]\n",
+                "bound to both",
+            ),
         ] {
             let error = load(text).unwrap_err();
             assert!(

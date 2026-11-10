@@ -26,6 +26,11 @@ later work is below.
 - Text is the system's sans-serif through fontconfig, with its fallbacks
   (crcbl-ui's `system-fonts`, C7), else crcbl's committed `Font::sans`, with a
   note in the bar.
+- The panel is reached from the keyboard with the `panel` key ([Keys](#keys)),
+  driven by crcbl-ui's own focus traversal (tree order, accept, back, arrows);
+  `Tab` keeps selecting outputs on the canvas.
+- The bar shows the backend thread's last message; the `messages` key shows the
+  last `MESSAGE_HISTORY` lines (`dsplr_core::Messages`) over the canvas.
 - The confirm dialogs and the identify overlay are one per-monitor panel set
   (`dsplr-gui`'s `panels.rs`), each panel naming the output at its monitor's
   logical position until crcbl reports connectors (C3).
@@ -33,10 +38,6 @@ later work is below.
 ## Still to build in M3
 
 - **The exit check: the owner switches from nwg-displays.** The owner's step.
-- Reaching the panel's widgets from the keyboard: Tab selects outputs, so today
-  the widgets take the pointer only, and the keys only once a field or list is
-  engaged (the profile name and picker among them).
-- The backend thread's messages beyond the last: the bar shows one line.
 
 ## Keys
 
@@ -51,6 +52,8 @@ Mouse-first for dragging, but every action has a key. The defaults:
 | `+` / `-`       | next / previous scale (and the keypad's)        | `scale_up` / `scale_down`                      |
 | `space`         | enable / disable                                | `toggle_enabled`                               |
 | `i`             | identify                                        | `identify`                                     |
+| `p` / `F6`      | keyboard into the panel, and back out           | `panel`                                        |
+| `m`             | show / hide the recent messages                 | `messages`                                     |
 | `a` / `s`       | apply / save                                    | `apply` / `save`                               |
 | `u` / `C-r`     | undo / redo                                     | `undo` / `redo`                                |
 | `q` / `Esc`     | quit (asks if there are pending edits)          | `quit`                                         |
@@ -60,9 +63,21 @@ Each is rebound in `config.toml`'s `[keys]` table as a list
 a character, `space`, `F1` to `F12` or a key's name
 (`dsplr_config::keys::NAMES`), with `C-`, `A-` or `S-` in front; Shift is part
 of a character (`H`, not `S-h`). An unknown action, an unknown key or one key
-for two actions is an error naming it. The keys of the dialogs, the quit prompt
-and an engaged panel field (Enter, `Esc`, `y`, `n`, the arrows, Tab) are not
-rebound.
+the file binds to two actions is an error naming it; a key the file binds that
+another action has by default goes to the file's action, and the other keeps its
+other defaults (none left, it has no key), with a warning (`Keys::warnings`) the
+CLI prints and the GUI shows in its bar and message log. The keys of the
+dialogs, the quit prompt and the panel (Enter, `Esc`, `y`, `n`, the arrows, Tab)
+are not rebound.
+
+**In the panel** (after the `panel` key): focus lands on the selected output's
+first widget, or where it was last; `Tab` / `S-Tab` move through the widgets in
+order, the arrows move toward a widget that way and choose inside an open list,
+Enter or space works the focused widget (a button fires, a checkbox flips, a
+list opens, a field starts taking typing) and Enter commits an engaged one,
+`Esc` cancels an engaged one or else gives the keyboard back to the canvas, as
+the `panel` key does. The canvas's keys do nothing meanwhile. While the messages
+are shown, `Esc` hides them before it quits.
 
 ## Confirm dialog
 
