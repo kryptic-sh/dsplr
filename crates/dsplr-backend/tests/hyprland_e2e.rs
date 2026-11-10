@@ -272,10 +272,13 @@ const WATCH_WAIT: Duration = Duration::from_secs(5);
 /// the next change: Hyprland sends `monitoradded` and `monitoraddedv2` for
 /// one output, and each would end a wait.
 async fn drain(watch: &mut Watch) {
-    while tokio::time::timeout(Duration::from_millis(300), watch.changed())
-        .await
-        .is_ok()
-    {}
+    loop {
+        match tokio::time::timeout(Duration::from_millis(300), watch.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("the watch failed while draining: {error}"),
+            Err(_) => return,
+        }
+    }
 }
 
 async fn changed(watch: &mut Watch, what: &str) {
@@ -309,13 +312,25 @@ async fn a_watch_follows_reloads_and_hotplug(backend: &Backend) {
         entry(layout, "DSPLR-SAVE").state.x == x
     })
     .await;
-    let reported = tokio::time::timeout(WATCH_WAIT, watch.changed())
-        .await
-        .is_ok();
+    let reported = match tokio::time::timeout(WATCH_WAIT, watch.changed()).await {
+        Ok(Ok(())) => true,
+        Ok(Err(error)) => panic!("the watch failed after an eval: {error}"),
+        Err(_) => false,
+    };
     observed(&format!(
-        "OBSERVED (Hyprland {version}): a monitor rule set through eval {} an event on .socket2.sock",
-        if reported { "sent" } else { "sent no" }
+        "OBSERVED (Hyprland {version}): a monitor rule set through eval {} on .socket2.sock",
+        if reported {
+            "sent an event"
+        } else {
+            "sent no event"
+        }
     ));
+    // Seen on Hyprland 0.57.2 (CI, 2026-11-10): no event, so the watch
+    // follows neither dsplr's own eval applies nor another program's.
+    assert!(
+        !reported,
+        "an eval monitor rule now sends a .socket2.sock event: the watch could follow it"
+    );
     drain(&mut watch).await;
 
     assert_eq!(hyprctl("reload").trim(), "ok");
@@ -351,9 +366,11 @@ async fn a_watch_follows_reloads_and_hotplug(backend: &Backend) {
 /// state the protocol applied survives a later `eval` rule. The protocol is
 /// spoken by dsplr's own `wlr` backend, on Hyprland's own Wayland socket.
 ///
-/// The second is asserted: Hyprland's `applyWlrOutputConfig` keeps what the
-/// protocol set per monitor, over its rules, until it restarts (read in its
-/// v0.56.2 source). The first is printed until a run has shown it.
+/// Both are asserted as Hyprland 0.57.2 behaved in CI (2026-11-10): the
+/// mirror is kept, and a later `eval` wins over the protocol's position.
+/// The protocol requires every head in a configuration, so any client
+/// re-sends the mirroring head too; keeping the mirror is Hyprland's doing,
+/// not dsplr's. The `OBSERVED` lines say what this Hyprland did either way.
 async fn an_eval_mirror_meets_a_protocol_apply(backend: &Backend) {
     let version = Hyprland::from_env()
         .expect("the harness's Hyprland")
@@ -418,10 +435,15 @@ async fn an_eval_mirror_meets_a_protocol_apply(backend: &Backend) {
             "undoes"
         }
     ));
+    assert_eq!(
+        mirror.as_ref(),
+        Some(&source),
+        "a protocol apply now undoes a mirror set through eval"
+    );
 
     // A later eval moves DSPLR-2 and an output the protocol never set. The
-    // latter shows the eval was applied; the former, whether the protocol's
-    // position won.
+    // latter shows the eval was applied; the former, whether the eval won
+    // over the protocol's position.
     let reply = hyprctl("/output create headless DSPLR-LATE");
     assert_eq!(reply.trim(), "ok", "creating DSPLR-LATE: {reply}");
     let now = snapshot_until(backend, "DSPLR-LATE", |layout| {
@@ -432,9 +454,10 @@ async fn an_eval_mirror_meets_a_protocol_apply(backend: &Backend) {
     })
     .await;
     let late = 30_000;
+    let asked = moved + 4_000;
     backend
         .apply(&edited(&now, |layout| {
-            entry_mut(layout, "DSPLR-2").state.x = moved + 4_000;
+            entry_mut(layout, "DSPLR-2").state.x = asked;
             let state = &mut entry_mut(layout, "DSPLR-LATE").state;
             state.mode = Some(Mode::new(1920, 1080, 60_000));
             state.x = late;
@@ -445,13 +468,20 @@ async fn an_eval_mirror_meets_a_protocol_apply(backend: &Backend) {
         entry(layout, "DSPLR-LATE").state.x == late
     })
     .await;
-    let x = entry(&shown, "DSPLR-2").state.x;
+    // Both are in one eval, but give DSPLR-2 the same time to follow.
+    let deadline = std::time::Instant::now() + SETTLE;
+    let mut x = entry(&shown, "DSPLR-2").state.x;
+    while x != asked && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        x = entry(&backend.snapshot().await.expect("snapshot"), "DSPLR-2")
+            .state
+            .x;
+    }
     observed(&format!(
-        "OBSERVED (Hyprland {version}): after the protocol set DSPLR-2's x to {moved}, an eval asking {} left it at {x}",
-        moved + 4_000
+        "OBSERVED (Hyprland {version}): after the protocol set DSPLR-2's x to {moved}, an eval asking {asked} left it at {x}"
     ));
     assert_eq!(
-        x, moved,
-        "the protocol's position no longer wins over a later eval rule"
+        x, asked,
+        "the protocol's position now wins over a later eval rule"
     );
 }

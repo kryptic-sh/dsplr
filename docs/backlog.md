@@ -389,11 +389,10 @@ milestone:
 - **Hyprland on `wlr-output-management`**: the `wlr` backend
   (`dsplr_backend::wlr`) is written and tested on sway, but Hyprland still
   applies through `eval` and reads `j/monitors`; it needs the protocol only for
-  a real change stream. Moving any field onto it is a decision, since
-  wlr-applied state overrides Hyprland's rules until restart (Hyprland facts
-  below). Whether an `eval` mirror survives a protocol apply is now the last
-  step of the Hyprland e2e (`an_eval_mirror_meets_a_protocol_apply`), which
-  prints it; it has not run yet (CI's `hyprland` entry is its first run).
+  a real change stream. On Hyprland 0.57.2 a protocol apply keeps an `eval`
+  mirror and a later `eval` wins over its position
+  (`docs/plan/04-backends.md#hyprland`), so moving a field onto it is a choice
+  of mechanism, not a conflict between them.
 - **Hyprland's change stream misses rule changes; owner's call**: the GUI
   follows Hyprland through `.socket2.sock` (`hyprland::Events`: monitor added or
   removed, config reloaded), as asked for M3, which carries no event for a
@@ -403,10 +402,11 @@ milestone:
   change; that is a `wlr::Connection` held on Hyprland for watching only
   (`Watch::Wlr` already does it on wlroots), at the cost of a second connection
   and Hyprland's protocol support becoming a dependency of the GUI. Options:
-  keep socket2, switch to wlr, or both. The Hyprland e2e
-  (`a_watch_follows_reloads_and_hotplug`) checks a reload and an output created
-  and removed with `hyprctl output`, and prints whether an `eval` rule sends any
-  event; it has not run yet (CI's `hyprland` entry is its first run).
+  keep socket2, switch to wlr, or both. Checked on Hyprland 0.57.2 (CI,
+  2026-11-10, `a_watch_follows_reloads_and_hotplug`): a reload and an output
+  created and removed with `hyprctl output` are reported, and a monitor rule set
+  through `eval` sends no event, by dsplr or anyone, so the watch cannot see
+  one; the e2e asserts that, and goes red if Hyprland starts sending one.
 - **Each `wlr` request still opens its own connection**: `Watch::Wlr` holds one
   `wlr::Connection` for following changes, but every read, test and apply opens
   its own (`Wlr::connect`) and closes it, so the serial guards only the instant
@@ -613,41 +613,55 @@ milestone:
   moved one only its pending one (seen 2026-11-10 in headless sway).
   `Layout::validate`'s rule, not the canvas's; marking every output of a
   disconnected group on both sides would need it to say which group is which.
-- **The GUI e2e test has not run in CI yet** (`apps/dsplr/tests/gui_e2e.rs`,
+- **The GUI e2e test has not passed in CI yet** (`apps/dsplr/tests/gui_e2e.rs`,
   ignored): CI's `gui` entry runs it under `tests/e2e/headless-sway.sh` in the
   VM, with `sway vulkan-swrast wtype` and
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Unproven there: that
-  the VM's lavapipe opens the window within the test's `STARTUP` (4 s) on four
-  vCPUs, and that the binary built on the Ubuntu runner finds what it loads at
-  run time (Vulkan loader, xkbcommon, fonts, cursor theme). Green locally under
-  `tests/e2e/headless-sway.sh` (2026-11-10): kept with Enter, timed out, killed
-  mid-confirm then reverted by the watchdog, and an output plugged in with
-  `swaymsg create_output` while the window is open, then reached with Tab,
-  edited and applied together with an edit made before it came, each read back
-  with `dsplr list --json`. The hotplug step fails with the backend thread's
-  watch switched off. One run with the watch switched off failed earlier, at the
-  first step's "kept", which does not use the watch: the scale applied and then
-  reverted, the Enter apparently lost before the dialog took the keyboard. Not
-  reproduced since; if it recurs, it is the harness's timing. Seen in `grim`
-  screenshots the same day: an output created and one disabled from outside
-  appearing in the window, and `i` showing each output's name and description on
-  it, closed after `IDENTIFY_TIME`. Run by hand with `grim` screenshots the same
-  day: the dialog on both outputs, each named for its output; Save replacing a
-  foreign `outputs` file after its question (Enter); and the editing keys of the
-  last slice. Not driven by anything, since each needs a click (no pointer
-  injector, `wlrctl` or `ydotool`, is installed): dragging, the panel's
-  drop-downs, checkbox, number and text fields (custom mode, profile name), the
-  profile picker and Restore, the Revert and Refresh buttons, the dialogs' own
-  Keep and Revert buttons, the tooltips, and the pointer position from a
-  pointer-enter. They are covered by `dsplr-core`'s editor, hit-region, flow and
-  dialog tests, a build of the panel's tree, and the window's key and request
-  tests against crcbl's headless shell; Revert and profile restore run the CLI's
-  own `restore::revert` and `apply::bind`. Not covered by any test: a draft
-  committed to the output it was typed for when a canvas click moves the
-  selection (`follow_selection` is tested for the reset, `Drafts::commits` on
-  its own), a panel click ignored behind the quit prompt or the dialogs, and two
-  navigation keys in one batch each getting a frame. Not run on niri, Hyprland
-  or X11, and the dialogs' X11 override-redirect panels never.
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Its first CI run
+  (42763145431) failed at the first "kept": the window dropped every key typed
+  into a confirm dialog (`MainWindow::run_loop` skipped the dialogs' events
+  before the key handler), so Enter kept a change only when it reached the main
+  window between the confirm arriving and the dialog taking the keyboard, a race
+  CI's slower lavapipe lost. Fixed (`dialog_answer`); with that wiring disabled
+  the test fails locally the same way. The test now waits on what sway shows,
+  not fixed sleeps: the window focused once open, and its title
+  (`CONFIRM_TITLE`) while a change waits on its answer. Still a fixed wait: the
+  2 s for the window to take in an output plugged in, which nothing outside it
+  shows. Unproven in CI: that the binary built on the Ubuntu runner finds what
+  it loads at run time in the VM (Vulkan loader, xkbcommon, fonts, cursor
+  theme). Green locally under `tests/e2e/headless-sway.sh` (2026-11-10): kept
+  with Enter, timed out, killed mid-confirm then reverted by the watchdog, and
+  an output plugged in with `swaymsg create_output` while the window is open,
+  then reached with Tab, edited and applied together with an edit made before it
+  came, each read back with `dsplr list --json`. The hotplug step fails with the
+  backend thread's watch switched off. One run with the watch switched off
+  failed earlier, at the first step's "kept", which does not use the watch: the
+  scale applied and then reverted: the dropped-key bug above, not the harness's
+  timing. Seen in `grim` screenshots the same day: an output created and one
+  disabled from outside appearing in the window, and `i` showing each output's
+  name and description on it, closed after `IDENTIFY_TIME`. Run by hand with
+  `grim` screenshots the same day: the dialog on both outputs, each named for
+  its output; Save replacing a foreign `outputs` file after its question
+  (Enter); and the editing keys of the last slice. Not driven by anything, since
+  each needs a click (no pointer injector, `wlrctl` or `ydotool`, is installed):
+  dragging, the panel's drop-downs, checkbox, number and text fields (custom
+  mode, profile name), the profile picker and Restore, the Revert and Refresh
+  buttons, the dialogs' own Keep and Revert buttons, the tooltips, and the
+  pointer position from a pointer-enter. They are covered by `dsplr-core`'s
+  editor, hit-region, flow and dialog tests, a build of the panel's tree, and
+  the window's key and request tests against crcbl's headless shell; Revert and
+  profile restore run the CLI's own `restore::revert` and `apply::bind`. Not
+  covered by any test: a draft committed to the output it was typed for when a
+  canvas click moves the selection (`follow_selection` is tested for the reset,
+  `Drafts::commits` on its own), a panel click ignored behind the quit prompt or
+  the dialogs, and two navigation keys in one batch each getting a frame. Not
+  run on niri, Hyprland or X11, and the dialogs' X11 override-redirect panels
+  never.
+- **After an output is plugged in while the window is open, the confirm dialog
+  does not take the keyboard**: in headless sway 1.12 (2026-11-10) the main
+  window stayed focused through the confirm of an edit to the new output, where
+  without a hotplug the dialog takes the keys about 0.2 s after the apply shows.
+  Enter and Esc still answer it in the main window. Whether a dialog opened at
+  all, and on which output, was not looked into.
 - **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
   since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
   call; it is not in 0.18.0, which dsplr now builds on).
@@ -853,10 +867,8 @@ code, and the rest of `docs/plan/04-backends.md#gnome-gnome`; the GNOME e2e
 checks most of it, and has not run. Read in GNOME Shell 51.1's source:
 `ShowMonitorLabels` refuses callers that do not own one of its allowed names.
 Not verified by anyone: COSMIC's protocol offer and whether it persists outputs
-itself; the Xorg dummy driver giving several RandR outputs; whether an `eval` of
-`hl.monitor` survives a protocol apply (the Hyprland e2e now records it, and has
-not run); KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
-backend's milestone.
+itself; the Xorg dummy driver giving several RandR outputs; KDE's confirm
+timeout; the RandR 1.5 details. Each is checked in its backend's milestone.
 
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
@@ -881,10 +893,12 @@ and the `monitors.lua` writer:
 - `position = "auto"` outputs are re-placed when another monitor changes: send
   the whole layout, with explicit positions, in one `eval`.
 - `eval` rules are runtime-only; `hyprctl reload` drops them.
-- State applied through `wlr-output-management` overrides the matching rule's
-  enabled, mode, position, transform, scale and vrr until restart
-  (`applyWlrOutputConfig`), so a later `eval` or reload does not change them.
-  The live path must pick one mechanism per field.
+- Read in v0.56.2's `applyWlrOutputConfig`: state applied through
+  `wlr-output-management` is stored per monitor and overrides the matching
+  rule's enabled, mode, position, transform, scale and vrr. Not so on 0.57.2 for
+  a later `eval`, which moved a position the protocol had set (CI, 2026-11-10,
+  `docs/plan/04-backends.md#hyprland`); a reload after a protocol apply was not
+  checked.
 - `mirrorOf` in `hyprctl -j monitors` is the source's numeric id.
 - A headless output never reports adaptive sync active: after `vrr = 1` or
   `vrr = 2` through `eval` (both answered `ok`), `j/monitors` still says

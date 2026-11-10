@@ -3,7 +3,7 @@
 # `harness.sh` (one desktop's e2e harness), `tests/` (that desktop's e2e test
 # binaries, one per package), `dsplr` (the binary the CLI's test runs),
 # `packages` (what to install) and `env` (NAME=VALUE words the tests run
-# with, maybe none; no value may hold a space). Installs them, runs each test
+# with, maybe none, split on whitespace). Installs them, runs each test
 # under its own harness as an unprivileged user, leaves the logs and the exit
 # status (0 only when every test passed) in /e2e/out and powers off.
 #
@@ -51,10 +51,14 @@ ls -l /dev/dri > "$out/dri.txt" 2>&1
 
 cp -r /e2e/harness.sh /e2e/dsplr /e2e/tests /home/t/
 chown -R t: /home/t/harness.sh /home/t/dsplr /home/t/tests
+# Each word quoted for the shell `su -c` starts. With none, nothing: `%q`
+# of no argument would be an empty word, which `env` takes as a command.
+quoted_env=""
+[ "${#test_env[@]}" -gt 0 ] && quoted_env=$(printf '%q ' "${test_env[@]}")
 status=0
 for test in /home/t/tests/*; do
   name=$(basename "$test")
-  su t -c "cd && env ${test_env[*]} DSPLR_BIN=/home/t/dsplr ./harness.sh ./tests/$name --ignored --test-threads=1" \
+  su t -c "cd && env ${quoted_env}DSPLR_BIN=/home/t/dsplr ./harness.sh ./tests/$name --ignored --test-threads=1" \
     > "$out/test-$name.log" 2>&1 || status=1
 done
 echo "$status" > "$out/status"

@@ -569,6 +569,7 @@ dependencies = [
  "dsplr-gui",
  "dsplr-model",
  "dsplr-persist",
+ "serde_json",
  "tokio",
 ]
 

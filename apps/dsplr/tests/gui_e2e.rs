@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use dsplr_gui::{CONFIRM_TITLE, TITLE};
 use dsplr_model::Layout;
 
 #[path = "../../../tests/e2e/support.rs"]
@@ -116,19 +117,87 @@ fn until_scale_of(output: &str, want: f64, limit: Duration, what: &str) {
     }
 }
 
-/// How long the GUI takes to open on lavapipe and take the keys: keys
-/// sent before that are lost.
-const STARTUP: Duration = Duration::from_secs(4);
+/// How long the window may take to open and take the keys, or to show a
+/// change waiting on its answer: generous, for a GUI starting on lavapipe in
+/// CI's VM.
+const READY: Duration = Duration::from_secs(60);
+
+/// dsplr's windows in sway's tree: each one's title, and whether it has the
+/// keyboard. The confirm dialogs are layer surfaces, which the tree does not
+/// list; while a change waits on its answer the main window's title is
+/// [`CONFIRM_TITLE`] (a toplevel dialog, where there are no layer surfaces,
+/// has it too).
+fn dsplr_windows() -> Vec<(String, bool)> {
+    let output = Command::new("swaymsg")
+        .args(["-t", "get_tree"])
+        .output()
+        .expect("swaymsg runs");
+    assert!(output.status.success(), "swaymsg -t get_tree: {output:?}");
+    let tree: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("sway's tree is JSON");
+    let mut windows = Vec::new();
+    let mut nodes = vec![&tree];
+    while let Some(node) = nodes.pop() {
+        if node["app_id"] == TITLE {
+            windows.push((
+                node["name"].as_str().unwrap_or_default().to_owned(),
+                node["focused"].as_bool() == Some(true),
+            ));
+        }
+        for children in ["nodes", "floating_nodes"] {
+            nodes.extend(node[children].as_array().into_iter().flatten());
+        }
+    }
+    windows
+}
+
+/// Waits up to [`READY`] for `ready` to hold of dsplr's windows; fails
+/// saying what sway showed last.
+fn until_windows(what: &str, ready: impl Fn(&[(String, bool)]) -> bool) {
+    let deadline = Instant::now() + READY;
+    loop {
+        let windows = dsplr_windows();
+        if ready(&windows) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what}: not seen within {READY:?}; sway shows dsplr's windows as {windows:?} (title, focused)"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Starts the GUI and waits until its window has the keys: those sent
+/// before then are lost.
+fn start_gui_ready() -> Running {
+    let gui = start_gui();
+    until_windows("the window opening with the keys", |windows| {
+        windows.iter().any(|(_, focused)| *focused)
+    });
+    gui
+}
+
+/// Waits until a change waits on its answer (`true`), or no longer does
+/// (`false`), by the window's title. The desktop shows an apply before
+/// dsplr has read it back and asks, and a key sent between the two is the
+/// canvas's, not the confirm's.
+fn until_confirming(want: bool, what: &str) {
+    until_windows(what, |windows| {
+        windows.iter().any(|(title, _)| title == CONFIRM_TITLE) == want
+    });
+}
 
 /// Starts the GUI, steps HEADLESS-1's scale up with `+` and applies it with
-/// `a`, and waits for the desktop to show it: the dialogs are up then.
+/// `a`, and waits for the desktop to show it and for the change to wait on
+/// its answer.
 fn apply_a_scale_step(from: f64, to: f64) -> Running {
     until_scale(from, STEP, "before");
-    let gui = start_gui();
-    std::thread::sleep(STARTUP);
+    let gui = start_gui_ready();
     wtype(&["+"]);
     wtype(&["a"]);
     until_scale(to, STEP, "the apply");
+    until_confirming(true, &format!("the confirm of the step to {to}"));
     gui
 }
 
@@ -148,6 +217,7 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     // Kept: Enter in the dialog.
     let mut gui = apply_a_scale_step(1.0, 1.25);
     wtype(&["-k", "Return"]);
+    until_confirming(false, "Enter answering the confirm");
     std::thread::sleep(Duration::from_secs(CONFIRM_SECS + 2));
     until_scale(1.25, STEP, "kept");
     wtype(&["q"]);
@@ -172,8 +242,7 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
 
     // Plugged in while the window is open: it shows up, Tab reaches it, and
     // the edit made before it came is still pending.
-    let gui = start_gui();
-    std::thread::sleep(STARTUP);
+    let gui = start_gui_ready();
     wtype(&["+"]);
     let before = layout().entries.len();
     let status = Command::new("swaymsg")
@@ -195,7 +264,9 @@ fn the_gui_keeps_on_enter_and_reverts_on_timeout_and_after_a_kill() {
     wtype(&["a"]);
     until_scale_of(&new, 1.25, STEP, "the plugged output's edit");
     until_scale(1.5, STEP, "the edit made before it came");
+    until_confirming(true, "the confirm of the hotplug's edit");
     wtype(&["-k", "Return"]);
+    until_confirming(false, "Enter answering the confirm");
     std::thread::sleep(Duration::from_secs(CONFIRM_SECS + 2));
     until_scale_of(&new, 1.25, STEP, "kept");
     wtype(&["q"]);
