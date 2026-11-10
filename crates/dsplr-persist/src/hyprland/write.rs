@@ -33,8 +33,11 @@ pub enum WriteError {
 /// - `vrr` only when the layout knows it: a rule a snapshot could not see
 ///   (Hyprland reports whether adaptive sync is active, not its rule) is
 ///   left as it is rather than overwritten with a guess.
-/// - `bitdepth` only when it is 10, the one value Hyprland acts on.
-/// - `cm` only when the layout has a colour preset.
+/// - `bitdepth` and `cm` whenever the layout knows them, 8 and `srgb`
+///   included: Hyprland merges a rule onto the one before it for the same
+///   output, so a setting left out keeps an earlier rule's (a `bitdepth = 8`
+///   after a `bitdepth = 10` turned it off, 0.57.2, CI run 42784568478).
+///   Saving leaves the defaults out ([`crate::hyprland::save`]).
 ///
 /// # Errors
 ///
@@ -87,8 +90,8 @@ pub fn monitor_call(
         };
         fields.push(format!("vrr = {vrr}"));
     }
-    if state.bit_depth == Some(10) {
-        fields.push("bitdepth = 10".to_owned());
+    if let Some(bits) = state.bit_depth {
+        fields.push(format!("bitdepth = {bits}"));
     }
     if let Some(preset) = &state.colour_preset {
         fields.push(format!("cm = {}", lua_string(preset)));
@@ -316,12 +319,16 @@ hl.monitor({
     }
 
     #[test]
-    fn unknown_adaptive_sync_and_eight_bits_are_left_to_hyprland() {
+    fn unknown_adaptive_sync_is_left_to_hyprland_and_eight_bits_is_said() {
         let mut layout = owners_layout();
-        layout.entries[1].state.bit_depth = Some(8);
         let call = monitor_call(&layout, &layout.entries[1], MonitorNaming::Connector).unwrap();
         assert!(!call.contains("vrr"), "{call}");
-        assert!(!call.contains("bitdepth"), "{call}");
+        assert!(!call.contains("bitdepth"), "not known: {call}");
+        // 8 is written: Hyprland merges a rule onto the one before it, so
+        // leaving it out would keep an earlier `bitdepth = 10`.
+        layout.entries[1].state.bit_depth = Some(8);
+        let call = monitor_call(&layout, &layout.entries[1], MonitorNaming::Connector).unwrap();
+        assert!(call.contains("    bitdepth = 8,\n"), "{call}");
         for (setting, vrr) in [
             (AdaptiveSync::Off, "    vrr = 0,\n"),
             (AdaptiveSync::On, "    vrr = 1,\n"),

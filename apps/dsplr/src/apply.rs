@@ -130,9 +130,8 @@ impl Confirm for Terminal {
 /// `dsplr restore --revert` reads, so a dsplr killed mid-confirm is still
 /// reverted.
 ///
-/// Where the backend needs the layout at the origin, the asked layout is
-/// moved there first ([`to_origin`]), saying so, so what is validated,
-/// tested, applied and read back is that one layout.
+/// The asked layout is [`prepared`] first, so what is validated, tested,
+/// applied and read back is that one layout.
 pub async fn drive(
     backend: &Backend,
     mut change: Change,
@@ -141,9 +140,7 @@ pub async fn drive(
     confirmer: &mut dyn Confirm,
     say: &mut dyn FnMut(String),
 ) -> Outcome {
-    if change.capabilities.origin_required
-        && let Some(line) = to_origin(&mut change.asked, &change.backend)
-    {
+    if let Some(line) = prepared(&mut change) {
         say(line);
     }
     let (mut flow, mut step) = Flow::start(change, options);
@@ -237,6 +234,21 @@ fn prepare(
         point,
         watchdog: started + delay,
     })
+}
+
+/// `change`'s asked layout made ready for its backend: a desktop-specific
+/// setting the backend lacks dropped where its value is the neutral one
+/// ([`Layout::drop_neutral_unsupported`]: a profile saved on Hyprland or KDE
+/// says `srgb`, 8 bits, no overscan, an automatic RGB range), and moved to
+/// the origin where the backend needs it there ([`to_origin`]); the line
+/// saying how far, when it moved.
+fn prepared(change: &mut Change) -> Option<String> {
+    change.asked.drop_neutral_unsupported(&change.capabilities);
+    if change.capabilities.origin_required {
+        to_origin(&mut change.asked, &change.backend)
+    } else {
+        None
+    }
 }
 
 /// Moves `asked` so its outputs start at 0,0 ([`Layout::normalise`]), for
@@ -494,6 +506,49 @@ mod tests {
             .collect();
         assert_eq!(positions, [(0, 0), (2560, 0)]);
         assert_eq!(to_origin(&mut layout, "gnome"), None, "already there");
+    }
+
+    /// `asked` as [`super::prepared`] makes it for a wlroots compositor,
+    /// which has none of the desktop-specific settings.
+    fn prepared_for_wlr(asked: Layout) -> Layout {
+        let mut change = dsplr_core::flow::Change {
+            current: live(),
+            asked,
+            capabilities: dsplr_model::Capabilities::default(),
+            backend: "wlr".into(),
+        };
+        assert_eq!(super::prepared(&mut change), None, "not moved");
+        change.asked
+    }
+
+    #[test]
+    fn a_profile_saved_on_hyprland_or_kde_applies_on_wlroots_unless_it_asks_more() {
+        // Saved on Hyprland: srgb at 8 bits, which is nothing special.
+        let mut hyprland = live();
+        for entry in &mut hyprland.entries {
+            entry.state.colour_preset = Some("srgb".into());
+            entry.state.bit_depth = Some(8);
+        }
+        assert_eq!(prepared_for_wlr(hyprland.clone()), live());
+        // `wide` is a request sway cannot honour: kept, for it to refuse.
+        hyprland.entries[0].state.colour_preset = Some("wide".into());
+        let asked = prepared_for_wlr(hyprland);
+        assert_eq!(
+            asked.entries[0].state.colour_preset.as_deref(),
+            Some("wide")
+        );
+        assert_eq!(asked.entries[0].state.bit_depth, None);
+
+        // Saved on KDE: no overscan and an automatic RGB range.
+        let mut kde = live();
+        for entry in &mut kde.entries {
+            entry.state.overscan = Some(0);
+            entry.state.rgb_range = Some(dsplr_model::RgbRange::Automatic);
+        }
+        assert_eq!(prepared_for_wlr(kde.clone()), live());
+        kde.entries[1].state.overscan = Some(5);
+        let asked = prepared_for_wlr(kde);
+        assert_eq!(asked.entries[1].state.overscan, Some(5));
     }
 
     #[test]

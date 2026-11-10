@@ -293,6 +293,8 @@ impl Backend {
                 per_output_scale: true,
                 gaps_allowed: true,
                 native_persistence: true,
+                colour_preset: true,
+                bit_depth: true,
                 ..Capabilities::default()
             },
             #[cfg(target_os = "linux")]

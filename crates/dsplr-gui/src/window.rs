@@ -895,6 +895,8 @@ impl<'a> MainWindow<'a> {
             Change::Primary(primary) => editor.set_primary(index, primary),
             Change::Overscan(percent) => editor.set_overscan(index, percent),
             Change::RgbRange(range) => editor.set_rgb_range(index, range),
+            Change::ColourPreset(preset) => editor.set_colour_preset(index, &preset),
+            Change::BitDepth(bits) => editor.set_bit_depth(index, bits),
         }
     }
 

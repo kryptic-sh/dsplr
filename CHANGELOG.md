@@ -31,6 +31,17 @@ and this project adheres to
 
 ### Added
 
+- On Hyprland, the colour preset and bit depth are read (`dsplr list --json`,
+  the GUI) and set: the panel offers Hyprland's `cm` presets (`srgb`, `wide`,
+  `edid`, `hdr`, `hdredid`, `auto`, `dcip3`, `dp3`, `adobe`) and 8 or 10 bits,
+  an apply states both on every monitor rule (so 8 bits turns 10 off again), and
+  `dsplr save` writes them to `monitors.lua` only when not Hyprland's default
+  (`srgb`, 8). What is read is what Hyprland drives: a preset the monitor cannot
+  do reads back as the one it fell back to, which the read-back reports.
+- A layout or profile from another desktop applies even where it names settings
+  the desktop has not, when they are neutral: Hyprland's `srgb` preset and 8-bit
+  depth, KDE's zero overscan and automatic RGB range are dropped on a desktop
+  without them. Any other value is still refused (exit `3`).
 - `--backend <name>` (`hyprland`, `kde`, `gnome`, `wlr`; `randr`/`x11` says it
   is not written yet) uses that backend instead of detecting one, on every
   command and the GUI. Only that backend is checked: when it is not reachable,

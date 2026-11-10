@@ -32,6 +32,8 @@ pub enum Change {
     Primary(bool),
     Overscan(u8),
     RgbRange(RgbRange),
+    ColourPreset(String),
+    BitDepth(u8),
 }
 
 /// What the panel keeps between frames: the text of the custom mode field
@@ -400,12 +402,25 @@ fn fields(ui: &mut Ui, panel: Option<&Panel>, drafts: &mut Drafts, changes: &mut
             changes,
         );
     }
-    for (label, value, changed) in &panel.other {
-        ui.block_keyed(label, ".row", &[], |ui| {
-            let class = if *changed { ".label.changed" } else { ".label" };
-            ui.span(class, *label, &[]);
-            ui.span(".value", value.as_str(), &[]);
-        });
+    if let Some(preset) = &panel.colour_preset {
+        choice(
+            ui,
+            "#colour-preset",
+            "Colour preset",
+            preset,
+            |preset| Some(Change::ColourPreset(preset.clone())),
+            changes,
+        );
+    }
+    if let Some(bits) = &panel.bit_depth {
+        choice(
+            ui,
+            "#bit-depth",
+            "Bit depth",
+            bits,
+            |&bits| Some(Change::BitDepth(bits)),
+            changes,
+        );
     }
 }
 
@@ -598,6 +613,20 @@ mod tests {
                 "RGB range",
                 Capabilities {
                     rgb_range: true,
+                    ..Capabilities::default()
+                },
+            ),
+            (
+                "colour preset",
+                Capabilities {
+                    colour_preset: true,
+                    ..Capabilities::default()
+                },
+            ),
+            (
+                "bit depth",
+                Capabilities {
+                    bit_depth: true,
                     ..Capabilities::default()
                 },
             ),

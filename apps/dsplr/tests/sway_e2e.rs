@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 use dsplr_backend::{Backend, Named};
 use std::time::SystemTime;
 
-use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, Transform};
+use dsplr_model::{
+    AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, RgbRange, Transform,
+};
 use dsplr_persist::managed::{Comment, Ownership, ownership};
 use dsplr_persist::profile::{self, Profile, unix_ms};
 use dsplr_persist::revert;
@@ -464,6 +466,43 @@ async fn profiles_are_saved_picked_and_restored(backend: &Backend) {
         last_change,
         "a refused restore starts no change"
     );
+
+    // Profiles saved on Hyprland and KDE carry settings sway has not: at
+    // their neutral values (srgb, 8 bits, no overscan, an automatic RGB
+    // range) they apply here, and a real request (a wide colour preset) is
+    // refused. Both removed after, so they are never picked.
+    let neutral = edited(&start, |layout| {
+        for entry in &mut layout.entries {
+            let state = &mut entry.state;
+            if state.enabled {
+                state.colour_preset = Some("srgb".into());
+                state.bit_depth = Some(8);
+                state.overscan = Some(0);
+                state.rgb_range = Some(RgbRange::Automatic);
+            }
+        }
+    });
+    let wide = edited(&neutral, |layout| {
+        entry_mut(layout, "HEADLESS-1").state.colour_preset = Some("wide".into());
+    });
+    for (name, layout) in [("from-elsewhere", &neutral), ("wide", &wide)] {
+        std::fs::write(
+            store.join(format!("{name}.json")),
+            layout.to_json().expect("JSON"),
+        )
+        .expect("profile written");
+    }
+    let (code, text) = dsplr(&["restore", "from-elsewhere", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(snapshot().await, start);
+    let (code, text) = dsplr(&["restore", "wide", "--yes"]);
+    assert_eq!(code, Some(REFUSED), "{text}");
+    assert!(text.contains("colour preset"), "{text}");
+    assert_eq!(snapshot().await, start);
+    for name in ["from-elsewhere", "wide"] {
+        let (code, text) = dsplr(&["profile", "rm", name]);
+        assert_eq!(code, Some(0), "{text}");
+    }
 
     // Saved on any wlroots compositor, not only sway: here with no SWAYSOCK.
     let (code, text) = exit_and_output(

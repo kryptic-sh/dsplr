@@ -110,6 +110,10 @@ fn entry(monitor: &Monitor, all: &[Monitor]) -> Result<OutputEntry, SnapshotErro
             // off outside fullscreen. So the rule is not known.
             adaptive_sync: None,
             mirror_of,
+            // What is in force, which is what a rule asked for unless the
+            // output cannot do it.
+            colour_preset: monitor.colour_preset(),
+            bit_depth: monitor.bit_depth(),
             ..Default::default()
         }
     };
@@ -207,6 +211,33 @@ mod tests {
         assert_eq!(
             layout.entries[0].state.mirror_of,
             Some(layout.entries[1].id.clone())
+        );
+    }
+
+    #[test]
+    fn the_colour_preset_and_bit_depth_in_force_are_read() {
+        let read = layout(&owner()).expect("converts");
+        let state = &read.entries[1].state;
+        assert_eq!(state.colour_preset.as_deref(), Some("srgb"));
+        assert_eq!(state.bit_depth, Some(8), "XRGB8888");
+        let off = &read.entries[0].state;
+        assert_eq!((off.colour_preset.as_deref(), off.bit_depth), (None, None));
+
+        let mut monitors = owner();
+        monitors[1].current_format = "XRGB2101010".into();
+        monitors[1].color_management_preset = "wide".into();
+        let wide = layout(&monitors).expect("converts");
+        let state = &wide.entries[1].state;
+        assert_eq!(state.colour_preset.as_deref(), Some("wide"));
+        assert_eq!(state.bit_depth, Some(10));
+        // A Hyprland that reports neither: not known.
+        monitors[1].current_format = String::new();
+        monitors[1].color_management_preset = String::new();
+        let unknown = layout(&monitors).expect("converts");
+        let state = &unknown.entries[1].state;
+        assert_eq!(
+            (state.colour_preset.as_deref(), state.bit_depth),
+            (None, None)
         );
     }
 

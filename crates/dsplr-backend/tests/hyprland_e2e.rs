@@ -43,7 +43,7 @@ async fn a_headless_hyprland_applies_saves_watches_and_meets_the_protocol() {
     a_saved_layout_is_what_hyprland_reads_back_after_a_reload().await;
     let backend = hyprland_backend().await;
     a_watch_follows_reloads_and_hotplug(&backend).await;
-    colour_and_bit_depth_as_hyprland_reports_them().await;
+    colour_and_bit_depth_as_hyprland_reports_them(&backend).await;
     // Last: Hyprland keeps what the protocol applies per monitor, and a
     // reload after it was not checked.
     an_eval_mirror_meets_a_protocol_apply(&backend).await;
@@ -260,13 +260,14 @@ async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
     assert_eq!(std::fs::read_to_string(&monitors).expect("written"), text);
 }
 
-/// A probe, not a check: what `hyprctl -j monitors all` reports about colour
-/// management and bit depth on DSPLR-1 after each `cm` preset and each
-/// `bitdepth` is set through `eval`, so dsplr reads and writes them on facts
-/// (`docs/backlog.md`, Hyprland's colour preset and bit depth). Prints
-/// `OBSERVED` lines and asserts nothing; puts `srgb` and 8 bits back last,
-/// since Hyprland merges a rule onto the one before it.
-async fn colour_and_bit_depth_as_hyprland_reports_them() {
+/// What `hyprctl -j monitors all` reports about colour management and bit
+/// depth on DSPLR-1 as each `cm` preset and `bitdepth` is set through
+/// `eval`, and dsplr reading and applying both. Asserted where 0.57.2 was
+/// seen to do it (CI run 42784568478); the presets an output without an
+/// EDID cannot do (`edid`, `hdr`, `hdredid`, `auto`, which read back as
+/// `srgb` there) are printed as `OBSERVED` lines only. Puts `srgb` and 8
+/// bits back last, since Hyprland merges a rule onto the one before it.
+async fn colour_and_bit_depth_as_hyprland_reports_them(backend: &Backend) {
     let hyprland = Hyprland::from_env().expect("the harness's Hyprland");
     let version = hyprland.version().await.expect("its version");
     let monitor = || {
@@ -280,66 +281,72 @@ async fn colour_and_bit_depth_as_hyprland_reports_them() {
             .cloned()
             .expect("DSPLR-1 listed")
     };
-    // Every key, once, so the fields' names are on record.
-    let keys: Vec<String> = monitor()
-        .as_object()
-        .expect("an object")
-        .keys()
-        .cloned()
-        .collect();
-    observed(&format!(
-        "OBSERVED (Hyprland {version}): monitor keys: {}",
-        keys.join(", ")
-    ));
-    let colour_fields = || {
+    // (preset, format) as Hyprland reports them.
+    let reported = || {
         let monitor = monitor();
-        let fields: Vec<String> = monitor
-            .as_object()
-            .expect("an object")
-            .iter()
-            .filter(|(key, _)| {
-                let key = key.to_ascii_lowercase();
-                [
-                    "format", "color", "colour", "bit", "sdr", "hdr", "cm", "icc", "wide",
-                ]
-                .iter()
-                .any(|part| key.contains(part))
-            })
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect();
-        fields.join(" ")
+        let text = |key: &str| {
+            monitor[key]
+                .as_str()
+                .unwrap_or_else(|| panic!("{key} missing: {monitor}"))
+                .to_owned()
+        };
+        (text("colorManagementPreset"), text("currentFormat"))
     };
-    observed(&format!(
-        "OBSERVED (Hyprland {version}): before: {}",
-        colour_fields()
-    ));
+    assert_eq!(reported(), ("srgb".to_owned(), "XRGB8888".to_owned()));
     // A rule takes effect on Hyprland's next frame.
     let settle = || tokio::time::sleep(Duration::from_secs(1));
-    let try_rule = async |rule: &str| {
+    let eval = async |rule: &str| {
         let call = format!(r#"hl.monitor({{ output = "DSPLR-1", {rule} }})"#);
-        let answer = match hyprland.eval(&call).await {
-            Ok(()) => "accepted".to_owned(),
-            Err(error) => format!("refused ({error})"),
-        };
+        hyprland
+            .eval(&call)
+            .await
+            .unwrap_or_else(|error| panic!("{rule}: {error}"));
         settle().await;
-        observed(&format!(
-            "OBSERVED (Hyprland {version}): eval {rule}: {answer}; then {}",
-            colour_fields()
-        ));
+        reported()
     };
-    for preset in [
-        "srgb", "wide", "edid", "hdr", "hdredid", "auto", "dcip3", "dp3", "adobe",
-    ] {
-        try_rule(&format!(r#"cm = "{preset}""#)).await;
+    for preset in ["srgb", "wide", "dcip3", "dp3", "adobe"] {
+        let (got, _) = eval(&format!(r#"cm = "{preset}""#)).await;
+        assert_eq!(got, preset, "reported as given");
     }
-    try_rule(r#"cm = "srgb""#).await;
-    try_rule("bitdepth = 10").await;
-    // A rule leaving bit depth out, which Hyprland merges onto the last.
-    try_rule(r#"mirror = """#).await;
-    try_rule("bitdepth = 8").await;
-    try_rule("bitdepth = 10").await;
-    try_rule("bitdepth = 16").await;
-    try_rule("bitdepth = 8").await;
+    for preset in ["edid", "hdr", "hdredid", "auto"] {
+        let (got, _) = eval(&format!(r#"cm = "{preset}""#)).await;
+        observed(&format!(
+            "OBSERVED (Hyprland {version}): cm = \"{preset}\" on an output without an EDID reports \"{got}\""
+        ));
+    }
+    eval(r#"cm = "srgb""#).await;
+    assert_eq!(eval("bitdepth = 10").await.1, "XRGB2101010");
+    // A rule leaving bit depth out is merged onto the last: still 10.
+    assert_eq!(eval(r#"mirror = """#).await.1, "XRGB2101010");
+    // 8 turns 10 off, and a depth Hyprland does not drive is 8.
+    assert_eq!(eval("bitdepth = 8").await.1, "XRGB8888");
+    eval("bitdepth = 10").await;
+    assert_eq!(eval("bitdepth = 16").await.1, "XRGB8888");
+
+    // dsplr reads both and applies both ways, 8 bits included.
+    let now = backend.snapshot().await.expect("snapshot");
+    let state = &entry(&now, "DSPLR-1").state;
+    assert_eq!(
+        (state.colour_preset.as_deref(), state.bit_depth),
+        (Some("srgb"), Some(8))
+    );
+    let wide = edited(&now, |layout| {
+        let state = &mut entry_mut(layout, "DSPLR-1").state;
+        state.colour_preset = Some("wide".into());
+        state.bit_depth = Some(10);
+    });
+    backend.apply(&wide).await.expect("applied");
+    snapshot_until(backend, "DSPLR-1 wide at 10 bits", |layout| {
+        let state = &entry(layout, "DSPLR-1").state;
+        (state.colour_preset.as_deref(), state.bit_depth) == (Some("wide"), Some(10))
+    })
+    .await;
+    backend.apply(&now).await.expect("applied");
+    snapshot_until(backend, "DSPLR-1 back to srgb at 8 bits", |layout| {
+        let state = &entry(layout, "DSPLR-1").state;
+        (state.colour_preset.as_deref(), state.bit_depth) == (Some("srgb"), Some(8))
+    })
+    .await;
 }
 
 /// Writes `line` to the test's stderr whether or not the test passes:

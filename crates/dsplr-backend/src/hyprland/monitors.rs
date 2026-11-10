@@ -41,8 +41,25 @@ pub struct Monitor {
     pub mirror_of: String,
     /// Every mode the monitor offers, as `WIDTHxHEIGHT@REFRESHHz` strings.
     pub available_modes: Vec<String>,
+    /// The DRM format it is driven in (`XRGB8888`, `XRGB2101010`); `Invalid`
+    /// while disabled. A 2101010 format is 10 bits per channel, which a
+    /// `bitdepth = 10` rule gets where the output can do it (0.57.2, CI run
+    /// 42784568478). Empty from a Hyprland that does not say.
+    #[serde(default)]
     pub current_format: String,
+    /// The colour management preset in force, by the name a `cm` rule
+    /// takes. A preset the output cannot do falls back: an EDID-less output
+    /// given `edid`, `hdr`, `hdredid` or `auto` reported `srgb` (0.57.2, CI
+    /// run 42784568478). Empty from a Hyprland that does not say.
+    #[serde(default)]
+    pub color_management_preset: String,
 }
+
+/// The part of a [`Monitor::current_format`] that says 10 bits per channel.
+const TEN_BIT_FORMAT: &str = "2101010";
+
+/// What [`Monitor::current_format`] holds while disabled.
+const NO_FORMAT: &str = "Invalid";
 
 /// What `mirrorOf` holds when the monitor mirrors nothing.
 const NOT_MIRRORING: &str = "none";
@@ -64,6 +81,21 @@ impl Monitor {
             .parse()
             .map(Some)
             .map_err(|_| self.mirror_of.as_str())
+    }
+
+    /// Bits per channel by [`Monitor::current_format`]: 10 for a 2101010
+    /// format, else 8 (Hyprland's two); `None` when it says none.
+    pub fn bit_depth(&self) -> Option<u8> {
+        match self.current_format.as_str() {
+            "" | NO_FORMAT => None,
+            format if format.contains(TEN_BIT_FORMAT) => Some(10),
+            _ => Some(8),
+        }
+    }
+
+    /// The colour preset in force; `None` when Hyprland says none.
+    pub fn colour_preset(&self) -> Option<String> {
+        (!self.color_management_preset.is_empty()).then(|| self.color_management_preset.clone())
     }
 
     /// The modes in [`Monitor::available_modes`], parsed.

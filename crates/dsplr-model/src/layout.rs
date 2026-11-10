@@ -4,7 +4,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::name::{ParseNameError, parse_name};
-use crate::{Mode, OutputId, Transform};
+use crate::{Capabilities, Mode, OutputId, Transform};
 
 /// Two scales closer than this are the same scale. Backends report scales as
 /// doubles or `wl_fixed`, so an exact comparison would tell two scales apart
@@ -42,6 +42,33 @@ impl Layout {
     /// logical one.
     pub fn extent_mode(&self) -> LayoutMode {
         self.layout_mode.unwrap_or_default()
+    }
+
+    /// Drops each desktop-specific setting a backend without it
+    /// (`capabilities`) could only refuse, where its value is the neutral
+    /// one ([`NEUTRAL_COLOUR_PRESET`], [`NEUTRAL_BIT_DEPTH`],
+    /// [`NEUTRAL_OVERSCAN`], [`NEUTRAL_RGB_RANGE`]): what a layout read on
+    /// Hyprland or KDE says when nothing special is set, so a profile saved
+    /// there applies elsewhere. Any other value is a request the desktop
+    /// cannot honour, and stays for the backend to refuse.
+    pub fn drop_neutral_unsupported(&mut self, capabilities: &Capabilities) {
+        for entry in &mut self.entries {
+            let state = &mut entry.state;
+            if !capabilities.colour_preset
+                && state.colour_preset.as_deref() == Some(NEUTRAL_COLOUR_PRESET)
+            {
+                state.colour_preset = None;
+            }
+            if !capabilities.bit_depth && state.bit_depth == Some(NEUTRAL_BIT_DEPTH) {
+                state.bit_depth = None;
+            }
+            if !capabilities.overscan && state.overscan == Some(NEUTRAL_OVERSCAN) {
+                state.overscan = None;
+            }
+            if !capabilities.rgb_range && state.rgb_range == Some(NEUTRAL_RGB_RANGE) {
+                state.rgb_range = None;
+            }
+        }
     }
 }
 
@@ -147,6 +174,35 @@ pub struct Output {
     /// The modes the monitor offers.
     pub modes: Vec<Mode>,
 }
+
+/// The colour presets an output can be given, by the names Hyprland's `cm`
+/// rule takes (`NCMType::eCMType` in 0.57.2; each accepted by `eval`, CI run
+/// 42784568478). Hyprland reports the one in force, and one the output
+/// cannot do falls back (`edid`, `hdr`, `hdredid` and `auto` read back as
+/// `srgb` on an output without an EDID).
+pub const COLOUR_PRESETS: [&str; 9] = [
+    "srgb", "wide", "edid", "hdr", "hdredid", "auto", "dcip3", "dp3", "adobe",
+];
+
+/// The bit depths an output can be given: Hyprland drives 10 bits per
+/// channel for `bitdepth = 10`, and 8 for anything else (`bitdepth = 16`
+/// read back as 8, CI run 42784568478).
+pub const BIT_DEPTHS: [u8; 2] = [8, 10];
+
+/// The colour preset that means nothing special: Hyprland's default for a
+/// rule naming none (`NCMType::CM_SRGB`, 0.57.2's `MonitorRule.hpp`).
+pub const NEUTRAL_COLOUR_PRESET: &str = "srgb";
+
+/// The bit depth that means nothing special: Hyprland's default
+/// (`m_enable10bit = false`).
+pub const NEUTRAL_BIT_DEPTH: u8 = 8;
+
+/// The overscan that means nothing special: none.
+pub const NEUTRAL_OVERSCAN: u8 = 0;
+
+/// The RGB range that means nothing special: the desktop's own choice, KDE's
+/// default (`rgb_range.automatic`) and GNOME's (`rgb-range` 1).
+pub const NEUTRAL_RGB_RANGE: RgbRange = RgbRange::Automatic;
 
 /// The most overscan an output can have: it is a percentage of the picture,
 /// and KWin, the one desktop with overscan, takes no more
@@ -323,6 +379,67 @@ mod tests {
             scale,
             ..OutputState::default()
         }
+    }
+
+    #[test]
+    fn a_neutral_setting_the_backend_lacks_is_dropped_and_a_real_one_kept() {
+        let entry = |state| crate::OutputEntry {
+            id: crate::OutputId::Connector("DP-1".into()),
+            output: None,
+            state,
+        };
+        // Saved on Hyprland and on KDE, each at its desktop's neutral values.
+        let neutral = OutputState {
+            colour_preset: Some("srgb".into()),
+            bit_depth: Some(8),
+            overscan: Some(0),
+            rgb_range: Some(super::RgbRange::Automatic),
+            ..OutputState::default()
+        };
+        let mut layout = Layout {
+            entries: vec![entry(neutral.clone())],
+            ..Default::default()
+        };
+        // A backend with none of them (wlroots): all four go.
+        layout.drop_neutral_unsupported(&crate::Capabilities::default());
+        let state = &layout.entries[0].state;
+        assert_eq!(
+            (
+                &state.colour_preset,
+                state.bit_depth,
+                state.overscan,
+                state.rgb_range
+            ),
+            (&None, None, None, None)
+        );
+        // A backend that has them keeps them, neutral or not.
+        let all = crate::Capabilities {
+            colour_preset: true,
+            bit_depth: true,
+            overscan: true,
+            rgb_range: true,
+            ..crate::Capabilities::default()
+        };
+        let mut layout = Layout {
+            entries: vec![entry(neutral.clone())],
+            ..Default::default()
+        };
+        layout.drop_neutral_unsupported(&all);
+        assert_eq!(layout.entries[0].state, neutral);
+        // A real request stays, for the backend to refuse.
+        let asked = OutputState {
+            colour_preset: Some("wide".into()),
+            bit_depth: Some(10),
+            overscan: Some(5),
+            rgb_range: Some(super::RgbRange::Limited),
+            ..OutputState::default()
+        };
+        let mut layout = Layout {
+            entries: vec![entry(asked.clone())],
+            ..Default::default()
+        };
+        layout.drop_neutral_unsupported(&crate::Capabilities::default());
+        assert_eq!(layout.entries[0].state, asked);
     }
 
     #[test]

@@ -648,22 +648,30 @@ milestone:
   output sharing some of the span across (a diagonal neighbour is not reached),
   and stopping at a neighbour it already touches rather than jumping past it.
   Any typed scale is still taken.
-- **Hyprland's colour preset and bit depth are shown, not edited**: the
-  `hyprland` backend's `Capabilities` leave them out, because its snapshot does
-  not read them, so a change could not be read back. Hyprland's apply already
-  sends them (`monitor_call` writes `cm` and `bitdepth`), and
-  `hyprctl -j monitors all` reports `colorManagementPreset` and `currentFormat`
-  (plan 04). What reading them needs: (1) the JSON's preset names to be the ones
-  `cm` takes; the 0.57.2 binary's strings hold `srgb`, `wide`, `edid`, `hdredid`
-  and `auto` whole, but `hdr`, `dcip3`, `dp3` and `adobe` (from
-  `NCMType::eCMType`) were not found, so they are unconfirmed; (2) bit depth
-  from `currentFormat` (`XRGB2101010` for 10, `XRGB8888` for 8, `Invalid` when
-  off), which says what is in force rather than the rule; (3) `bitdepth = 8`
-  written too, since `monitor_call` writes only `bitdepth = 10` and Hyprland
-  merges a rule onto the one before it, so an apply could never turn 10-bit off;
-  (4) every apply and save would then state `cm` and `bitdepth` for every
-  monitor, changing every saved `monitors.lua`. Each needs the headless Hyprland
-  harness (CI only) to confirm.
+- **Hyprland's colour preset and bit depth are read as in force, not as the
+  rule**: the snapshot reads `colorManagementPreset` and `currentFormat`, which
+  say what Hyprland drives, so a rule the monitor cannot do reads as the
+  fallback (`hdr`, `edid`, `hdredid`, `auto` as `srgb` on an output without an
+  EDID; `bitdepth = 10` as 8 where 10 is not driven). Consequences: a save
+  writes the fallback, so such a rule in `monitors.lua` is dropped (dsplr cannot
+  tell it from the user having turned it off); an apply restates it at runtime;
+  the read-back reports asked-versus-got. Keeping the old file's rule where the
+  live value is a fallback was considered and not built: it would also keep a
+  rule the user changed on purpose. Not seen on a monitor that can do HDR or 10
+  bits (CI's output is headless, without an EDID).
+- **A profile asking a desktop-specific setting another desktop lacks is
+  refused**: neutral values are dropped (`Layout::drop_neutral_unsupported`),
+  others refused (exit `3`), so a Hyprland profile with `wide` or 10 bits, or a
+  KDE one with overscan or a limited RGB range, does not restore on sway. A
+  primary output named in a GNOME or KDE profile is refused on wlroots and
+  Hyprland the same way, and was not covered by this: `primary = true` is a
+  request, not a neutral value. Taking the live value instead, saying so, is the
+  alternative.
+- **A main-config rule can still win for colour and depth**: a save leaves
+  `cm = "srgb"` and `bitdepth = 8` out of `monitors.lua`, so a `hyprland.lua`
+  `hl.monitor` call before `require("monitors")` setting either for the same
+  output keeps its value at startup (the merge). dsplr says when calls come
+  after the require, not this.
 - **The panel's overscan steps are a guess**: 0 to 10 % by one, then 15 and 20 %
   (`dsplr-core`'s `OVERSCANS`), plus the output's own value; KDE's own settings
   offer every percent. No `dsplr set` flag sets the primary output, overscan or

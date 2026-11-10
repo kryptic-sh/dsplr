@@ -123,6 +123,24 @@ So:
   apply; mirroring through `eval` stays writable (it is in `Capabilities`), and
   another tool's protocol apply does not undo it.
 
+- **Colour preset and bit depth** (0.57.2, CI run 42784568478, a headless output
+  without an EDID): `j/monitors all` reports `colorManagementPreset`, by the
+  name a `cm` rule takes, and `currentFormat` (`XRGB8888`, `XRGB2101010`;
+  `Invalid` while off). `eval` accepts `cm` = `srgb`, `wide`, `edid`, `hdr`,
+  `hdredid`, `auto`, `dcip3`, `dp3` and `adobe` (`dsplr_model::COLOUR_PRESETS`);
+  the JSON names `srgb`, `wide`, `dcip3`, `dp3` and `adobe` as given, and
+  `edid`, `hdr`, `hdredid` and `auto` as `srgb` there, where the output cannot
+  do them. `bitdepth = 10` gives a 2101010 format, a later rule without
+  `bitdepth` keeps it (the merge), `bitdepth = 8` turns it off, and `16` reads
+  as 8. So the snapshot reads the preset in force and 10 bits for a 2101010
+  format, else 8; an apply states both on every rule (8 and `srgb` included,
+  since a rule merges onto the last); a save leaves Hyprland's defaults
+  (`srgb`, 8) out of `monitors.lua`
+  ([05](05-persistence-and-profiles.md#hyprland)). A preset that falls back
+  reads back as `srgb`, which the read-back reports as a difference (asked
+  `hdr`, got `srgb`): it is what Hyprland shows, and the differences are said,
+  not a failure, so the user learns the monitor did not take it. Not seen on a
+  monitor that can do HDR or 10 bits.
 - **Persist** by writing the `monitors.lua` beside the `hyprland.lua` Hyprland
   reads, found as Hyprland finds it (`HYPRLAND_CONFIG`, then
   `$XDG_CONFIG_HOME/hypr`, then `~/.config/hypr`;

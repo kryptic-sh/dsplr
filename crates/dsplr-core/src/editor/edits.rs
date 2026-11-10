@@ -7,8 +7,8 @@
 //! does not look at them.
 
 use dsplr_model::{
-    AdaptiveSync, Capabilities, Mode, ModeSpec, OVERSCAN_MAX, OutputId, Rect, RgbRange,
-    SCALE_EPSILON, Transform, default_mode, is_valid_scale, pick_mode,
+    AdaptiveSync, BIT_DEPTHS, COLOUR_PRESETS, Capabilities, Mode, ModeSpec, OVERSCAN_MAX, OutputId,
+    Rect, RgbRange, SCALE_EPSILON, Transform, default_mode, is_valid_scale, pick_mode,
 };
 
 use super::{Editor, on_canvas};
@@ -321,6 +321,22 @@ impl Editor {
             && self.edit_on(index, |state| state.overscan = Some(percent))
     }
 
+    /// Sets output `index`'s colour preset to `preset`, one of
+    /// [`COLOUR_PRESETS`], where the backend takes one.
+    pub fn set_colour_preset(&mut self, index: usize, preset: &str) -> bool {
+        self.snapshot.capabilities.colour_preset
+            && COLOUR_PRESETS.contains(&preset)
+            && self.edit_on(index, |state| state.colour_preset = Some(preset.to_owned()))
+    }
+
+    /// Sets output `index`'s bit depth to `bits`, one of [`BIT_DEPTHS`],
+    /// where the backend takes one.
+    pub fn set_bit_depth(&mut self, index: usize, bits: u8) -> bool {
+        self.snapshot.capabilities.bit_depth
+            && BIT_DEPTHS.contains(&bits)
+            && self.edit_on(index, |state| state.bit_depth = Some(bits))
+    }
+
     /// Sets output `index`'s RGB range, where the backend takes one.
     pub fn set_rgb_range(&mut self, index: usize, range: RgbRange) -> bool {
         self.snapshot.capabilities.rgb_range
@@ -602,6 +618,24 @@ mod tests {
         assert!(!state(&editor, 1).primary);
         let mut wlr = Editor::new(three_monitors());
         assert!(!wlr.set_primary(0, true), "a backend with no primary");
+    }
+
+    #[test]
+    fn colour_preset_and_bit_depth_are_set_to_what_hyprland_takes() {
+        // The owner's machine is Hyprland's.
+        let mut editor = Editor::new(owners_machine());
+        assert!(editor.set_colour_preset(1, "hdr"));
+        assert_eq!(state(&editor, 1).colour_preset.as_deref(), Some("hdr"));
+        assert!(!editor.set_colour_preset(1, "vivid"), "no such preset");
+        assert!(editor.set_bit_depth(1, 10));
+        assert_eq!(state(&editor, 1).bit_depth, Some(10));
+        assert!(editor.set_bit_depth(1, 8), "back to 8, said as 8");
+        assert_eq!(state(&editor, 1).bit_depth, Some(8));
+        assert!(!editor.set_bit_depth(1, 16), "not a depth Hyprland drives");
+        assert!(!editor.set_bit_depth(0, 10), "an output that is off");
+        let mut wlr = Editor::new(three_monitors());
+        assert!(!wlr.set_colour_preset(0, "wide"));
+        assert!(!wlr.set_bit_depth(0, 10));
     }
 
     #[test]

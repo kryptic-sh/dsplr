@@ -37,7 +37,8 @@ later work is below.
   overscan (a percentage, offered in steps, `OVERSCAN_MAX` at most) and RGB
   range. A field the backend has but did not report for an output (a KWin
   virtual output, a monitor Mutter gives no RGB range) is locked, saying so.
-  Hyprland's colour preset and bit depth are shown only (backlog).
+  Hyprland's colour preset (`COLOUR_PRESETS`, plus one Hyprland names that dsplr
+  does not) and bit depth (8 or 10) are edited the same way.
 - The panel is reached from the keyboard with the `panel` key ([Keys](#keys)),
   driven by crcbl-ui's own focus traversal (tree order, accept, back, arrows);
   `Tab` keeps selecting outputs on the canvas.

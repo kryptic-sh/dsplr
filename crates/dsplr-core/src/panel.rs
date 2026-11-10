@@ -4,8 +4,8 @@
 //! widgets from it and hands the choices back to the [`Editor`]'s edits.
 
 use dsplr_model::{
-    AdaptiveSync, Capabilities, Mode, OVERSCAN_MAX, OutputEntry, OutputId, OutputState, RgbRange,
-    SCALE_EPSILON, Transform,
+    AdaptiveSync, BIT_DEPTHS, COLOUR_PRESETS, Capabilities, Mode, OVERSCAN_MAX, OutputEntry,
+    OutputId, OutputState, RgbRange, SCALE_EPSILON, Transform,
 };
 
 use crate::Editor;
@@ -80,10 +80,10 @@ pub struct Panel {
     pub overscan: Option<Field<Choice<u8>>>,
     /// Its RGB range; `None` where the backend has none.
     pub rgb_range: Option<Field<Choice<RgbRange>>>,
-    /// The settings only some backends have that are shown and not edited
-    /// here (Hyprland's colour preset and bit depth, `docs/backlog.md`):
-    /// label, value, changed.
-    pub other: Vec<(&'static str, String, bool)>,
+    /// Its colour preset; `None` where the backend has none.
+    pub colour_preset: Option<Field<Choice<String>>>,
+    /// Its bits per channel; `None` where the backend has none.
+    pub bit_depth: Option<Field<Choice<u8>>>,
 }
 
 /// An output's name as the canvas and panel head it: its connector, else
@@ -203,7 +203,28 @@ pub fn panel(editor: &Editor, index: usize) -> Option<Panel> {
                 locked(live.rgb_range.is_none().then(|| NOT_REPORTED.to_owned())),
             )
         }),
-        other: other(state, live, capabilities),
+        colour_preset: capabilities.colour_preset.then(|| {
+            field(
+                colour_presets(state.colour_preset.as_deref()),
+                state.colour_preset != live.colour_preset,
+                locked(
+                    live.colour_preset
+                        .is_none()
+                        .then(|| NOT_REPORTED.to_owned()),
+                ),
+            )
+        }),
+        bit_depth: capabilities.bit_depth.then(|| {
+            let options = BIT_DEPTHS.map(|bits| (bits.to_string(), bits)).to_vec();
+            let chosen = state
+                .bit_depth
+                .and_then(|current| options.iter().position(|(_, bits)| *bits == current));
+            field(
+                Choice { options, chosen },
+                state.bit_depth != live.bit_depth,
+                locked(live.bit_depth.is_none().then(|| NOT_REPORTED.to_owned())),
+            )
+        }),
     })
 }
 
@@ -355,32 +376,21 @@ fn overscans(current: Option<u8>) -> Choice<u8> {
     }
 }
 
-/// The settings only some backends have that the panel shows and does not
-/// edit, on a backend that has them.
-fn other(
-    state: &OutputState,
-    live: &OutputState,
-    capabilities: &Capabilities,
-) -> Vec<(&'static str, String, bool)> {
-    let default = || "default".to_owned();
-    let mut rows = Vec::new();
-    if capabilities.colour_preset {
-        rows.push((
-            "Colour preset",
-            state.colour_preset.clone().unwrap_or_else(default),
-            state.colour_preset != live.colour_preset,
-        ));
+/// [`COLOUR_PRESETS`], with `current` added last when Hyprland names one
+/// dsplr does not; none chosen when it is not known.
+fn colour_presets(current: Option<&str>) -> Choice<String> {
+    let mut presets: Vec<String> = COLOUR_PRESETS.map(str::to_owned).to_vec();
+    if let Some(current) = current.filter(|current| !COLOUR_PRESETS.contains(current)) {
+        presets.push(current.to_owned());
     }
-    if capabilities.bit_depth {
-        rows.push((
-            "Bit depth",
-            state
-                .bit_depth
-                .map_or_else(default, |bits| format!("{bits} bits")),
-            state.bit_depth != live.bit_depth,
-        ));
+    let chosen = current.and_then(|current| presets.iter().position(|preset| preset == current));
+    Choice {
+        options: presets
+            .into_iter()
+            .map(|preset| (preset.clone(), preset))
+            .collect(),
+        chosen,
     }
-    rows
 }
 
 #[cfg(test)]
@@ -454,9 +464,18 @@ mod tests {
                 .as_ref()
                 .map(|field| format!("rgb {}", choice(field))),
         );
-        lines.extend(panel.other.iter().map(|(label, value, changed)| {
-            format!("{label} {value}{}", if *changed { " *" } else { "" })
-        }));
+        lines.extend(
+            panel
+                .colour_preset
+                .as_ref()
+                .map(|field| format!("cm {}", choice(field))),
+        );
+        lines.extend(
+            panel
+                .bit_depth
+                .as_ref()
+                .map(|field| format!("bits {}", choice(field))),
+        );
         lines
     }
 
@@ -476,11 +495,34 @@ mod tests {
                 "transform normal of [normal, 90, 180, 270, flipped, flipped-90, flipped-180, flipped-270]",
                 "vrr off of [off, on]",
                 "mirror none of [none, eDP-1]",
-                "Colour preset default",
-                "Bit depth default",
+                "cm - of [srgb, wide, edid, hdr, hdredid, auto, dcip3, dp3, adobe] (locked: the desktop reports no value for this output)",
+                "bits - of [8, 10] (locked: the desktop reports no value for this output)",
             ]
         );
         assert_eq!(panel(&editor, 2), None);
+    }
+
+    #[test]
+    fn colour_preset_and_bit_depth_are_edited_where_hyprland_reports_them() {
+        let mut snapshot = owners_machine();
+        let state = &mut snapshot.layout.entries[1].state;
+        state.colour_preset = Some("srgb".into());
+        state.bit_depth = Some(8);
+        let mut editor = Editor::new(snapshot);
+        assert!(editor.set_colour_preset(1, "wide"));
+        let lines = text(&panel(&editor, 1).unwrap());
+        assert_eq!(
+            lines[10..],
+            [
+                "cm wide of [srgb, wide, edid, hdr, hdredid, auto, dcip3, dp3, adobe] *",
+                "bits 8 of [8, 10]",
+            ]
+        );
+        // A preset Hyprland names that dsplr does not is offered too.
+        editor.edit(1, |state| state.colour_preset = Some("future".into()));
+        let lines = text(&panel(&editor, 1).unwrap());
+        assert!(lines[10].starts_with("cm future of ["), "{}", lines[10]);
+        assert!(lines[10].contains(", future]"), "{}", lines[10]);
     }
 
     #[test]

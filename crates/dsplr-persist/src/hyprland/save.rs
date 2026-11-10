@@ -6,7 +6,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dsplr_model::{Layout, OutputEntry};
+use dsplr_model::{Layout, NEUTRAL_BIT_DEPTH, NEUTRAL_COLOUR_PRESET, OutputEntry};
 
 use super::{
     MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name, read_monitors_lua,
@@ -135,10 +135,33 @@ pub fn save(
 const KEPT_CATCH_ALL: &str =
     "its catch-all hl.monitor({ output = \"\" }) rule, which monitors it does not name take";
 
+/// `entry` as the file holds it: Hyprland's default colour preset and bit
+/// depth ([`NEUTRAL_COLOUR_PRESET`], [`NEUTRAL_BIT_DEPTH`]) left out, as they
+/// are where a file names none. A runtime rule
+/// states them (`monitor_call`), since there it merges onto earlier ones;
+/// the file is read afresh, after the main config's own rules.
+fn without_defaults(mut entry: OutputEntry) -> OutputEntry {
+    let state = &mut entry.state;
+    if state.colour_preset.as_deref() == Some(NEUTRAL_COLOUR_PRESET) {
+        state.colour_preset = None;
+    }
+    if state.bit_depth == Some(NEUTRAL_BIT_DEPTH) {
+        state.bit_depth = None;
+    }
+    entry
+}
+
 fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
     MonitorsLua {
         layout: Layout {
-            entries: in_hyprland_order(layout.entries.clone()),
+            entries: in_hyprland_order(
+                layout
+                    .entries
+                    .iter()
+                    .cloned()
+                    .map(without_defaults)
+                    .collect(),
+            ),
             ..Default::default()
         },
         catch_alls: Vec::new(),
@@ -204,7 +227,7 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
                     state.colour_preset.clone_from(&before.colour_preset);
                 }
             }
-            entry
+            without_defaults(entry)
         })
         .collect();
     // Which monitor a rule is for is dsplr's question, so by whole words: a
@@ -639,6 +662,38 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         let file = read_monitors_lua(&config.read()).unwrap();
         assert_eq!(file.catch_alls, catch_alls);
         assert_eq!(file.layout.entries[1].state.y, 200);
+    }
+
+    #[test]
+    fn hyprland_s_default_colour_and_depth_are_left_out_of_the_file() {
+        let config = Config::new("");
+        let mut layout = live();
+        for entry in &mut layout.entries {
+            entry.state.colour_preset = Some("srgb".into());
+            entry.state.bit_depth = Some(8);
+        }
+        config.save(&layout, None).unwrap();
+        let text = config.read();
+        assert!(
+            !text.contains("cm =") && !text.contains("bitdepth"),
+            "{text}"
+        );
+        layout.entries[1].state.colour_preset = Some("wide".into());
+        layout.entries[1].state.bit_depth = Some(10);
+        config.save(&layout, None).unwrap();
+        let file = read_monitors_lua(&config.read()).unwrap();
+        let state = &file.layout.entries[1].state;
+        assert_eq!(state.colour_preset.as_deref(), Some("wide"));
+        assert_eq!(state.bit_depth, Some(10));
+        // Back to the defaults, over a file that has them: left out again.
+        layout.entries[1].state.colour_preset = Some("srgb".into());
+        layout.entries[1].state.bit_depth = Some(8);
+        config.save(&layout, None).unwrap();
+        let text = config.read();
+        assert!(
+            !text.contains("cm =") && !text.contains("bitdepth"),
+            "{text}"
+        );
     }
 
     #[test]

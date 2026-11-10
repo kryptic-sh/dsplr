@@ -41,7 +41,12 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   `mirror = ""`): Hyprland merges a rule onto the existing one of the same name,
   so a setting left out keeps its old value. Positions are always explicit.
   `vrr` is written only when on or automatic, so a fullscreen-only rule that
-  Hyprland reports as off is never overwritten.
+  Hyprland reports as off is never overwritten. `cm` and `bitdepth` are written
+  only when not Hyprland's default (`srgb`, 8): the file is read afresh at
+  startup, where a rule naming neither gets the defaults. That is the preset and
+  depth in force, as the snapshot reads them, so a rule the monitor cannot do
+  (`cm = "hdr"` falling back to `srgb`, `bitdepth = 10` driven at 8) is not kept
+  by a save (backlog).
 - The catch-all `hl.monitor({ output = "", mode = "preferred", … })` from the
   template is preserved if present: every such call of a file dsplr can read
   (its own, nwg-displays', or one approved after a conflict), as its text and in
@@ -281,6 +286,15 @@ a profile, moving an output and restoring it, by name and picked.
   adding `toml` is the owner's call (`docs/backlog.md`).
 - The outputs a profile applies to are its entries' `OutputId`s: saved from the
   displays, it names every connected output, on or off.
+- A profile saved on one desktop applies on another: a desktop-specific setting
+  the backend lacks (`Capabilities`) is dropped where its value is the neutral
+  one (`dsplr_model::NEUTRAL_COLOUR_PRESET` `srgb`, `NEUTRAL_BIT_DEPTH` 8,
+  `NEUTRAL_OVERSCAN` 0, `NEUTRAL_RGB_RANGE` automatic), which is what a Hyprland
+  or KDE snapshot says when nothing special is set
+  (`Layout::drop_neutral_unsupported`, in `apply::prepared` for every apply,
+  restore and the GUI). Any other value (a `wide` preset, 5 % overscan on sway)
+  is a request the desktop cannot honour, and is refused (exit `3`). Checked on
+  headless sway 1.12 with a profile holding all four.
 - A name is ASCII letters and digits, spaces, `-`, `_` and `.`, starts with a
   letter, a digit or `_`, does not end in a space or `.`, has no `..`, and is at
   most 200 bytes, so it is a file name in the store and nothing else; anything
