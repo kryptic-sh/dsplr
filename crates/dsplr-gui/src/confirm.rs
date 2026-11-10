@@ -1,8 +1,8 @@
 //! The confirm dialogs (`docs/plan/06-gui.md`, "Confirm dialog"): "Keep
 //! these display settings?" on every monitor ([`crate::panels`]), so it is on
 //! whichever still shows; a single toplevel where the window system has no
-//! panels. Enter or Keep keeps; Esc, Revert or the countdown running out
-//! reverts.
+//! panels. Enter or Keep keeps; Esc, Revert, closing the toplevel or the
+//! countdown running out reverts.
 
 use std::time::{Duration, Instant};
 
@@ -92,6 +92,11 @@ impl Confirming {
     /// How long until the countdown runs out.
     pub fn left(&self) -> Duration {
         self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Whether `window` is the toplevel opened where there are no panels.
+    pub fn is_fallback(&self, window: WindowId) -> bool {
+        self.panels.is_toplevel(window)
     }
 
     /// Whether `window` is one of the dialogs.

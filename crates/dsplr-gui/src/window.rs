@@ -51,15 +51,20 @@ const QUIT_PROMPT: &str = "Quit and drop the pending edits?  y / n";
 /// window system cannot wake it.
 const REPLY_POLL: Duration = Duration::from_millis(50);
 
-/// What a key pressed in a confirm dialog answers: Enter keeps, Esc reverts
-/// ([`keys::answer`]); `None` for any other event.
-fn dialog_answer(event: &ShellEvent) -> Option<bool> {
+/// What an event on a confirm dialog answers: a key pressed, as the main
+/// window's keys do (Enter keeps, Esc reverts, [`keys::answer`]), and the
+/// user closing the fallback toplevel, which reverts. `None` for any other
+/// event, a panel's close request included: the window system sends one
+/// when the panel's monitor goes, which is no answer. `is_fallback` says
+/// whether a window is the dialog's fallback toplevel.
+fn dialog_answer(event: &ShellEvent, is_fallback: impl Fn(WindowId) -> bool) -> Option<bool> {
     match *event {
         ShellEvent::Key {
             keysym,
             state: ButtonState::Pressed,
             ..
         } => keys::answer(keysym),
+        ShellEvent::CloseRequested { window } if is_fallback(window) => Some(false),
         _ => None,
     }
 }
@@ -227,9 +232,16 @@ impl<'a> MainWindow<'a> {
                     }
                     if event.window().is_some_and(|window| confirming.owns(window)) {
                         // The first dialog takes the keyboard, so its keys
-                        // answer it as the main window's do; the rest of its
-                        // events are its own.
-                        if let Some(keep) = dialog_answer(&event) {
+                        // answer it as the main window's do, and closing the
+                        // fallback toplevel reverts; the rest of its events
+                        // are its own.
+                        let answer = dialog_answer(&event, |window| confirming.is_fallback(window));
+                        if let Some(keep) = answer {
+                            // The window is closed with the dialogs, so the
+                            // request is answered no here.
+                            if let ShellEvent::CloseRequested { window } = event {
+                                self.shell.reply_close_request(window, CloseReply::Keep)?;
+                            }
                             self.answer(keep)?;
                             dirty = true;
                         }
@@ -1050,10 +1062,34 @@ mod tests {
     fn a_key_pressed_in_a_dialog_answers_it() {
         let answers: Vec<_> = typed(&[KeyCode::Enter, KeyCode::Escape, KeyCode::KeyL])
             .iter()
-            .map(super::dialog_answer)
+            .map(|event| super::dialog_answer(event, |_| false))
             .collect();
         // Press and release of each: only the presses answer, and L none.
         assert_eq!(answers, [Some(true), None, Some(false), None, None, None]);
+    }
+
+    /// The fallback toplevel, where there are no panels, can be closed as
+    /// any window can: that is Revert, not a request left unanswered until
+    /// the countdown reverts anyway. A panel is closed only by the window
+    /// system, when its monitor goes, which answers nothing.
+    #[test]
+    fn closing_the_fallback_dialog_reverts_and_a_panel_s_close_answers_nothing() {
+        let mut shell = HeadlessShell::new();
+        let toplevel = shell.create_window(&WindowDesc::default()).unwrap();
+        let panel = shell.create_window(&WindowDesc::default()).unwrap();
+        shell.pump(&mut |_| {});
+        for window in [toplevel, panel] {
+            shell.request_close(window).unwrap();
+        }
+        let mut closes = Vec::new();
+        shell.pump(&mut |event| closes.push(event));
+        closes.retain(|event| matches!(event, ShellEvent::CloseRequested { .. }));
+        assert_eq!(closes.len(), 2);
+        let answers: Vec<_> = closes
+            .iter()
+            .map(|event| super::dialog_answer(event, |window| window == toplevel))
+            .collect();
+        assert_eq!(answers, [Some(false), None]);
     }
 
     #[test]

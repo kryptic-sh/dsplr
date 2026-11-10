@@ -656,6 +656,13 @@ milestone:
   the dialogs, and two navigation keys in one batch each getting a frame. Not
   run on niri, Hyprland or X11, and the dialogs' X11 override-redirect panels
   never.
+- **The confirm's fallback toplevel has not run anywhere**: where the window
+  system has no panels, the confirm is one toplevel, and closing it reverts
+  (`dialog_answer`, unit-tested on the decision only). Every compositor the e2e
+  tests use has panels, so the toplevel, its close and the loop's reply to the
+  close request were not run. A panel's own close request (sent when its monitor
+  goes) is left unanswered, as before: it answers nothing, and the panel goes
+  when the dialogs close.
 - **After an output is plugged in while the window is open, the confirm dialog
   does not take the keyboard**: in headless sway 1.12 (2026-11-10) the main
   window stayed focused through the confirm of an edit to the new output, where

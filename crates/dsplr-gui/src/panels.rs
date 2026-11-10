@@ -49,8 +49,11 @@ pub struct Panel {
     gpu: Gpu,
     /// The output its monitor shows, when one matched.
     pub shown: Option<Shown>,
-    /// The window system's name for its monitor.
+    /// The window system's name for its monitor; empty for the toplevel.
     pub monitor: String,
+    /// The toplevel opened where there are no panels, which the user can
+    /// close.
+    toplevel: bool,
     extent: (u32, u32),
     scale: f32,
     list: DrawList,
@@ -162,6 +165,7 @@ impl Panels {
                     gpu,
                     shown,
                     monitor: monitor.map_or_else(String::new, |(_, m)| m.name.clone()),
+                    toplevel: monitor.is_none(),
                     extent,
                     scale: 1.0,
                     list: DrawList::new(),
@@ -179,6 +183,13 @@ impl Panels {
 
     pub fn is_empty(&self) -> bool {
         self.panels.is_empty()
+    }
+
+    /// Whether `window` is the toplevel opened where there are no panels.
+    pub fn is_toplevel(&self, window: WindowId) -> bool {
+        self.panels
+            .iter()
+            .any(|panel| panel.window == window && panel.toplevel)
     }
 
     /// Whether `window` is one of the panels.
