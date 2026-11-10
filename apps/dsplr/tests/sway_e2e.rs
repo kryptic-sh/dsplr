@@ -20,7 +20,7 @@
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use dsplr_backend::{Backend, Named};
@@ -38,7 +38,9 @@ mod support;
 #[path = "../../../tests/e2e/sway_support.rs"]
 mod sway_support;
 
-use support::{answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain};
+use support::{
+    WATCH_RESTORE, Watcher, answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain,
+};
 use sway_support::{
     FreshSway, config_home, harness_runtime, no_outputs_file, outputs_up_to, reload_until,
     sway_config, swaymsg,
@@ -752,10 +754,6 @@ async fn profiles_are_saved_picked_and_restored(backend: &Backend) {
     assert_eq!((code, &*text), (Some(0), "no profiles\n"));
 }
 
-/// How long `dsplr watch` gets to restore a profile after a hotplug: its
-/// quiet time, the apply and the apply's settle, with room to spare.
-const WATCH_RESTORE: Duration = Duration::from_secs(20);
-
 /// How long `dsplr watch` is given to do something it must not: several
 /// times its quiet time.
 const WATCH_IDLE: Duration = Duration::from_secs(4);
@@ -769,120 +767,6 @@ fn dsplr_on(sway: &FreshSway, args: &[&str]) -> Command {
         .env("SWAYSOCK", &sway.swaysock)
         .stdin(Stdio::null());
     command
-}
-
-/// A running `dsplr watch`, its stderr in a log file; killed if the test
-/// ends before it stops it.
-struct Watcher {
-    child: Child,
-    log: PathBuf,
-}
-
-impl Watcher {
-    fn start(sway: &FreshSway, log: PathBuf) -> Self {
-        let file = std::fs::File::create(&log).expect("its log");
-        let child = dsplr_on(sway, &["watch"])
-            .stdout(Stdio::null())
-            .stderr(file)
-            .spawn()
-            .expect("dsplr watch runs");
-        Self { child, log }
-    }
-
-    fn log(&self) -> String {
-        std::fs::read_to_string(&self.log).expect("its log")
-    }
-
-    /// How many lines of its log say a profile is being restored: each
-    /// one an apply.
-    fn restores(&self) -> usize {
-        self.log()
-            .lines()
-            .filter(|line| line.starts_with("dsplr: restoring profile"))
-            .count()
-    }
-
-    /// Waits until the log has `count` restores, the last of `name`, and
-    /// `dsplr list --json` shows a layout `shown` accepts; returns it.
-    async fn restored(
-        &self,
-        sway: &FreshSway,
-        count: usize,
-        name: &str,
-        shown: impl Fn(&Layout) -> bool,
-    ) -> Layout {
-        let deadline = Instant::now() + WATCH_RESTORE;
-        loop {
-            let log = self.log();
-            let last = log
-                .lines()
-                .rfind(|line| line.starts_with("dsplr: restoring profile"));
-            let layout = listed(sway);
-            if self.restores() == count
-                && last.is_some_and(|line| line.contains(&format!("\"{name}\"")))
-                && shown(&layout)
-            {
-                return layout;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "restore {count} of \"{name}\" not seen: {layout:#?}\n{log}"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    /// Waits until the log has a line containing `text`.
-    async fn said(&self, text: &str) {
-        let deadline = Instant::now() + WATCH_RESTORE;
-        while !self.log().contains(text) {
-            assert!(
-                Instant::now() < deadline,
-                "{text:?} not said:\n{}",
-                self.log()
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    /// Sends it SIGTERM.
-    fn terminate(&self) {
-        let pid = self.child.id().to_string();
-        let status = Command::new("kill")
-            .args(["-TERM", &pid])
-            .status()
-            .expect("kill runs");
-        assert!(status.success());
-    }
-
-    /// Whether it is still running.
-    fn running(&mut self) -> bool {
-        self.child.try_wait().expect("its status").is_none()
-    }
-
-    /// Sends SIGTERM and checks it stops cleanly; returns its log.
-    fn stop(self) -> String {
-        self.terminate();
-        self.ended()
-    }
-
-    /// Waits for it to end, and checks it ended cleanly on SIGTERM; returns
-    /// its log.
-    fn ended(mut self) -> String {
-        let status = self.child.wait().expect("dsplr watch ends");
-        let log = self.log();
-        assert_eq!(status.code(), Some(0), "{log}");
-        assert!(log.ends_with("dsplr: SIGTERM; stopped\n"), "{log}");
-        log
-    }
-}
-
-impl Drop for Watcher {
-    fn drop(&mut self) {
-        // Stopped already, or a failed test's: either way it is reaped.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 /// The revert point, which must be there.
@@ -984,9 +868,11 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
 
     // The outputs connected at the start count as a change.
     let earlier = any_revert_point().map(|point| point.token);
-    let watcher = Watcher::start(&sway, runtime.join("watch.log"));
+    let watcher = Watcher::start(dsplr_on(&sway, &["watch"]), runtime.join("watch.log"));
     let undocked_shown = |layout: &Layout| layout.entries.len() == count && y(layout) == y2 + 200;
-    let before = watcher.restored(&sway, 1, "undocked", undocked_shown).await;
+    let before = watcher
+        .restored(|| listed(&sway), 1, "undocked", undocked_shown)
+        .await;
     watcher.said("saved for the outputs connected now").await;
     // Kept, from the layout before it: its watchdog stands down.
     assert_eq!(
@@ -1009,12 +895,16 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
                 .iter()
                 .any(|entry| entry.state.x == docked_x && entry.state.enabled)
     };
-    let now = watcher.restored(&sway, 2, "docked", docked_shown).await;
+    let now = watcher
+        .restored(|| listed(&sway), 2, "docked", docked_shown)
+        .await;
     let new = plugged(&before, &now);
 
     // Unplugged: back to the profile for the outputs left.
     sway.swaymsg(&["output", &new, "unplug"]);
-    watcher.restored(&sway, 3, "undocked", undocked_shown).await;
+    watcher
+        .restored(|| listed(&sway), 3, "undocked", undocked_shown)
+        .await;
 
     // Its own applies, and a change made by hand, leave the connected
     // outputs as they were: no restore, so no loop, and the change stays.
@@ -1045,7 +935,9 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
     assert_eq!(revert_point(), waiting, "left to its own change");
     assert!(revert::keep(&revert_file, &waiting.token).expect("kept"));
     let kept = revert_point();
-    let now = watcher.restored(&sway, 4, "docked", docked_shown).await;
+    let now = watcher
+        .restored(|| listed(&sway), 4, "docked", docked_shown)
+        .await;
     let new = plugged(&before, &now);
     let restored = kept_since(Some(&kept.token)).await;
     assert_eq!(
@@ -1074,7 +966,7 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
     assert_eq!(code, Some(0), "{text}");
     saved("start", start.clone());
     sway.wlr.apply(&start).await.expect("sway applies it");
-    let watcher = Watcher::start(&sway, runtime.join("watch-again.log"));
+    let watcher = Watcher::start(dsplr_on(&sway, &["watch"]), runtime.join("watch-again.log"));
     watcher.said("profile \"start\" is on screen already").await;
     let log = watcher.stop();
     assert!(!log.contains("dsplr: restoring profile"), "{log}");
@@ -1092,7 +984,10 @@ async fn watch_restores_profiles_as_outputs_come_and_go(runtime: &Path) {
         }),
     );
     let earlier = any_revert_point().map(|point| point.token);
-    let mut watcher = Watcher::start(&sway, runtime.join("watch-stopped.log"));
+    let mut watcher = Watcher::start(
+        dsplr_on(&sway, &["watch"]),
+        runtime.join("watch-stopped.log"),
+    );
     watcher.said("dsplr: restoring profile \"slow\"").await;
     watcher.terminate();
     tokio::time::sleep(Duration::from_secs(1)).await;

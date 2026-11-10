@@ -159,3 +159,124 @@ pub fn answered_on_a_terminal(command: &str, answer: &str) -> Output {
     drop(input);
     output
 }
+
+/// How long `dsplr watch` gets to restore a profile after a hotplug: its
+/// quiet time, the apply and the apply's settle, with room to spare.
+pub const WATCH_RESTORE: Duration = Duration::from_secs(20);
+
+/// A running `dsplr watch`, its stderr in a log file; killed if the test
+/// ends before it stops it.
+pub struct Watcher {
+    child: Child,
+    log: PathBuf,
+}
+
+impl Watcher {
+    /// Starts `command`, a `dsplr watch` with the environment that reaches
+    /// the desktop, its stderr to `log`.
+    pub fn start(mut command: Command, log: PathBuf) -> Self {
+        let file = std::fs::File::create(&log).expect("its log");
+        let child = command
+            .stdout(Stdio::null())
+            .stderr(file)
+            .spawn()
+            .expect("dsplr watch runs");
+        Self { child, log }
+    }
+
+    pub fn log(&self) -> String {
+        std::fs::read_to_string(&self.log).expect("its log")
+    }
+
+    /// How many lines of its log say a profile is being restored: each
+    /// one an apply.
+    pub fn restores(&self) -> usize {
+        self.log()
+            .lines()
+            .filter(|line| line.starts_with("dsplr: restoring profile"))
+            .count()
+    }
+
+    /// Waits until the log has `count` restores, the last of `name`, and
+    /// `read` (the layout as dsplr lists it) gives one `shown` accepts;
+    /// returns it.
+    pub async fn restored(
+        &self,
+        read: impl Fn() -> Layout,
+        count: usize,
+        name: &str,
+        shown: impl Fn(&Layout) -> bool,
+    ) -> Layout {
+        let deadline = Instant::now() + WATCH_RESTORE;
+        loop {
+            let log = self.log();
+            let last = log
+                .lines()
+                .rfind(|line| line.starts_with("dsplr: restoring profile"));
+            let layout = read();
+            if self.restores() == count
+                && last.is_some_and(|line| line.contains(&format!("\"{name}\"")))
+                && shown(&layout)
+            {
+                return layout;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "restore {count} of \"{name}\" not seen: {layout:#?}\n{log}"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Waits until the log has a line containing `text`.
+    pub async fn said(&self, text: &str) {
+        let deadline = Instant::now() + WATCH_RESTORE;
+        while !self.log().contains(text) {
+            assert!(
+                Instant::now() < deadline,
+                "{text:?} not said:\n{}",
+                self.log()
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Sends it SIGTERM.
+    pub fn terminate(&self) {
+        let pid = self.child.id().to_string();
+        let status = Command::new("kill")
+            .args(["-TERM", &pid])
+            .status()
+            .expect("kill runs");
+        assert!(status.success());
+    }
+
+    /// Whether it is still running.
+    pub fn running(&mut self) -> bool {
+        self.child.try_wait().expect("its status").is_none()
+    }
+
+    /// Sends SIGTERM and checks it stops cleanly; returns its log.
+    pub fn stop(self) -> String {
+        self.terminate();
+        self.ended()
+    }
+
+    /// Waits for it to end, and checks it ended cleanly on SIGTERM; returns
+    /// its log.
+    pub fn ended(mut self) -> String {
+        let status = self.child.wait().expect("dsplr watch ends");
+        let log = self.log();
+        assert_eq!(status.code(), Some(0), "{log}");
+        assert!(log.ends_with("dsplr: SIGTERM; stopped\n"), "{log}");
+        log
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        // Stopped already, or a failed test's: either way it is reaped.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}

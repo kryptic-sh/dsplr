@@ -3,7 +3,8 @@
 //! the watchdog reverting for a dsplr that died; `dsplr set` mirroring one
 //! output and ending the mirror, through the same flow. And `dsplr save`:
 //! creating monitors.lua, and asking before it replaces one it may not
-//! simply overwrite.
+//! simply overwrite. And `dsplr watch` restoring a profile as an output is
+//! plugged in and out.
 //!
 //! Run through the harness, which starts that Hyprland where it cannot reach
 //! the desktop session and gives dsplr a private state directory:
@@ -21,11 +22,12 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use dsplr_backend::Backend;
 use dsplr_model::{Layout, Transform};
 use dsplr_persist::managed::{Comment, Ownership, ownership};
+use dsplr_persist::profile::{self, Profile, unix_ms};
 use dsplr_persist::revert;
 
 #[path = "../../../tests/e2e/hyprland_support.rs"]
@@ -34,7 +36,7 @@ mod hyprland_support;
 mod support;
 
 use hyprland_support::{config_home, harness_runtime, hyprctl, snapshot_until};
-use support::{answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain};
+use support::{Watcher, answered_on_a_terminal, edited, entry, entry_mut, on_a_terminal, plain};
 
 /// The confirm timeout the declined and timed-out runs use.
 const CONFIRM_SECS: u32 = 2;
@@ -357,4 +359,104 @@ fn dsplr_save_writes_monitors_lua_and_asks_before_replacing_one() {
     let (code, text) = save(&["--yes"]);
     assert_eq!(code, Some(0), "{text}");
     assert_eq!(read(), saved);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
+async fn dsplr_watch_restores_a_profile_when_an_output_is_plugged_in() {
+    let runtime = harness_runtime();
+    let detection = dsplr_backend::detect().await;
+    let backend = detection
+        .backend
+        .unwrap_or_else(|| panic!("no backend: {:?}", detection.checks));
+    let has = |name: &'static str| {
+        move |layout: &Layout| layout.entries.iter().any(|e| has_connector(e, name))
+    };
+    let alone = backend.snapshot().await.expect("snapshot");
+    assert!(!has("DSPLR-PLUG")(&alone));
+
+    // A profile for the outputs now, and one for them and DSPLR-PLUG, which
+    // puts it 300 down from the top, against the right edge: read with it
+    // plugged in, then unplugged again.
+    let reply = hyprctl("/output create headless DSPLR-PLUG");
+    assert_eq!(reply.trim(), "ok", "creating DSPLR-PLUG: {reply}");
+    let plugged = snapshot_until(&backend, "DSPLR-PLUG", has("DSPLR-PLUG")).await;
+    let right = plugged
+        .entries
+        .iter()
+        .filter(|e| e.state.enabled && !has_connector(e, "DSPLR-PLUG"))
+        .filter_map(|e| {
+            let (width, _) = e.state.size(plugged.extent_mode())?;
+            Some(e.state.x + i32::try_from(width).ok()?)
+        })
+        .max()
+        .expect("an output on");
+    let docked = edited(&plugged, |layout| {
+        let state = &mut entry_mut(layout, "DSPLR-PLUG").state;
+        (state.x, state.y) = (right, 300);
+    });
+    let reply = hyprctl("/output remove DSPLR-PLUG");
+    assert_eq!(reply.trim(), "ok", "removing DSPLR-PLUG: {reply}");
+    snapshot_until(&backend, "DSPLR-PLUG gone", |layout| {
+        !has("DSPLR-PLUG")(layout)
+    })
+    .await;
+    let store = profile::default_dir().expect("XDG_CONFIG_HOME is set by the harness");
+    for (name, layout) in [("alone", &alone), ("docked", &docked)] {
+        let saved = Profile {
+            name: name.parse().expect("a name"),
+            layout: layout.clone(),
+            saved_unix_ms: unix_ms(SystemTime::now()),
+        };
+        profile::save(&store, &saved).expect("profile saved");
+    }
+
+    // The outputs at the start count as a change: "alone" is restored.
+    let mut command = Command::new(dsplr_bin());
+    command.arg("watch").stdin(Stdio::null());
+    let watcher = Watcher::start(command, runtime.join("watch.log"));
+    let listed = || {
+        let output = Command::new(dsplr_bin())
+            .args(["list", "--json"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("dsplr runs");
+        let (code, text) = exit_and_output(&output);
+        assert_eq!(code, Some(0), "{text}");
+        Layout::from_json(&text).expect("a layout")
+    };
+    watcher
+        .restored(listed, 1, "alone", |layout| !has("DSPLR-PLUG")(layout))
+        .await;
+
+    // Plugged in: "docked", the new output where it says.
+    let reply = hyprctl("/output create headless DSPLR-PLUG");
+    assert_eq!(reply.trim(), "ok", "creating DSPLR-PLUG: {reply}");
+    watcher
+        .restored(listed, 2, "docked", |layout| {
+            has("DSPLR-PLUG")(layout) && {
+                let state = &entry(layout, "DSPLR-PLUG").state;
+                (state.x, state.y) == (right, 300)
+            }
+        })
+        .await;
+
+    // Unplugged: back to "alone".
+    let reply = hyprctl("/output remove DSPLR-PLUG");
+    assert_eq!(reply.trim(), "ok", "removing DSPLR-PLUG: {reply}");
+    watcher
+        .restored(listed, 3, "alone", |layout| !has("DSPLR-PLUG")(layout))
+        .await;
+    watcher.stop();
+    for name in ["alone", "docked"] {
+        std::fs::remove_file(store.join(format!("{name}.json"))).expect("profile removed");
+    }
+}
+
+/// Whether `entry` is the output on `connector`.
+fn has_connector(entry: &dsplr_model::OutputEntry, connector: &str) -> bool {
+    entry
+        .output
+        .as_ref()
+        .is_some_and(|output| output.connector == connector)
 }

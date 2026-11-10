@@ -22,6 +22,7 @@ use std::process::{Command, Output, Stdio};
 use dsplr_backend::wlr::Wlr;
 use dsplr_model::Layout;
 use dsplr_persist::managed::{Comment, Ownership, ownership};
+use dsplr_persist::profile::{self, Profile, unix_ms};
 
 #[path = "../../../tests/e2e/niri_support.rs"]
 mod niri_support;
@@ -29,7 +30,7 @@ mod niri_support;
 mod support;
 
 use niri_support::{harness_runtime, niri_config, no_outputs_file, placed, until};
-use support::{answered_on_a_terminal, entry, plain};
+use support::{Watcher, answered_on_a_terminal, edited, entry, entry_mut, plain};
 
 /// The exit code of a layout validation refused, or a save the backend
 /// cannot make (`Exit::Refused`).
@@ -269,4 +270,43 @@ async fn dsplr_sets_and_saves_on_niri() {
     .await;
     std::fs::write(&config, original).expect("config restored");
     no_outputs_file();
+    watch_restores_the_profile_for_the_output_at_the_start(&runtime, &wlr).await;
+}
+
+/// `dsplr watch` on niri: the outputs connected when it starts count as a
+/// change, so it restores the profile saved for them, and it stops cleanly
+/// on SIGTERM. A nested niri has one output and no way to add another, so
+/// a hotplug is not run here (the sway and Hyprland e2e plug outputs in).
+async fn watch_restores_the_profile_for_the_output_at_the_start(
+    runtime: &std::path::Path,
+    wlr: &Wlr,
+) {
+    let now = wlr.snapshot().await.expect("snapshot");
+    let store = profile::default_dir().expect("XDG_CONFIG_HOME is set by the harness");
+    let nested = Profile {
+        name: "nested".parse().expect("a name"),
+        layout: edited(&now, |layout| {
+            entry_mut(layout, "winit").state.scale = 1.5;
+        }),
+        saved_unix_ms: unix_ms(std::time::SystemTime::now()),
+    };
+    profile::save(&store, &nested).expect("profile saved");
+    let mut command = Command::new(dsplr_bin());
+    command.arg("watch").stdin(Stdio::null());
+    let watcher = Watcher::start(command, runtime.join("watch.log"));
+    let listed = || {
+        let (code, text) = dsplr(&["list", "--json"]);
+        assert_eq!(code, Some(0), "{text}");
+        Layout::from_json(&text).expect("a layout")
+    };
+    let (x, y) = {
+        let state = &entry(&now, "winit").state;
+        (state.x, state.y)
+    };
+    watcher
+        .restored(listed, 1, "nested", |layout| shows(layout, 1.5, x, y))
+        .await;
+    watcher.said("saved for the outputs connected now").await;
+    watcher.stop();
+    std::fs::remove_file(store.join("nested.json")).expect("profile removed");
 }

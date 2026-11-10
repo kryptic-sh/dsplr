@@ -746,10 +746,15 @@ milestone:
 - **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
 
-- **`dsplr watch` was run on sway only**: its e2e is in `sway_e2e.rs`. Not run
-  on niri, Hyprland, KDE or GNOME; each backend's `Watch` is tested in its own
-  e2e, and the daemon uses nothing else from the backend that `dsplr restore`
-  does not. The niri harness has one nested output and no way to add another.
+- **Where `dsplr watch` has run**: on sway (`sway_e2e.rs`: hotplug both ways, no
+  loop on its own applies, a change waiting to be kept, a reconnect), on niri
+  (`niri_e2e.rs`: the profile for the outputs at the start, then a clean stop; a
+  nested niri has one output and no way to add another, so no hotplug), and on
+  Hyprland (`hyprland_e2e.rs`, CI only, not yet run: an output created and
+  removed with `hyprctl output`, each time the matching profile restored). Not
+  run on KDE or GNOME, where it refuses to start without `--force` (checked on
+  GNOME); each backend's `Watch` is tested in its own e2e, and the daemon uses
+  nothing else from the backend that `dsplr restore` does not.
 - **`dsplr watch` after a Hyprland restart**: Hyprland gives a new instance its
   own `HYPRLAND_INSTANCE_SIGNATURE`, and the watch keeps the old one from its
   environment, so detection finds no Hyprland and the watch gives up after its
