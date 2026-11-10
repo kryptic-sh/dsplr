@@ -246,7 +246,13 @@ fn prepare(
 pub fn to_origin(asked: &mut Layout, backend: &str) -> Option<String> {
     let before = asked.clone();
     asked.normalise().ok()?;
-    let (moved, was) = asked.entries.first().zip(before.entries.first())?;
+    // Every output that is on moves by the same amount, and one that is off
+    // not at all, so the move is read off the first that is on.
+    let (moved, was) = asked
+        .entries
+        .iter()
+        .zip(&before.entries)
+        .find(|(moved, _)| moved.state.enabled)?;
     let (dx, dy) = (
         i64::from(moved.state.x) - i64::from(was.state.x),
         i64::from(moved.state.y) - i64::from(was.state.y),
@@ -488,6 +494,22 @@ mod tests {
             .collect();
         assert_eq!(positions, [(0, 0), (2560, 0)]);
         assert_eq!(to_origin(&mut layout, "gnome"), None, "already there");
+    }
+
+    #[test]
+    fn the_move_is_said_when_the_first_output_is_the_one_turned_off() {
+        // `dsplr set <first> --disable` on GNOME: the output that is off
+        // stays where it was, and the rest move to the origin.
+        let mut layout = live();
+        layout.entries[0].state.x = 0;
+        layout.entries[0].state.enabled = false;
+        layout.entries[1].state.x = 2560;
+        assert_eq!(
+            to_origin(&mut layout, "gnome").as_deref(),
+            Some("moved the layout by -2560,0 so it starts at 0,0, which gnome needs")
+        );
+        assert_eq!(layout.entries[1].state.x, 0);
+        assert_eq!(layout.entries[0].state.x, 0, "off, not moved");
     }
 
     #[test]
