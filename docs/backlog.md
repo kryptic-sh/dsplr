@@ -65,8 +65,10 @@ M8 is under way: `dsplr watch` (`apps/dsplr/src/watch.rs`) restores the picked
 profile, kept without asking, each time the connected outputs change, with the
 rules in `docs/plan/05-persistence-and-profiles.md` ("Hotplug profiles").
 `apps/dsplr/tests/sway_e2e.rs` plugs outputs in and unplugs them under it on a
-second headless sway 1.12 of its own (2026-11-10). The GUI's profile picker and
-kanshi / autorandr import are still to build.
+second headless sway 1.12 of its own (2026-11-10). The GUI's profile picker was
+built with the window in M3 (`dsplr-gui`'s `panel.rs`: pick a stored profile,
+Restore). `dsplr profile import kanshi` imports kanshi's profiles; autorandr's
+waits for M7 (below).
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -78,6 +80,10 @@ runs only in CI's VM.
 
 Listed with defaults in `docs/plan/12-open-questions.md`. The ones that block a
 milestone:
+
+- **kanshi import freezes unset settings at import time** (M8, built that way;
+  the options and trade-off are in the kanshi entry under "Open work in the
+  Linux-owned crates"). Blocks nothing.
 
 - **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7). The crcbl
   session's view (2026-11-09): use `x11rb`. crcbl-shell's RandR is read-only
@@ -719,8 +725,45 @@ milestone:
   watch's revert point, and the watch's keep then reports the change replaced. A
   lock every flow takes would cover both; not built, as the window is a
   restore's few seconds.
-- **The rest of M8**: the GUI's profile picker, and importing kanshi and
-  autorandr profiles (stretch).
+- **autorandr import waits for M7**: an autorandr profile
+  (`~/.config/autorandr/<name>/config` and `setup`, read in autorandr's
+  `autorandr.py`, commit `0855315d`) names X11 outputs by RandR's names
+  (`HDMI-1`, `eDP1`), which are not Wayland's, and fingerprints each monitor by
+  its raw EDID in `setup`. dsplr's identities need the make, model and serial
+  out of that EDID (the EDID parser is M7's) and its connectors are the
+  desktop's, so the import is only sound alongside the `Randr` backend.
+- **kanshi import: unset settings are frozen at import; owner's call**: kanshi
+  keeps an output's own value for whatever a profile leaves unset (a setting not
+  given, a mode without a refresh, `mode preferred`); a dsplr profile holds
+  every setting, so `dsplr profile import kanshi` takes those from the output as
+  it is at import time (dsplr's defaults when it is not connected, and a skipped
+  profile when that leaves an enabled output without a mode), and says so per
+  output. Built that way because it needs no change to the model. The
+  alternative: let a profile hold "unset" and "preferred" (an `Option` per
+  setting, a mode that names a size without a refresh or "preferred"), resolved
+  against the live output at restore time, as kanshi resolves it at apply time.
+  That follows kanshi exactly, and imports profiles for outputs not connected
+  now, but changes `OutputState` and the JSON form every writer, reader and the
+  apply flow use. Trade-off: values frozen at import (a monitor re-set by hand
+  afterwards is restored to its old value) against a model that every backend
+  and file format must then handle.
+- **kanshi import, what else it does not carry over**: a profile is skipped when
+  it uses `output *`, `...output`, a description glob other than a trailing `*`,
+  an all-`Unknown` description, or an enabled output whose mode is left to it
+  while it is not connected. `exec` commands are not run. A description
+  criterion for a connected monitor with a serial becomes its EDID identity;
+  otherwise it is matched against the output's reported description by whole
+  leading words, which on KDE (no description, and a monitor without a serial
+  named by connector) may match nothing. `include` paths are expanded for `~`,
+  `$VAR` and `*`/`?` in the last component only (kanshi uses `wordexp(3)`);
+  other shell syntax is refused. A relative `include` is taken against `$HOME`,
+  with a note: kanshi resolves it against its own working directory, which it
+  never changes (no `chdir` in kanshi 1.9.0), so whatever started it, usually
+  the compositor from `$HOME`; a kanshi started elsewhere reads other files than
+  the import does. Blocks may nest `kanshi::scfg::MAX_NESTING` deep (kanshi's
+  config needs two), against a file that would exhaust the stack. The parser was
+  checked against kanshi(5) and kanshi 1.9.0's and libscfg's source, not against
+  a running kanshi.
 
 ## Open work in the Windows-owned crates
 

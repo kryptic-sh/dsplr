@@ -1,7 +1,7 @@
 //! dsplr's profile store from the command line
 //! (`docs/plan/05-persistence-and-profiles.md`, "dsplr's profile store"):
-//! `dsplr save --profile NAME`, `dsplr restore [NAME]`, and
-//! `dsplr profile list|show|rm`.
+//! `dsplr save --profile NAME`, `dsplr restore [NAME]`,
+//! `dsplr profile list|show|rm`, and `dsplr profile import kanshi`.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -79,6 +79,108 @@ pub fn store_layout(
         ]),
         Err(error) => Err(Blocked::Failed(format!("cannot save the profile: {error}"))),
     }
+}
+
+/// `dsplr profile import kanshi [PATH]`: kanshi's profiles into the store
+/// (`docs/plan/05-persistence-and-profiles.md`, "Importing kanshi
+/// profiles"). The displays are read first, when a desktop is found, for
+/// what kanshi leaves to an output. A profile of the same name in the store
+/// is replaced only with `force`. Exits `0` when every kanshi profile was
+/// imported, `1` when one was skipped or not written, and says which.
+pub async fn import_kanshi(path: Option<PathBuf>, force: bool) -> Exit {
+    use dsplr_persist::kanshi::{self, config};
+
+    let Some(path) = path.or_else(|| config::default_path(|name| std::env::var_os(name))) else {
+        eprintln!(
+            "dsplr: neither XDG_CONFIG_HOME nor HOME is set, so kanshi's config cannot be found; name it"
+        );
+        return Exit::Failure;
+    };
+    let read = match config::read(&path, &|name| std::env::var_os(name)) {
+        Ok(read) => read,
+        Err(error) => {
+            eprintln!("dsplr: cannot import kanshi's config: {error}");
+            return Exit::Failure;
+        }
+    };
+    for note in &read.notes {
+        eprintln!("dsplr: {note}");
+    }
+    let live = match dsplr_backend::detect().await.backend {
+        Some(backend) => match backend.snapshot().await {
+            Ok(layout) => Some(layout),
+            Err(error) => {
+                eprintln!(
+                    "dsplr: cannot read the displays from {} ({error}), so nothing kanshi leaves to an output is taken from it",
+                    backend.name()
+                );
+                None
+            }
+        },
+        None => {
+            eprintln!(
+                "dsplr: no desktop found, so nothing kanshi leaves to an output is taken from it"
+            );
+            None
+        }
+    };
+    let dir = match store() {
+        Ok(dir) => dir,
+        Err(exit) => return exit,
+    };
+    let (imported, skipped) = kanshi::import(&read, live.as_ref());
+    if imported.is_empty() && skipped.is_empty() {
+        eprintln!("dsplr: {} has no profiles", path.display());
+        return Exit::Success;
+    }
+    let mut exit = Exit::Success;
+    for profile in imported {
+        eprintln!("dsplr: kanshi's {}:", profile.from);
+        for note in &profile.notes {
+            eprintln!("dsplr:   {note}");
+        }
+        // Said, since a name made from kanshi's can be one the store had.
+        let replacing = force && profile::path(&dir, &profile.name).exists();
+        match store_layout(&dir, &profile.name, profile.layout, force) {
+            Ok(messages) => {
+                if replacing {
+                    eprintln!(
+                        "dsplr:   replaces the existing profile \"{}\"",
+                        profile.name
+                    );
+                }
+                for message in messages {
+                    eprintln!("dsplr:   {message}");
+                }
+            }
+            Err(Blocked::Exists { .. }) => {
+                eprintln!(
+                    "dsplr:   not imported: the store has a profile \"{}\"; --force replaces it",
+                    profile.name
+                );
+                exit = Exit::Failure;
+            }
+            Err(Blocked::Unreadable(why)) => {
+                eprintln!(
+                    "dsplr:   not imported: the store's profile \"{}\" cannot be read ({why}); --force replaces it",
+                    profile.name
+                );
+                exit = Exit::Failure;
+            }
+            Err(Blocked::Failed(why)) => {
+                eprintln!("dsplr:   {why}");
+                exit = Exit::Failure;
+            }
+        }
+    }
+    for profile in skipped {
+        eprintln!(
+            "dsplr: kanshi's {}: skipped: {}",
+            profile.from, profile.reason
+        );
+        exit = Exit::Failure;
+    }
+    exit
 }
 
 /// The profile `name` in the store at `dir`, or, when there is none or it

@@ -44,3 +44,10 @@ pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
    MVP: five backends, an EDID parser and the xrandr CRTC algorithm. The owner's
    own need is met at M3. Raised in review as a scope risk; the owner's decision
    stands unless they change it.
+10. **kanshi import: unset settings.** kanshi leaves to an output what a profile
+    does not set; a dsplr profile holds every setting. Default (built, M8): take
+    those from the output as it is at import time, each said, and skip a profile
+    that leaves an enabled, unconnected output without a mode. The alternative
+    is profiles that hold "unset" and "preferred", resolved at restore time,
+    which follows kanshi exactly but changes `OutputState` and the JSON form
+    every writer and backend uses (`docs/backlog.md`).

@@ -132,7 +132,8 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// List, show and remove the profiles `dsplr save --profile` saves.
+    /// List, show and remove the profiles `dsplr save --profile` saves, and
+    /// import kanshi's.
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
@@ -156,6 +157,28 @@ enum ProfileCommand {
     },
     /// Remove a profile.
     Rm { name: ProfileName },
+    /// Import another tool's profiles into the store. What the tool leaves
+    /// to an output (a mode without a refresh, a setting not given) is
+    /// taken from it as it is now when it is connected, so import with the
+    /// outputs connected; each such choice is said. A profile dsplr cannot
+    /// hold is skipped, with why.
+    Import {
+        /// The tool whose profiles to import.
+        from: ImportFrom,
+        /// Its config file; kanshi's own lookup when left out
+        /// (`$XDG_CONFIG_HOME/kanshi/config`, else
+        /// `~/.config/kanshi/config`).
+        path: Option<PathBuf>,
+        /// Replace a profile of the same name in the store.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// A tool whose profiles `dsplr profile import` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ImportFrom {
+    Kanshi,
 }
 
 /// The flags of every command that changes the displays through the confirm
@@ -277,6 +300,11 @@ async fn run(command: Command) -> Exit {
             ProfileCommand::List { json } => profile::list(json),
             ProfileCommand::Show { name, json } => profile::show(&name, json),
             ProfileCommand::Rm { name } => profile::remove(&name),
+            ProfileCommand::Import {
+                from: ImportFrom::Kanshi,
+                path,
+                force,
+            } => profile::import_kanshi(path, force).await,
         },
     }
 }
@@ -412,7 +440,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{ApplyArgs, Cli, Command, Exit, ProfileCommand};
+    use super::{ApplyArgs, Cli, Command, Exit, ImportFrom, ProfileCommand};
 
     #[test]
     fn cli_definition_is_valid() {
@@ -579,6 +607,33 @@ mod tests {
         ));
         assert!(Cli::try_parse_from(["dsplr", "profile"]).is_err());
         assert!(Cli::try_parse_from(["dsplr", "profile", "show"]).is_err());
+        let cli = Cli::try_parse_from(["dsplr", "profile", "import", "kanshi"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Import {
+                    from: ImportFrom::Kanshi,
+                    path: None,
+                    force: false
+                }
+            })
+        ));
+        let cli = Cli::try_parse_from([
+            "dsplr",
+            "profile",
+            "import",
+            "kanshi",
+            "/k/config",
+            "--force",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Import { ref path, force: true, .. }
+            }) if path.as_deref() == Some(std::path::Path::new("/k/config"))
+        ));
+        assert!(Cli::try_parse_from(["dsplr", "profile", "import", "autorandr"]).is_err());
     }
 
     #[test]

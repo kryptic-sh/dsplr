@@ -5,13 +5,15 @@
 //! `outputs.kdl`, each written and read as text and saved beside the
 //! desktop's own config, the managed-file header, conflict check and atomic
 //! write every saved file goes through, a line diff to show what a save
-//! would change, the revert point, and the profile store.
+//! would change, the revert point, the profile store, and kanshi's profiles
+//! read for importing into it.
 //! The other desktops are not written yet; Hyprland's legacy hyprlang
 //! `monitors.conf` is not written at all.
 
 pub mod diff;
 pub mod hyprland;
 mod identity;
+pub mod kanshi;
 mod layout_json;
 pub mod managed;
 pub mod niri;

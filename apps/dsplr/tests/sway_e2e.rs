@@ -38,7 +38,8 @@ mod sway_support;
 
 use support::{answered_on_a_terminal, edited, entry, entry_mut, plain};
 use sway_support::{
-    FreshSway, harness_runtime, no_outputs_file, outputs_up_to, reload_until, sway_config, swaymsg,
+    FreshSway, config_home, harness_runtime, no_outputs_file, outputs_up_to, reload_until,
+    sway_config, swaymsg,
 };
 
 /// The exit code of a usage error (`Exit::Usage`, clap's own).
@@ -125,6 +126,7 @@ async fn dsplr_applies_sets_and_reverts_on_sway() {
     apply_tests_on_a_dry_run_and_applies_and_reverts(&backend, &runtime).await;
     set_edits_one_output(&backend).await;
     profiles_are_saved_picked_and_restored(&backend).await;
+    kanshi_profiles_are_imported_and_restored(&backend).await;
     watch_restores_profiles_as_outputs_come_and_go(&runtime).await;
     save_writes_outputs_and_asks_before_replacing_one(&backend).await;
 }
@@ -1168,4 +1170,82 @@ async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
         .await
         .shows(&start)
         .await;
+}
+
+/// kanshi's config, where kanshi finds it in the harness's private
+/// `XDG_CONFIG_HOME`, imported into the store: the profile dsplr can hold
+/// restores as kanshi would apply it, and the wildcard one is skipped.
+async fn kanshi_profiles_are_imported_and_restored(backend: &Backend) {
+    let start = backend.snapshot().await.expect("snapshot");
+    let snapshot = || async { backend.snapshot().await.expect("snapshot") };
+    let kanshi = config_home().join("kanshi");
+    std::fs::create_dir_all(&kanshi).expect("kanshi's directory made");
+    let config = kanshi.join("config");
+    std::fs::write(
+        &config,
+        "# as kanshi(5) writes it\n\
+         profile kdesk {\n\
+         \toutput HEADLESS-1 mode 1280x720 position 0,0\n\
+         \toutput HEADLESS-2 {\n\
+         \t\tenable\n\
+         \t\tposition 1280,300\n\
+         \t\ttransform 90\n\
+         \t}\n\
+         \texec notify-send docked\n\
+         }\n\
+         profile {\n\
+         \toutput * enable\n\
+         }\n",
+    )
+    .expect("kanshi's config written");
+
+    // Found as kanshi finds it; the wildcard profile makes the exit 1.
+    let (code, text) = dsplr(&["profile", "import", "kanshi"]);
+    assert_eq!(code, Some(1), "{text}");
+    for said in [
+        "kanshi's \"kdesk\"",
+        "saved profile \"kdesk\"",
+        "the highest it lists, as kanshi picks",
+        "HEADLESS-2: kanshi leaves its mode, scale as it is; taken from it as it is now",
+        "1 `exec` command is not run",
+        "kanshi's <anonymous profile 1>",
+        "skipped: `output *` matches any output",
+    ] {
+        assert!(text.contains(said), "{said:?} not in:\n{text}");
+    }
+
+    let (code, text) = dsplr(&["restore", "kdesk", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let expected = edited(&start, |layout| {
+        let state = &mut entry_mut(layout, "HEADLESS-2").state;
+        (state.x, state.y) = (1280, 300);
+        state.transform = Transform::Rotate90;
+    });
+    assert_eq!(snapshot().await, expected);
+    revert_to(backend, &start).await;
+
+    // Imported again, the store's profile is kept unless --force.
+    let path = config.to_str().expect("a UTF-8 path");
+    let (code, text) = dsplr(&["profile", "import", "kanshi", path]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("--force replaces it"), "{text}");
+    assert!(!text.contains("saved profile"), "{text}");
+    let (code, text) = dsplr(&["profile", "import", "kanshi", path, "--force"]);
+    assert_eq!(code, Some(1), "the wildcard profile still: {text}");
+    assert!(text.contains("saved profile \"kdesk\""), "{text}");
+    assert!(
+        text.contains("replaces the existing profile \"kdesk\""),
+        "{text}"
+    );
+
+    // Imported fresh, nothing is said to be replaced.
+    let (code, text) = dsplr(&["profile", "rm", "kdesk"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["profile", "import", "kanshi", path, "--force"]);
+    assert_eq!(code, Some(1), "the wildcard profile still: {text}");
+    assert!(text.contains("saved profile \"kdesk\""), "{text}");
+    assert!(!text.contains("replaces the existing"), "{text}");
+
+    let (code, text) = dsplr(&["profile", "rm", "kdesk"]);
+    assert_eq!(code, Some(0), "{text}");
 }

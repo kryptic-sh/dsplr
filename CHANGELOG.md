@@ -31,6 +31,18 @@ and this project adheres to
 
 ### Added
 
+- `dsplr profile import kanshi [PATH] [--force]` imports kanshi's profiles into
+  dsplr's store, from kanshi's own config (`$XDG_CONFIG_HOME/kanshi/config`,
+  else `~/.config/kanshi/config`) unless a path is given: each named profile
+  under its name (an anonymous one as `kanshi-N`), output defaults, aliases and
+  `include` followed as kanshi follows them. A `make model serial` criteria
+  becomes the monitor's EDID identity when it is connected with a serial, else a
+  description; what kanshi leaves to an output (a setting not given, a mode
+  without a refresh, `mode preferred`) is taken from it as it is now, each
+  choice said. A profile dsplr cannot hold (`output *`, `...output`, a
+  description glob other than a trailing `*`) is skipped with why, `exec` is not
+  run, and a profile already in the store is replaced only with `--force`;
+  either makes the exit `1`.
 - `dsplr watch`, the hotplug profile daemon: it stays running and, each time the
   set of connected outputs changes (and once when it starts), applies the
   profile `dsplr restore` would pick for them, kept without asking as

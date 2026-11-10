@@ -409,4 +409,37 @@ config (read in its binary, 2026-11-10); the sway line is what the e2e harness's
 sway runs commands with; the others are each compositor's usual autostart, not
 run here.
 
-Importing kanshi and autorandr profiles into the store is a stretch item.
+## Importing kanshi profiles
+
+`dsplr profile import kanshi [PATH] [--force]` (M8, `dsplr_persist::kanshi`)
+reads kanshi's config as kanshi 1.9.0 does: its own lookup
+(`$XDG_CONFIG_HOME/kanshi/config`, else `~/.config/kanshi/config`) when no path
+is given, scfg as libscfg parses it, top-level output defaults and `$aliases`
+resolved into the profiles, `include` followed. A config kanshi would refuse is
+refused whole, with the file and line. A relative `include` is taken against
+`$HOME`, kanshi's usual working directory (it never changes its own, so it is
+whatever started it, usually the compositor), and said.
+
+- Each profile becomes a dsplr profile of the same name; one whose name is not a
+  profile name gets one made from it, an anonymous one `kanshi-N` (kanshi's own
+  number for it), each said. A name taken by an earlier profile, or already in
+  the store without `--force`, is not written.
+- A connector criteria is a connector. `make model serial` is the EDID identity
+  of the connected monitor whose own `make model serial` it is, when it has a
+  serial, else a description matched by whole leading words, a trailing `*` or
+  `Unknown` dropped (said).
+- What kanshi leaves to the output (a setting not given, a mode without a
+  refresh, `mode preferred`) is taken from the output as it is now, when it is
+  connected: the highest refresh listed at that size, as kanshi picks, its
+  preferred mode, its current settings. When it is not connected, dsplr's
+  defaults stand in, except for an enabled output's mode, which skips the
+  profile. Each choice is said.
+- A profile dsplr cannot hold is skipped, with why: `output *`, `...output`, a
+  description glob other than a trailing `*`, an all-`Unknown` description.
+  `exec` is not run, and said.
+- Exit `0` when every kanshi profile was imported, `1` when one was skipped or
+  not written.
+
+Importing autorandr's profiles waits for M7: they are X11 configs, outputs named
+by RandR's names and monitors fingerprinted by raw EDID, which dsplr's
+identities need the EDID parser and the `Randr` backend for (`docs/backlog.md`).
