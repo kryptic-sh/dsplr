@@ -228,10 +228,27 @@ As built:
   overscan, VRR policy and RGB range where set; the replication source from
   management version 13 (empty for none); and, when the layout names a primary
   output, `set_priority` for every output that will be on: the primary first,
-  the rest in KWin's order now. Refused before sending: a custom mode (KWin's
-  take a mode list per output, not written yet), colour preset, bit depth, a
-  setting the output's capabilities lack, a second primary output, one that is
-  off, and turning off an output that says it cannot be (device version 25 on).
+  the rest in KWin's order now. Refused before sending: colour preset, bit
+  depth, a setting the output's capabilities lack, a second primary output, and
+  turning off an output that says it cannot be (device version 25 on).
+- **Custom modes** (management version 18 on, outputs whose capabilities include
+  `custom_modes`): `set_custom_modes` gives an output a mode list
+  (`create_mode_list`; `set_resolution`, `set_refresh_rate`,
+  `set_reduced_blanking`, `add_mode` per mode), which adds the modes to the
+  output, deleting custom ones not in the list, rather than switching to one. So
+  a mode the output does not list takes two configurations: the first sends the
+  list, the custom modes KWin lists for the output (by their mode `flags`; by
+  their `cvt` timings through `add_cvt` from management version 22, else by
+  size, refresh and reduced blanking) then the new one, so none is deleted; the
+  second, once the output lists a mode it did not before at the new size (the
+  one nearest the refresh asked, since KWin makes the timings and so the refresh
+  itself), sets the layout at that mode object. KWin not listing it within
+  `REQUEST_TIMEOUT` is an error naming the output; the whole apply has
+  `kde::OPERATION_TIMEOUT`. A refresh that came out other than asked is a
+  difference the read-back reports. A revert sends the old layout, at its old
+  mode, and the added mode stays listed, unused (KWin saves it with the rest).
+  Read in the protocol XML of plasma-wayland-protocols v1.23.0; KWin's own
+  handling is checked only by the KDE e2e, in CI.
 - **Persist**: KWin saves on **every** successful apply, whoever sent it:
   `Workspace::applyOutputConfiguration` calls
   `OutputConfigurationStore::storeConfig`, which writes `kwinoutputconfig.json`
@@ -245,8 +262,8 @@ As built:
 - **Capabilities**: mirroring from management version 13; adaptive sync off, on
   and automatic; fractional and per-output scale; overscan; RGB range; the
   primary output when KWin offers `kde_output_order_v1` (a primary flag on an
-  output that is off is ignored, and KWin picks); native persistence and saves
-  on apply; no test, no gaps, no custom modes.
+  output that is off is ignored, and KWin picks); custom modes from management
+  version 18; native persistence and saves on apply; no test, no gaps.
 - **KDE on X11** keeps KScreen's own daemon, which re-applies its saved config
   and would fight dsplr's `Randr` backend. `--backend randr` under a KDE session
   warns about this, and `dsplr watch` refuses it there too.

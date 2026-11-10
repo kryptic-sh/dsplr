@@ -71,7 +71,16 @@ pub(crate) async fn bounded<T, E: From<Error>>(
     what: &'static str,
     operation: impl Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    tokio::time::timeout(OPERATION_TIMEOUT, operation)
+    bounded_by(OPERATION_TIMEOUT, what, operation).await
+}
+
+/// `operation` cut off at `limit`.
+pub(crate) async fn bounded_by<T, E: From<Error>>(
+    limit: Duration,
+    what: &'static str,
+    operation: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    tokio::time::timeout(limit, operation)
         .await
         .map_err(|_| Error::Timeout { what })?
 }

@@ -1,7 +1,7 @@
 //! The KDE backend against a real KWin on its virtual backend: reading and
-//! applying layouts, a refusal of KWin's and one of dsplr's, the primary
-//! output, mirroring, following changes, and the `kwinoutputconfig.json`
-//! KWin saves on every apply.
+//! applying layouts, a refusal of KWin's, custom modes, the primary output,
+//! mirroring, following changes, and the `kwinoutputconfig.json` KWin saves
+//! on every apply.
 //!
 //! Run through the harness, which starts that KWin where it cannot reach the
 //! desktop session:
@@ -17,7 +17,7 @@
 
 #![cfg(target_os = "linux")]
 
-use dsplr_backend::kde::{self, PlanError};
+use dsplr_backend::kde;
 use dsplr_backend::{Backend, Error, Persisted};
 use dsplr_model::{AdaptiveSync, Layout, Mode, Transform};
 
@@ -54,7 +54,7 @@ async fn kwin_applies_and_shows_each_layout() {
     assert!(capabilities.saves_on_apply && capabilities.native_persistence);
     assert!(capabilities.primary, "KWin offers kde_output_order_v1");
     assert!(capabilities.mirroring, "management version 13 or later");
-    assert!(!capabilities.custom_modes, "not written for KDE yet");
+    assert!(capabilities.custom_modes, "management version 18 or later");
     assert_eq!(
         capabilities.adaptive_sync,
         [AdaptiveSync::Off, AdaptiveSync::On, AdaptiveSync::Automatic]
@@ -180,24 +180,43 @@ async fn kwin_applies_and_shows_each_layout() {
     }
     shows(&backend, &start).await;
 
-    // A mode the output does not list is refused by dsplr before KWin is
-    // asked, by the test and the apply alike.
-    let custom = edited(&start, |layout| {
-        entry_mut(layout, one).state.mode = Some(Mode::new(1280, 720, 60_000));
-    });
-    for result in [backend.test(&custom).await, backend.apply(&custom).await] {
+    // A mode the output does not list: KWin is sent a custom mode list,
+    // then, once it lists the mode it made of it, the layout at that mode.
+    // KWin makes the timings itself, so the refresh may differ a little
+    // from the one asked. The rightmost output, so the layout keeps no gap.
+    for (width, height) in [(1280, 720), (1600, 900)] {
+        let custom = edited(&start, |layout| {
+            entry_mut(layout, three).state.mode = Some(Mode::new(width, height, 60_000));
+        });
+        backend
+            .apply(&custom)
+            .await
+            .expect("KWin adds the mode and applies it");
+        let started = std::time::Instant::now();
+        let shown = loop {
+            let now = snapshot(&backend).await;
+            let mode = entry(&now, three).state.mode.clone().expect("on");
+            if (mode.width, mode.height) == (width, height) {
+                break mode;
+            }
+            assert!(started.elapsed() < KWIN_WAIT, "{now:#?}");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
         assert!(
-            matches!(
-                result,
-                Err(Error::Kde(kde::Error::Plan(PlanError::Unsupported { .. })))
-            ),
-            "{result:?}"
-        );
-        assert!(
-            result.as_ref().is_err_and(Error::is_refused_before_sending),
-            "{result:?}"
+            shown.refresh_mhz.abs_diff(60_000) < 1000,
+            "{shown:?} is near 60 Hz"
         );
     }
+    // The second list kept the first custom mode: both are listed.
+    let now = snapshot(&backend).await;
+    let listed = &entry(&now, three).output.as_ref().expect("live").modes;
+    for size in [(1280, 720), (1600, 900)] {
+        assert!(
+            listed.iter().any(|mode| (mode.width, mode.height) == size),
+            "{size:?} in {listed:?}"
+        );
+    }
+    backend.apply(&start).await.expect("KWin applies it");
     shows(&backend, &start).await;
 }
 

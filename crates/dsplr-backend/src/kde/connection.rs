@@ -11,7 +11,7 @@ use crcbl_wayland::ffi::{WlArgument, WlProxy};
 use dsplr_model::Layout;
 
 use super::Error;
-use super::devices::{Device, layout};
+use super::devices::{Device, ListedMode, ModeExtras, layout};
 use super::plan::{DeviceConfig, Plan, plan};
 use crate::wayland::client::{Client, Protocol, State};
 use crate::wayland::heads::{HeadMode, SnapshotError};
@@ -19,7 +19,7 @@ use crate::wayland::protocol::kde_output_device::{
     kde_output_device_mode_v2, kde_output_device_registry_v2, kde_output_device_v2,
 };
 use crate::wayland::protocol::kde_output_management::{
-    kde_output_configuration_v2, kde_output_management_v2,
+    kde_mode_list_v2, kde_output_configuration_v2, kde_output_management_v2,
 };
 use crate::wayland::protocol::kde_output_order::kde_output_order_v1;
 use crate::wayland::protocol::wayland::wl_registry;
@@ -149,12 +149,7 @@ impl Connection {
 
     /// Every connected device, as the events read so far describe it.
     pub fn devices(&self) -> Vec<Device> {
-        self.client
-            .state()
-            .protocol
-            .live()
-            .map(|slot| slot.device.clone())
-            .collect()
+        self.client.state().protocol.devices()
     }
 
     /// `kde_output_order_v1`'s last list of output names, the primary
@@ -171,22 +166,89 @@ impl Connection {
     /// The configuration `layout` would be sent as, sending nothing: why it
     /// cannot be sent, if it cannot.
     pub fn plan(&self, layout: &Layout) -> Result<Plan, Error> {
-        Ok(plan(
-            layout,
-            &self.devices(),
-            self.order(),
-            self.management_version(),
-        )?)
+        Ok(self.client.state().protocol.plan(layout)?)
     }
 
-    /// Applies `layout` in one configuration and waits for KWin's answer.
-    /// `Ok` means KWin reported it applied; it may have rounded a setting
-    /// (it keeps scales in 120ths), so read the state back to see. Nothing
-    /// is sent when the layout cannot be put into a configuration.
+    /// Applies `layout` and waits for KWin's answer. `Ok` means KWin
+    /// reported it applied; it may have rounded a setting (it keeps scales
+    /// in 120ths), so read the state back to see. Nothing is sent when the
+    /// layout cannot be put into a configuration.
+    ///
+    /// A mode a device does not list takes two configurations: the first
+    /// sends its custom mode list (the custom modes it has, and the new
+    /// one), the second, once KWin lists the new mode, the layout. When
+    /// the second is not applied, the new mode stays in KWin's list,
+    /// unused.
     pub async fn apply(&mut self, layout: &Layout) -> Result<(), Error> {
-        let state = self.client.state();
-        state.check()?;
+        self.client.state().check()?;
         let plan = self.plan(layout)?;
+        if plan.mode_lists.iter().all(Option::is_none) {
+            return self.configure(&plan).await;
+        }
+        // What each device lists before: KWin adds the new mode as an
+        // object of its own, at the timings it makes for it.
+        let before: Vec<Vec<u64>> = self
+            .devices()
+            .iter()
+            .map(|device| device.head.modes.iter().map(|mode| mode.handle).collect())
+            .collect();
+        let wanted: Vec<Option<(i32, i32, i32)>> = plan
+            .mode_lists
+            .iter()
+            .map(|list| match list.as_ref()?.last()? {
+                ListedMode::Mode {
+                    width,
+                    height,
+                    refresh_mhz,
+                    ..
+                } => Some((
+                    i32::try_from(*width).ok()?,
+                    i32::try_from(*height).ok()?,
+                    i32::try_from(*refresh_mhz).ok()?,
+                )),
+                ListedMode::Cvt(_) => None,
+            })
+            .collect();
+        self.add_modes(&plan.mode_lists).await?;
+        let added = |kde: &Kde| -> Option<Vec<Option<u64>>> {
+            kde.live()
+                .zip(&before)
+                .zip(&wanted)
+                .map(|((slot, before), wanted)| match wanted {
+                    None => Some(None),
+                    Some(wanted) => new_mode(&slot.device, before, *wanted).map(Some),
+                })
+                .collect()
+        };
+        match self
+            .client
+            .dispatch_until("list the custom mode it was sent", |kde| {
+                added(kde).is_some()
+            })
+            .await
+        {
+            Err(crate::wayland::Error::Timeout { .. }) => {
+                let connectors = self
+                    .devices()
+                    .iter()
+                    .zip(&wanted)
+                    .filter(|(_, wanted)| wanted.is_some())
+                    .map(|(device, _)| device.head.name.clone())
+                    .collect();
+                return Err(Error::CustomModeNotListed { connectors });
+            }
+            waited => waited?,
+        }
+        let chosen = added(&self.client.state().protocol)
+            .expect("waited for until every new mode was listed");
+        let plan = self.client.state().protocol.plan_with(layout, &chosen)?;
+        self.configure(&plan).await
+    }
+
+    /// Sends `plan`, in which every device's mode is one it lists, as one
+    /// configuration, and waits for KWin's answer.
+    async fn configure(&mut self, plan: &Plan) -> Result<(), Error> {
+        let state = self.client.state();
         let kde = &state.protocol;
         // Each device and listed mode resolved to its object before
         // anything is sent.
@@ -197,28 +259,79 @@ impl Connection {
             Option<u32>,
         )> = kde
             .live_indices()
-            .zip(plan.devices)
-            .zip(plan.priorities)
+            .zip(&plan.devices)
+            .zip(&plan.priorities)
             .map(|((index, config), priority)| {
                 let device = state
                     .proxy_of(Kind::Device(index))
                     .expect("a live device is tracked");
-                let mode = match &config {
+                let mode = match config {
                     DeviceConfig::Enable(settings) => Some(
                         state
                             .proxy_of(Kind::Mode {
                                 device: index,
-                                handle: settings.mode,
+                                handle: settings
+                                    .mode
+                                    .expect("a custom mode is listed before it is set"),
                             })
                             .expect("`plan` chooses among the device's live modes"),
                     ),
                     DeviceConfig::Disable | DeviceConfig::Unchanged => None,
                 };
-                (device, config, mode, priority)
+                (device, config.clone(), mode, *priority)
             })
             .collect();
-        let management = kde.management;
+        let configuration = self.new_configuration()?;
+        for (device, config, mode, priority) in targets {
+            // SAFETY: `configuration` is live and not applied, `device` is a
+            // live device, and `mode` one of its live modes.
+            unsafe { configure_device(configuration, device, &config, mode, priority) };
+        }
+        self.send(configuration, Vec::new()).await
+    }
 
+    /// Sends each device's custom mode list in `lists` (by device, as
+    /// [`Plan::mode_lists`]) in one configuration, and waits for KWin's
+    /// answer.
+    async fn add_modes(&mut self, lists: &[Option<Vec<ListedMode>>]) -> Result<(), Error> {
+        let devices: Vec<*mut WlProxy> = {
+            let state = self.client.state();
+            state
+                .protocol
+                .live_indices()
+                .map(|index| {
+                    state
+                        .proxy_of(Kind::Device(index))
+                        .expect("a live device is tracked")
+                })
+                .collect()
+        };
+        let management = self.client.state().protocol.management;
+        let configuration = self.new_configuration()?;
+        let mut made = Vec::new();
+        for (device, modes) in devices.into_iter().zip(lists) {
+            let Some(modes) = modes else {
+                continue;
+            };
+            // SAFETY: the management global is live, at version 18 or
+            // later (`plan` sends no list below it).
+            let list = unsafe { kde_output_management_v2::create_mode_list(management) };
+            made.push(list);
+            self.client.state_mut().track(list, Kind::ModeList)?;
+            // SAFETY: `list` is live, `configuration` live and not applied,
+            // `device` a live device, and `add_cvt` only sent at the version
+            // that has it (`plan`).
+            unsafe {
+                fill_mode_list(list, modes);
+                kde_output_configuration_v2::set_custom_modes(configuration, device, list);
+            }
+        }
+        self.send(configuration, made).await
+    }
+
+    /// A new configuration, tracked, with no answer yet.
+    fn new_configuration(&mut self) -> Result<*mut WlProxy, Error> {
+        let management = self.client.state().protocol.management;
         // SAFETY: the management global is live: it has no destructor event,
         // and only `Drop` destroys it.
         let configuration = unsafe { kde_output_management_v2::create_configuration(management) };
@@ -226,23 +339,34 @@ impl Connection {
         state.protocol.outcome = None;
         state.protocol.failure_reason = None;
         state.track(configuration, Kind::Configuration)?;
-        for (device, config, mode, priority) in targets {
-            // SAFETY: `configuration` is live and not applied, `device` is a
-            // live device, and `mode` one of its live modes.
-            unsafe { configure_device(configuration, device, &config, mode, priority) };
-        }
+        Ok(configuration)
+    }
+
+    /// Applies `configuration`, waits for KWin's answer, then destroys it
+    /// and `lists`, the mode lists it was sent.
+    async fn send(
+        &mut self,
+        configuration: *mut WlProxy,
+        lists: Vec<*mut WlProxy>,
+    ) -> Result<(), Error> {
         // SAFETY: `configuration` is live and applied only here.
         unsafe { kde_output_configuration_v2::apply(configuration) };
-
-        self.client
+        let answered = self
+            .client
             .dispatch_until("answer the apply", |kde| kde.outcome.is_some())
-            .await?;
+            .await;
         let state = self.client.state_mut();
         let outcome = state.protocol.outcome.take();
         let reason = state.protocol.failure_reason.take();
         state.forget(configuration);
         // SAFETY: `configuration` is live, and `destroy` is its destructor.
         unsafe { kde_output_configuration_v2::destroy(configuration) };
+        for list in lists {
+            self.client.state_mut().forget(list);
+            // SAFETY: `list` is live, and `destroy` is its destructor.
+            unsafe { kde_mode_list_v2::destroy(list) };
+        }
+        answered?;
         match outcome {
             Some(Outcome::Applied) => Ok(()),
             Some(Outcome::Failed) | None => Err(Error::Failed { reason }),
@@ -258,6 +382,80 @@ impl Connection {
     pub async fn changed(&mut self) -> Result<(), Error> {
         let seen = self.client.state().protocol.changes;
         Ok(self.client.wait(|kde| kde.changes != seen).await?)
+    }
+}
+
+/// The mode `device` lists that was not among `before` (handles), at the
+/// size of `wanted` (width, height, refresh in mHz), at the refresh nearest
+/// it: the mode KWin made of a custom mode it was sent, at timings of its
+/// own. `None` until KWin lists one.
+fn new_mode(device: &Device, before: &[u64], wanted: (i32, i32, i32)) -> Option<u64> {
+    let (width, height, refresh_mhz) = wanted;
+    device
+        .head
+        .modes
+        .iter()
+        .filter(|mode| !before.contains(&mode.handle))
+        .filter(|mode| (mode.width, mode.height) == (width, height) && mode.refresh_mhz > 0)
+        .min_by_key(|mode| (mode.refresh_mhz - refresh_mhz).unsigned_abs())
+        .map(|mode| mode.handle)
+}
+
+/// Adds each of `modes` to `list`.
+///
+/// # Safety
+///
+/// `list` must be a live `kde_mode_list_v2`, at version 22 or later when
+/// `modes` holds a [`ListedMode::Cvt`].
+unsafe fn fill_mode_list(list: *mut WlProxy, modes: &[ListedMode]) {
+    use kde_mode_list_v2 as l;
+    // SAFETY (each request): the caller's.
+    unsafe {
+        for mode in modes {
+            match *mode {
+                ListedMode::Mode {
+                    width,
+                    height,
+                    refresh_mhz,
+                    reduced_blanking,
+                } => {
+                    l::set_resolution(list, width, height);
+                    l::set_refresh_rate(list, refresh_mhz);
+                    l::set_reduced_blanking(list, u32::from(reduced_blanking));
+                    l::add_mode(list);
+                }
+                ListedMode::Cvt(
+                    [
+                        dot_clock,
+                        hdisplay,
+                        hsync_start,
+                        hsync_end,
+                        htotal,
+                        hskew,
+                        vdisplay,
+                        vsync_start,
+                        vsync_end,
+                        vtotal,
+                        vscan,
+                        flags,
+                    ],
+                ) => l::add_cvt(
+                    list,
+                    dot_clock,
+                    hdisplay,
+                    hsync_start,
+                    hsync_end,
+                    htotal,
+                    hskew,
+                    vdisplay,
+                    vsync_start,
+                    vsync_end,
+                    vtotal,
+                    vscan,
+                    flags,
+                ),
+            }
+        }
     }
 }
 
@@ -330,6 +528,8 @@ enum Kind {
         handle: u64,
     },
     Configuration,
+    /// A custom mode list, which has no events.
+    ModeList,
 }
 
 /// One device and what is known of its proxy.
@@ -397,6 +597,33 @@ impl Kde {
         self.devices.iter().filter(|slot| !slot.removed)
     }
 
+    /// Every connected device, as the events read so far describe it.
+    fn devices(&self) -> Vec<Device> {
+        self.live().map(|slot| slot.device.clone()).collect()
+    }
+
+    /// The configuration `layout` would be sent as, against the devices
+    /// as they are now.
+    fn plan(&self, layout: &Layout) -> Result<Plan, crate::wayland::plan::PlanError> {
+        self.plan_with(layout, &[])
+    }
+
+    /// [`Kde::plan`], each device that `chosen` names a mode for at that
+    /// mode ([`plan`]).
+    fn plan_with(
+        &self,
+        layout: &Layout,
+        chosen: &[Option<u64>],
+    ) -> Result<Plan, crate::wayland::plan::PlanError> {
+        plan(
+            layout,
+            &self.devices(),
+            self.order.as_deref(),
+            self.management_version,
+            chosen,
+        )
+    }
+
     /// The index of each device [`Kde::live`] gives.
     fn live_indices(&self) -> impl Iterator<Item = usize> + '_ {
         self.devices
@@ -404,6 +631,23 @@ impl Kde {
             .enumerate()
             .filter(|(_, slot)| !slot.removed)
             .map(|(index, _)| index)
+    }
+
+    /// The `flags` and `cvt` of the mode `handle` of `device`, made empty
+    /// the first time either is heard of.
+    fn extras_mut(&mut self, device: usize, handle: u64) -> &mut ModeExtras {
+        let extras = &mut self.devices[device].device.mode_extras;
+        let at = match extras.iter().position(|extras| extras.handle == handle) {
+            Some(at) => at,
+            None => {
+                extras.push(ModeExtras {
+                    handle,
+                    ..ModeExtras::default()
+                });
+                extras.len() - 1
+            }
+        };
+        &mut extras[at]
     }
 
     fn mode_mut(&mut self, device: usize, handle: u64) -> Option<&mut HeadMode> {
@@ -427,6 +671,7 @@ impl Protocol for Kde {
             Kind::Device(_) => "kde_output_device_v2",
             Kind::Mode { .. } => "kde_output_device_mode_v2",
             Kind::Configuration => "kde_output_configuration_v2",
+            Kind::ModeList => "kde_mode_list_v2",
         }
     }
 
@@ -455,8 +700,8 @@ impl Protocol for Kde {
         // SAFETY (each decoder): the caller's: `args` is `kind`'s interface's
         // array for `opcode`.
         match kind {
-            // The management global has no events.
-            Kind::Management => {}
+            // The management global and mode lists have no events.
+            Kind::Management | Kind::ModeList => {}
             Kind::DeviceRegistry => {
                 match unsafe { kde_output_device_registry_v2::decode_event(opcode, args) } {
                     Some(kde_output_device_registry_v2::Event::Output { output }) => {
@@ -498,12 +743,46 @@ impl Protocol for Kde {
             Kind::Mode { device, handle } => {
                 match unsafe { kde_output_device_mode_v2::decode_event(opcode, args) } {
                     Some(kde_output_device_mode_v2::Event::Removed) => {
-                        let head = &mut state.protocol.devices[device].device.head;
+                        let slot = &mut state.protocol.devices[device].device;
+                        slot.mode_extras.retain(|extras| extras.handle != handle);
+                        let head = &mut slot.head;
                         head.modes.retain(|mode| mode.handle != handle);
                         if head.current_mode == Some(handle) {
                             head.current_mode = None;
                         }
                         release_mode(state, proxy);
+                    }
+                    Some(kde_output_device_mode_v2::Event::Flags { flags }) => {
+                        state.protocol.extras_mut(device, handle).flags = flags;
+                    }
+                    Some(kde_output_device_mode_v2::Event::Cvt {
+                        dot_clock,
+                        hdisplay,
+                        hsync_start,
+                        hsync_end,
+                        htotal,
+                        hskew,
+                        vdisplay,
+                        vsync_start,
+                        vsync_end,
+                        vtotal,
+                        vscan,
+                        flags,
+                    }) => {
+                        state.protocol.extras_mut(device, handle).cvt = Some([
+                            dot_clock,
+                            hdisplay,
+                            hsync_start,
+                            hsync_end,
+                            htotal,
+                            hskew,
+                            vdisplay,
+                            vsync_start,
+                            vsync_end,
+                            vtotal,
+                            vscan,
+                            flags,
+                        ]);
                     }
                     Some(event) => {
                         if let Some(mode) = state.protocol.mode_mut(device, handle) {
@@ -661,6 +940,37 @@ mod tests {
         kde_output_device_v2, kde_output_order_v1,
     };
     use crate::wayland::tests::dispatched;
+
+    #[test]
+    fn the_new_mode_is_the_one_kwin_added_at_the_size_nearest_the_refresh() {
+        use super::new_mode;
+        use crate::kde::devices::Device;
+        use crate::wayland::heads::{Head, HeadMode};
+        let mode = |handle, width, height, refresh_mhz| HeadMode {
+            handle,
+            width,
+            height,
+            refresh_mhz,
+            preferred: false,
+        };
+        let mut device = Device {
+            head: Head {
+                modes: vec![mode(0, 1280, 1024, 60_020)],
+                ..Head::default()
+            },
+            ..Device::default()
+        };
+        let before = [0];
+        let wanted = (1280, 1024, 60_000);
+        assert_eq!(new_mode(&device, &before, wanted), None, "listed before");
+        // Announced, its size not yet sent.
+        device.head.modes.push(mode(1, 0, 0, 0));
+        assert_eq!(new_mode(&device, &before, wanted), None);
+        device.head.modes[1] = mode(1, 1280, 1024, 59_895);
+        device.head.modes.push(mode(2, 1280, 1024, 75_025));
+        device.head.modes.push(mode(3, 1600, 900, 60_000));
+        assert_eq!(new_mode(&device, &before, wanted), Some(1));
+    }
 
     #[test]
     fn geometry_decodes_all_eight_arguments_strings_included() {

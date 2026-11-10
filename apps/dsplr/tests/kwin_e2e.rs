@@ -79,6 +79,7 @@ async fn dsplr_lists_applies_reverts_and_saves_on_kwin() {
     assert!(text.contains("backend: kde\n"), "{text}");
     assert!(text.contains("saves on every apply"), "{text}");
     assert!(text.contains("primary output"), "{text}");
+    assert!(text.contains("custom modes"), "{text}");
     assert!(!text.contains("test before apply"), "{text}");
     assert!(!text.contains("gaps allowed"), "{text}");
 
@@ -129,6 +130,18 @@ async fn dsplr_lists_applies_reverts_and_saves_on_kwin() {
         text.contains("kde refused the layout") && text.contains("negative"),
         "{text}"
     );
+    shows(&backend, &start).await;
+
+    // A mode the output does not list, set from the command line: KWin is
+    // sent it as a custom mode, then set to the mode it made of it, whose
+    // refresh may differ a little from the one asked (KWin makes the
+    // timings).
+    let (code, text) = dsplr(&["set", last, "--mode", "1280x720@60", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let now = backend.snapshot().await.expect("snapshot");
+    let mode = entry(&now, last).state.mode.clone().expect("on");
+    assert_eq!((mode.width, mode.height), (1280, 720), "{text}");
+    backend.apply(&start).await.expect("KWin applies it");
     shows(&backend, &start).await;
 
     // --yes applies and keeps it; a revert by hand puts the old layout back.

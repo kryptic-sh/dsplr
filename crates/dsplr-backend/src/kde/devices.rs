@@ -14,6 +14,14 @@ pub const CAPABILITY_VRR: u32 = 0x2;
 pub const CAPABILITY_RGB_RANGE: u32 = 0x4;
 /// `capability.disable`, which devices send from version 25 on.
 pub const CAPABILITY_DISABLE: u32 = 0x2_0000;
+/// `capability.custom_modes`, which devices send from version 18 on.
+pub const CAPABILITY_CUSTOM_MODES: u32 = 0x2000;
+
+/// `kde_output_device_mode_v2.flags.custom`: a mode a custom mode list
+/// added (`kde_output_configuration_v2.set_custom_modes`).
+pub const MODE_CUSTOM: u32 = 0x1;
+/// `kde_output_device_mode_v2.flags.reduced_blanking`.
+pub const MODE_REDUCED_BLANKING: u32 = 0x2;
 
 /// `vrr_policy.never`.
 pub const VRR_NEVER: u32 = 0;
@@ -55,6 +63,39 @@ pub struct Device {
     /// The version the device was bound at, which says which capability
     /// flags it can send.
     pub version: u32,
+    /// What its modes' `flags` and `cvt` events said, by mode handle:
+    /// what a custom mode list is rebuilt from ([`Device::custom_modes`]).
+    pub mode_extras: Vec<ModeExtras>,
+}
+
+/// A mode's `flags` and `cvt` timings, which a [`HeadMode`] has no place
+/// for.
+///
+/// [`HeadMode`]: crate::wayland::heads::HeadMode
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModeExtras {
+    /// The mode's handle on its device.
+    pub handle: u64,
+    /// `kde_output_device_mode_v2.flags` (since device version 19).
+    pub flags: u32,
+    /// The `cvt` event's timings, in its argument order (since device
+    /// version 24), when KWin sent them.
+    pub cvt: Option<[u32; 12]>,
+}
+
+/// One mode of a custom mode list, as `kde_mode_list_v2` adds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListedMode {
+    /// `set_resolution`, `set_refresh_rate` and `set_reduced_blanking`,
+    /// then `add_mode`.
+    Mode {
+        width: u32,
+        height: u32,
+        refresh_mhz: u32,
+        reduced_blanking: bool,
+    },
+    /// `add_cvt` with these timings, in its argument order.
+    Cvt([u32; 12]),
 }
 
 impl Device {
@@ -67,6 +108,36 @@ impl Device {
     /// Whether it has the `capability` flag `flag`.
     pub const fn can(&self, flag: u32) -> bool {
         self.capabilities & flag != 0
+    }
+
+    /// The custom modes KWin lists for it, as a mode list that adds them
+    /// again: by their CVT timings where KWin gave them and `cvt` is true
+    /// (the management version has `add_cvt`), else by size, refresh and
+    /// reduced blanking. `set_custom_modes` replaces the whole list, so
+    /// these go into any list sent for it, or KWin would delete them.
+    pub fn custom_modes(&self, cvt: bool) -> Vec<ListedMode> {
+        self.head
+            .modes
+            .iter()
+            .filter_map(|mode| {
+                let extras = self
+                    .mode_extras
+                    .iter()
+                    .find(|extras| extras.handle == mode.handle)?;
+                if extras.flags & MODE_CUSTOM == 0 {
+                    return None;
+                }
+                if cvt && let Some(timings) = extras.cvt {
+                    return Some(ListedMode::Cvt(timings));
+                }
+                Some(ListedMode::Mode {
+                    width: u32::try_from(mode.width).ok()?,
+                    height: u32::try_from(mode.height).ok()?,
+                    refresh_mhz: u32::try_from(mode.refresh_mhz).ok()?,
+                    reduced_blanking: extras.flags & MODE_REDUCED_BLANKING != 0,
+                })
+            })
+            .collect()
     }
 }
 

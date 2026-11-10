@@ -19,16 +19,23 @@ mod plan;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use dsplr_model::Layout;
 
+pub use crate::wayland::REQUEST_TIMEOUT;
 pub use crate::wayland::heads::SnapshotError;
 pub use crate::wayland::plan::PlanError;
-pub use crate::wayland::{OPERATION_TIMEOUT, REQUEST_TIMEOUT};
-use crate::wayland::{bounded, socket_path};
+use crate::wayland::{bounded, bounded_by, socket_path};
 pub use connection::{Connection, REGISTRY_SINCE};
 pub use devices::Device;
-pub use plan::{KWIN_SCALE_STEPS, REPLICATION_SINCE};
+pub use plan::{CUSTOM_MODES_SINCE, KWIN_SCALE_STEPS, REPLICATION_SINCE};
+
+/// The longest one read or apply takes, connecting included: an apply that
+/// adds a custom mode waits for the connection, KWin's answer to the mode
+/// list, the new mode, and its answer to the layout, each up to
+/// [`REQUEST_TIMEOUT`].
+pub const OPERATION_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_mul(4);
 
 /// What went wrong talking to KWin.
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +54,10 @@ pub enum Error {
     Snapshot(#[from] SnapshotError),
     #[error("the layout cannot be sent: {0}")]
     Plan(#[from] PlanError),
+    /// KWin applied the custom mode lists, and did not list the new mode
+    /// on these outputs in time.
+    #[error("KWin did not list the custom mode it was sent for {}", connectors.join(", "))]
+    CustomModeNotListed { connectors: Vec<String> },
     #[error("KWin refused the configuration{}", reason.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default())]
     Failed {
         /// Why, when KWin said (its `failure_reason`, since version 12).
@@ -126,7 +137,7 @@ impl Kde {
     /// fresh connection. KWin may round a setting, so read the state back to
     /// see what it shows.
     pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
-        bounded("apply the layout", async {
+        bounded_by(OPERATION_TIMEOUT, "apply the layout", async {
             self.connect().await?.apply(layout).await
         })
         .await

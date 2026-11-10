@@ -197,11 +197,14 @@ and this project adheres to
   (`KWin refused the configuration: Position of enabled output … is negative`).
   KWin has no test request, so `dsplr apply --dry-run` validates locally and
   checks the layout can be sent, then says KWin cannot test it; and its protocol
-  allows no gaps between outputs, so validation refuses one. Custom modes are
-  not written for KDE yet, and a mode the output does not list is refused (exit
-  `3`). KWin keeps scales in 120ths, so a scale reads back as that rounding
-  carried it, and is not reported as not taken. While a change waits to be kept,
-  the window's bar says KWin has already saved it.
+  allows no gaps between outputs, so validation refuses one. A mode the output
+  does not list is set as a custom mode where KWin takes them (management
+  version 18, outputs that say so): KWin is sent the output's custom mode list,
+  the custom modes it already has kept in it, then the layout at the mode KWin
+  made, whose refresh may differ a little from the one asked; elsewhere it is
+  refused (exit `3`). KWin keeps scales in 120ths, so a scale reads back as that
+  rounding carried it, and is not reported as not taken. While a change waits to
+  be kept, the window's bar says KWin has already saved it.
 - `dsplr save` on KDE writes nothing and says the layout is already saved: KWin
   saves every layout it applies in its `kwinoutputconfig.json`. A layout other
   than the one on screen is refused, as on niri.

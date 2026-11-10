@@ -259,8 +259,8 @@ impl Backend {
     /// range and the primary output (when it offers `kde_output_order_v1`),
     /// mirroring from management version 13, and saves each layout it
     /// applies; it has no test request, and its management protocol says
-    /// outputs may have no gaps between them. Custom modes are not written
-    /// for it yet.
+    /// outputs may have no gaps between them. It takes custom modes from
+    /// management version 18, on outputs whose capabilities say so.
     ///
     /// Mutter tests (`verify`), mirrors (monitors sharing a logical
     /// monitor), has a primary output and an RGB range, and takes the
@@ -311,6 +311,7 @@ impl Backend {
                     kde::KWIN_SCALE_STEPS,
                     wayland::heads::WL_FIXED_STEPS,
                 ],
+                custom_modes: kde.management_version() >= kde::CUSTOM_MODES_SINCE,
                 native_persistence: true,
                 saves_on_apply: true,
                 primary: kde.has_order(),

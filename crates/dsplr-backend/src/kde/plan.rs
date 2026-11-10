@@ -5,8 +5,9 @@
 use dsplr_model::{AdaptiveSync, Layout, OVERSCAN_MAX, OutputEntry, OutputId, RgbRange};
 
 use super::devices::{
-    CAPABILITY_DISABLE, CAPABILITY_OVERSCAN, CAPABILITY_RGB_RANGE, CAPABILITY_VRR, Device,
-    RGB_AUTOMATIC, RGB_FULL, RGB_LIMITED, VRR_ALWAYS, VRR_AUTOMATIC, VRR_NEVER,
+    CAPABILITY_CUSTOM_MODES, CAPABILITY_DISABLE, CAPABILITY_OVERSCAN, CAPABILITY_RGB_RANGE,
+    CAPABILITY_VRR, Device, ListedMode, RGB_AUTOMATIC, RGB_FULL, RGB_LIMITED, VRR_ALWAYS,
+    VRR_AUTOMATIC, VRR_NEVER,
 };
 use crate::wayland::heads::{Head, scale_to_fixed};
 use crate::wayland::plan::{ModeChoice, PlanError, assign, choose_mode};
@@ -20,6 +21,14 @@ pub const PRIORITY_SINCE: u32 = 3;
 /// The first `kde_output_management_v2` version with
 /// `set_replication_source`: mirroring.
 pub const REPLICATION_SINCE: u32 = 13;
+
+/// The first `kde_output_management_v2` version with `create_mode_list`
+/// and `set_custom_modes`: custom modes.
+pub const CUSTOM_MODES_SINCE: u32 = 18;
+
+/// The first `kde_output_management_v2` version whose mode lists have
+/// `add_cvt`.
+pub const ADD_CVT_SINCE: u32 = 22;
 
 /// The first device version whose capabilities say whether it can be
 /// turned off ([`CAPABILITY_DISABLE`]).
@@ -44,8 +53,10 @@ pub enum DeviceConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// The [`HeadMode::handle`](crate::wayland::heads::HeadMode::handle)
-    /// of a listed mode: KWin's protocol takes no other.
-    pub mode: u64,
+    /// of a listed mode: KWin's protocol takes no other. `None` for a
+    /// custom mode, which [`Plan::mode_lists`] adds first: the device's
+    /// mode is chosen once KWin lists it.
+    pub mode: Option<u64>,
     pub position: (i32, i32),
     /// A `wl_output.transform` value.
     pub transform: i32,
@@ -73,6 +84,12 @@ pub struct Plan {
     /// that will be off, and for every device when the layout names no
     /// primary output, which leaves the order as it is.
     pub priorities: Vec<Option<u32>>,
+    /// For each device, the custom mode list to send first, in a
+    /// configuration of its own, when the layout sets it to a mode it does
+    /// not list: the custom modes it has, then the new one, last. `set_custom_modes`
+    /// adds a mode to the device rather than switching to it, so the
+    /// configuration that sets the mode can only follow once KWin lists it.
+    pub mode_lists: Vec<Option<Vec<ListedMode>>>,
 }
 
 /// The configuration for `layout`, against `devices` as KWin last described
@@ -80,29 +97,42 @@ pub struct Plan {
 /// `kde_output_order_v1`), for a `kde_output_management_v2` of `version`.
 ///
 /// Entries name devices by connector. A setting KWin's protocol cannot
-/// express (a custom mode, a colour preset, bit depth), one the device says
+/// express (a colour preset, bit depth), one the device says
 /// it does not have, and one the bound version cannot send are refused
 /// rather than dropped.
+///
+/// The mode of each device that `chosen` (by device, empty for none) names
+/// one for is taken as that mode object: a custom mode KWin added, which it
+/// may list at another refresh than asked (it makes the timings itself).
 pub fn plan(
     layout: &Layout,
     devices: &[Device],
     order: Option<&[String]>,
     version: u32,
+    chosen: &[Option<u64>],
 ) -> Result<Plan, PlanError> {
     let heads: Vec<Head> = devices.iter().map(|device| device.head.clone()).collect();
     let assigned = assign(layout, &heads)?;
-    let configs = assigned
+    let (configs, mode_lists) = assigned
         .iter()
         .zip(devices)
-        .map(|(entry, device)| match entry {
-            Some(entry) => config(entry, device, devices, version),
-            None => Ok(DeviceConfig::Unchanged),
+        .enumerate()
+        .map(|(index, (entry, device))| match entry {
+            Some(entry) => config(
+                entry,
+                device,
+                devices,
+                version,
+                chosen.get(index).copied().flatten(),
+            ),
+            None => Ok((DeviceConfig::Unchanged, None)),
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<(Vec<_>, Vec<_>), _>>()?;
     let priorities = priorities(&assigned, devices, order, version)?;
     Ok(Plan {
         devices: configs,
         priorities,
+        mode_lists,
     })
 }
 
@@ -114,12 +144,16 @@ fn unsupported(device: &Device, what: &'static str) -> PlanError {
     }
 }
 
+/// One device's configuration, and the custom mode list to send first when
+/// it is set to a mode it does not list; at the mode object `chosen` when
+/// given.
 fn config(
     entry: &OutputEntry,
     device: &Device,
     devices: &[Device],
     version: u32,
-) -> Result<DeviceConfig, PlanError> {
+    chosen: Option<u64>,
+) -> Result<(DeviceConfig, Option<Vec<ListedMode>>), PlanError> {
     let state = &entry.state;
     let unsupported = |what| unsupported(device, what);
     let refused = [
@@ -133,19 +167,46 @@ fn config(
         if device.version >= DISABLE_CAPABILITY_SINCE && !device.can(CAPABILITY_DISABLE) {
             return Err(unsupported("turning it off (KWin says it cannot be)"));
         }
-        return Ok(DeviceConfig::Disable);
+        return Ok((DeviceConfig::Disable, None));
     }
 
     let mode = state
         .mode
         .as_ref()
         .ok_or_else(|| PlanError::NoMode(device.head.name.clone()))?;
-    let mode = match choose_mode(&device.head, mode)? {
-        ModeChoice::Listed(handle) => handle,
-        ModeChoice::Custom { .. } => {
+    let choice = match chosen {
+        Some(handle) => ModeChoice::Listed(handle),
+        None => choose_mode(&device.head, mode)?,
+    };
+    let (mode, mode_list) = match choice {
+        ModeChoice::Listed(handle) => (Some(handle), None),
+        ModeChoice::Custom { .. } if version < CUSTOM_MODES_SINCE => {
             return Err(unsupported(
-                "a mode the output does not list (custom modes are not written for KDE yet)",
+                "a mode the output does not list (KWin's output management is older than version 18)",
             ));
+        }
+        ModeChoice::Custom { .. } if !device.can(CAPABILITY_CUSTOM_MODES) => {
+            return Err(unsupported(
+                "a mode the output does not list (KWin says it takes no custom modes)",
+            ));
+        }
+        ModeChoice::Custom { refresh_mhz: 0, .. } => {
+            return Err(unsupported("a custom mode without a refresh rate"));
+        }
+        ModeChoice::Custom {
+            width,
+            height,
+            refresh_mhz,
+        } => {
+            let mut list = device.custom_modes(version >= ADD_CVT_SINCE);
+            list.push(ListedMode::Mode {
+                width: u32::try_from(width).expect("chosen from a u32"),
+                height: u32::try_from(height).expect("chosen from a u32"),
+                refresh_mhz: u32::try_from(refresh_mhz).expect("chosen from a u32"),
+                // The normal blanking, which every display takes.
+                reduced_blanking: false,
+            });
+            (None, Some(list))
         }
     };
     let scale = scale_to_fixed(state.scale).ok_or_else(|| PlanError::Scale {
@@ -199,7 +260,7 @@ fn config(
         None if version < REPLICATION_SINCE => None,
         None => Some(String::new()),
     };
-    Ok(DeviceConfig::Enable(Settings {
+    let settings = Settings {
         mode,
         position: (state.x, state.y),
         transform: i32::try_from(state.transform.to_wayland())
@@ -209,7 +270,8 @@ fn config(
         vrr_policy,
         rgb_range,
         replication_source,
-    }))
+    };
+    Ok((DeviceConfig::Enable(settings), mode_list))
 }
 
 /// Whether `id`, a mirror source, names `device`: its identity, or its
@@ -284,8 +346,12 @@ mod tests {
     use dsplr_model::{AdaptiveSync, Layout, Mode, OutputId, OutputState, RgbRange, Transform};
 
     use super::super::devices::tests::{devices, order};
-    use super::super::devices::{CAPABILITY_DISABLE, CAPABILITY_VRR, VRR_AUTOMATIC, layout};
+    use super::super::devices::{
+        CAPABILITY_CUSTOM_MODES, CAPABILITY_DISABLE, CAPABILITY_VRR, Device, ListedMode,
+        MODE_CUSTOM, ModeExtras, VRR_AUTOMATIC, layout,
+    };
     use super::{DeviceConfig, Plan, Settings, plan};
+    use crate::wayland::heads::HeadMode;
     use crate::wayland::plan::PlanError;
 
     const V22: u32 = 22;
@@ -295,7 +361,7 @@ mod tests {
     }
 
     fn planned(layout: &Layout) -> Result<Plan, PlanError> {
-        plan(layout, &devices(), Some(&order()), V22)
+        plan(layout, &devices(), Some(&order()), V22, &[])
     }
 
     fn settings(config: &DeviceConfig) -> &Settings {
@@ -322,7 +388,7 @@ mod tests {
         assert_eq!(
             sent.devices[1],
             DeviceConfig::Enable(Settings {
-                mode: 0,
+                mode: Some(0),
                 position: (0, 0),
                 transform: 0,
                 scale: 256,
@@ -360,7 +426,7 @@ mod tests {
         assert_eq!(
             sent.devices[1],
             DeviceConfig::Enable(Settings {
-                mode: 1,
+                mode: Some(1),
                 position: (1920, 0),
                 transform: 3,
                 scale: 320,
@@ -423,11 +489,11 @@ mod tests {
 
         let primary = snapshot();
         assert!(matches!(
-            plan(&primary, &devices(), None, V22),
+            plan(&primary, &devices(), None, V22, &[]),
             Err(PlanError::Unsupported { what, .. }) if what.contains("kde_output_order_v1")
         ));
         assert!(matches!(
-            plan(&primary, &devices(), Some(&order()), 2),
+            plan(&primary, &devices(), Some(&order()), 2, &[]),
             Err(PlanError::Unsupported { what, .. }) if what.contains("version 3")
         ));
     }
@@ -461,19 +527,154 @@ mod tests {
         // Before version 13 a mirror cannot be sent, and none is cleared.
         layout.entries[2].state.mirror_of = Some(layout.entries[1].id.clone());
         assert!(matches!(
-            plan(&layout, &devices(), Some(&order()), 12),
+            plan(&layout, &devices(), Some(&order()), 12, &[]),
             Err(PlanError::Unsupported { what, .. }) if what.starts_with("mirroring")
         ));
         layout.entries[2].state.mirror_of = None;
-        let old = plan(&layout, &devices(), Some(&order()), 12).expect("plans");
+        let old = plan(&layout, &devices(), Some(&order()), 12, &[]).expect("plans");
         assert_eq!(settings(&old.devices[2]).replication_source, None);
+    }
+
+    /// [`devices`] with the virtual output taking custom modes and already
+    /// holding one, 1600x900 at 75 Hz, added by its CVT timings.
+    fn with_a_custom_mode() -> Vec<Device> {
+        let mut devices = devices();
+        let device = &mut devices[2];
+        device.capabilities |= CAPABILITY_CUSTOM_MODES;
+        device.head.modes.push(HeadMode {
+            handle: 1,
+            width: 1600,
+            height: 900,
+            refresh_mhz: 74_954,
+            preferred: false,
+        });
+        device.mode_extras = vec![
+            ModeExtras {
+                handle: 0,
+                flags: 0,
+                cvt: None,
+            },
+            ModeExtras {
+                handle: 1,
+                flags: MODE_CUSTOM,
+                cvt: Some(CVT),
+            },
+        ];
+        devices
+    }
+
+    /// 1600x900 at 75 Hz's CVT timings, as KWin would send them.
+    const CVT: [u32; 12] = [
+        151_250, 1600, 1704, 1872, 2144, 0, 900, 903, 908, 942, 0, 0x5,
+    ];
+
+    #[test]
+    fn a_custom_mode_is_added_to_the_list_kwin_has_and_then_set() {
+        let mut layout = snapshot();
+        layout.entries[2].state.mode = Some(Mode::new(1280, 1024, 60_000));
+        let sent = plan(&layout, &with_a_custom_mode(), Some(&order()), V22, &[]).expect("plans");
+        assert_eq!(
+            settings(&sent.devices[2]).mode,
+            None,
+            "set once KWin lists it"
+        );
+        let new = ListedMode::Mode {
+            width: 1280,
+            height: 1024,
+            refresh_mhz: 60_000,
+            reduced_blanking: false,
+        };
+        // The custom mode KWin has goes in again, or KWin would delete it.
+        assert_eq!(
+            sent.mode_lists,
+            [None, None, Some(vec![ListedMode::Cvt(CVT), new.clone()])]
+        );
+        // Before `add_cvt`, by its size and refresh.
+        let old = plan(&layout, &with_a_custom_mode(), Some(&order()), 21, &[]).expect("plans");
+        assert_eq!(
+            old.mode_lists[2],
+            Some(vec![
+                ListedMode::Mode {
+                    width: 1600,
+                    height: 900,
+                    refresh_mhz: 74_954,
+                    reduced_blanking: false,
+                },
+                new
+            ])
+        );
+        // A mode it lists, custom or not, adds nothing.
+        let listed =
+            plan(&snapshot(), &with_a_custom_mode(), Some(&order()), V22, &[]).expect("plans");
+        assert_eq!(listed.mode_lists, [None, None, None]);
+        assert_eq!(settings(&listed.devices[2]).mode, Some(0));
+    }
+
+    #[test]
+    fn once_kwin_lists_the_custom_mode_it_is_set_by_its_object() {
+        let mut layout = snapshot();
+        layout.entries[2].state.mode = Some(Mode::new(1280, 1024, 60_000));
+        // KWin made it 1280x1024 at 59.895 Hz, its handle 2.
+        let mut devices = with_a_custom_mode();
+        devices[2].head.modes.push(HeadMode {
+            handle: 2,
+            width: 1280,
+            height: 1024,
+            refresh_mhz: 59_895,
+            preferred: false,
+        });
+        let sent = plan(
+            &layout,
+            &devices,
+            Some(&order()),
+            V22,
+            &[None, None, Some(2)],
+        )
+        .expect("plans");
+        assert_eq!(sent.mode_lists, [None, None, None], "nothing more to add");
+        assert_eq!(settings(&sent.devices[2]).mode, Some(2));
+    }
+
+    #[test]
+    fn a_custom_mode_kwin_cannot_add_is_refused() {
+        let mut layout = snapshot();
+        layout.entries[2].state.mode = Some(Mode::new(1280, 1024, 60_000));
+        let what = |result| match result {
+            Err(PlanError::Unsupported { what, .. }) => what,
+            other => panic!("not refused: {other:?}"),
+        };
+        assert_eq!(
+            what(plan(
+                &layout,
+                &with_a_custom_mode(),
+                Some(&order()),
+                17,
+                &[]
+            )),
+            "a mode the output does not list (KWin's output management is older than version 18)"
+        );
+        layout.entries[2].state.mode = Some(Mode::new(1280, 1024, 0));
+        assert_eq!(
+            what(plan(
+                &layout,
+                &with_a_custom_mode(),
+                Some(&order()),
+                V22,
+                &[]
+            )),
+            "a custom mode without a refresh rate"
+        );
     }
 
     #[test]
     fn what_kwin_cannot_take_is_refused_not_dropped() {
+        // The AOC has no `custom_modes` capability.
         let mut custom = snapshot();
         custom.entries[1].state.mode = Some(Mode::new(1234, 567, 60_000));
-        assert!(refused(&custom).starts_with("a mode the output does not list"));
+        assert_eq!(
+            refused(&custom),
+            "a mode the output does not list (KWin says it takes no custom modes)"
+        );
 
         let mut colour = snapshot();
         colour.entries[1].state.colour_preset = Some("hdr".into());
@@ -511,16 +712,16 @@ mod tests {
         let mut layout = snapshot();
         layout.entries[2].state.enabled = false;
         assert!(matches!(
-            plan(&layout, &devices, Some(&order()), V22),
+            plan(&layout, &devices, Some(&order()), V22, &[]),
             Err(PlanError::Unsupported { what, .. }) if what.starts_with("turning it off")
         ));
         devices[2].capabilities |= CAPABILITY_DISABLE;
-        let sent = plan(&layout, &devices, Some(&order()), V22).expect("plans");
+        let sent = plan(&layout, &devices, Some(&order()), V22, &[]).expect("plans");
         assert_eq!(sent.devices[2], DeviceConfig::Disable);
         // Older devices cannot say, so KWin is left to answer.
         devices[2].capabilities = 0;
         devices[2].version = 24;
-        assert!(plan(&layout, &devices, Some(&order()), V22).is_ok());
+        assert!(plan(&layout, &devices, Some(&order()), V22, &[]).is_ok());
     }
 
     #[test]
