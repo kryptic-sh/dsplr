@@ -43,6 +43,7 @@ async fn a_headless_hyprland_applies_saves_watches_and_meets_the_protocol() {
     a_saved_layout_is_what_hyprland_reads_back_after_a_reload().await;
     let backend = hyprland_backend().await;
     a_watch_follows_reloads_and_hotplug(&backend).await;
+    colour_and_bit_depth_as_hyprland_reports_them().await;
     // Last: Hyprland keeps what the protocol applies per monitor, and a
     // reload after it was not checked.
     an_eval_mirror_meets_a_protocol_apply(&backend).await;
@@ -257,6 +258,88 @@ async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
     assert!(!again.created);
     assert!(again.included);
     assert_eq!(std::fs::read_to_string(&monitors).expect("written"), text);
+}
+
+/// A probe, not a check: what `hyprctl -j monitors all` reports about colour
+/// management and bit depth on DSPLR-1 after each `cm` preset and each
+/// `bitdepth` is set through `eval`, so dsplr reads and writes them on facts
+/// (`docs/backlog.md`, Hyprland's colour preset and bit depth). Prints
+/// `OBSERVED` lines and asserts nothing; puts `srgb` and 8 bits back last,
+/// since Hyprland merges a rule onto the one before it.
+async fn colour_and_bit_depth_as_hyprland_reports_them() {
+    let hyprland = Hyprland::from_env().expect("the harness's Hyprland");
+    let version = hyprland.version().await.expect("its version");
+    let monitor = || {
+        let reply = hyprctl("j/monitors all");
+        let monitors: serde_json::Value = serde_json::from_str(&reply).expect("JSON");
+        monitors
+            .as_array()
+            .expect("an array")
+            .iter()
+            .find(|monitor| monitor["name"] == "DSPLR-1")
+            .cloned()
+            .expect("DSPLR-1 listed")
+    };
+    // Every key, once, so the fields' names are on record.
+    let keys: Vec<String> = monitor()
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    observed(&format!(
+        "OBSERVED (Hyprland {version}): monitor keys: {}",
+        keys.join(", ")
+    ));
+    let colour_fields = || {
+        let monitor = monitor();
+        let fields: Vec<String> = monitor
+            .as_object()
+            .expect("an object")
+            .iter()
+            .filter(|(key, _)| {
+                let key = key.to_ascii_lowercase();
+                [
+                    "format", "color", "colour", "bit", "sdr", "hdr", "cm", "icc", "wide",
+                ]
+                .iter()
+                .any(|part| key.contains(part))
+            })
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect();
+        fields.join(" ")
+    };
+    observed(&format!(
+        "OBSERVED (Hyprland {version}): before: {}",
+        colour_fields()
+    ));
+    // A rule takes effect on Hyprland's next frame.
+    let settle = || tokio::time::sleep(Duration::from_secs(1));
+    let try_rule = async |rule: &str| {
+        let call = format!(r#"hl.monitor({{ output = "DSPLR-1", {rule} }})"#);
+        let answer = match hyprland.eval(&call).await {
+            Ok(()) => "accepted".to_owned(),
+            Err(error) => format!("refused ({error})"),
+        };
+        settle().await;
+        observed(&format!(
+            "OBSERVED (Hyprland {version}): eval {rule}: {answer}; then {}",
+            colour_fields()
+        ));
+    };
+    for preset in [
+        "srgb", "wide", "edid", "hdr", "hdredid", "auto", "dcip3", "dp3", "adobe",
+    ] {
+        try_rule(&format!(r#"cm = "{preset}""#)).await;
+    }
+    try_rule(r#"cm = "srgb""#).await;
+    try_rule("bitdepth = 10").await;
+    // A rule leaving bit depth out, which Hyprland merges onto the last.
+    try_rule(r#"mirror = """#).await;
+    try_rule("bitdepth = 8").await;
+    try_rule("bitdepth = 10").await;
+    try_rule("bitdepth = 16").await;
+    try_rule("bitdepth = 8").await;
 }
 
 /// Writes `line` to the test's stderr whether or not the test passes:
