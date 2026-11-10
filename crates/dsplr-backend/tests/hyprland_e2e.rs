@@ -9,11 +9,18 @@
 //!
 //! The test refuses to run when the harness did not start it, so `--ignored`
 //! on its own never changes a real desktop's monitors.
+//!
+//! One Hyprland serves every step, and the last one's
+//! `wlr-output-management` apply overrides Hyprland's monitor rules until it
+//! restarts, so the steps run in turn, in one test, in a fixed order.
 
 #![cfg(target_os = "linux")]
 
-use dsplr_backend::Persisted;
+use std::time::Duration;
+
 use dsplr_backend::hyprland::Hyprland;
+use dsplr_backend::wlr::Wlr;
+use dsplr_backend::{Backend, Persisted, Watch};
 use dsplr_model::{Layout, Mode, OutputId, Transform};
 use dsplr_persist::managed::{Comment, Ownership, ownership};
 
@@ -22,11 +29,31 @@ mod hyprland_support;
 #[path = "../../../tests/e2e/support.rs"]
 mod support;
 
-use hyprland_support::{config_home, harness_runtime, hyprctl, snapshot_until};
+use hyprland_support::{
+    SETTLE, config_home, harness_runtime, hyprctl, hyprland_wayland_display, snapshot_until,
+};
 use support::{edited, entry, entry_mut};
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
+async fn a_headless_hyprland_applies_saves_watches_and_meets_the_protocol() {
+    a_headless_hyprland_shows_each_applied_layout().await;
+    a_saved_layout_is_what_hyprland_reads_back_after_a_reload().await;
+    let backend = hyprland_backend().await;
+    a_watch_follows_reloads_and_hotplug(&backend).await;
+    // Last: what the protocol applies stays until Hyprland restarts.
+    an_eval_mirror_meets_a_protocol_apply(&backend).await;
+}
+
+async fn hyprland_backend() -> Backend {
+    let detection = dsplr_backend::detect().await;
+    let backend = detection
+        .backend
+        .unwrap_or_else(|| panic!("no backend: {:?}", detection.checks));
+    assert_eq!(backend.name(), "hyprland");
+    backend
+}
+
 async fn a_headless_hyprland_shows_each_applied_layout() {
     harness_runtime();
     for name in ["DSPLR-1", "DSPLR-2"] {
@@ -149,8 +176,6 @@ async fn a_headless_hyprland_shows_each_applied_layout() {
 
 /// A saved layout is what Hyprland shows after a reload, which drops every
 /// rule `eval` set: so it came from the file.
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "needs the headless Hyprland harness: tests/e2e/headless-hyprland.sh"]
 async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
     harness_runtime();
     let reply = hyprctl("/output create headless DSPLR-SAVE");
@@ -229,4 +254,204 @@ async fn a_saved_layout_is_what_hyprland_reads_back_after_a_reload() {
     assert!(!again.created);
     assert!(again.included);
     assert_eq!(std::fs::read_to_string(&monitors).expect("written"), text);
+}
+
+/// Writes `line` to the test's stderr whether or not the test passes:
+/// libtest captures `println!` and `eprintln!`, not the stderr handle, and
+/// these lines are the record the CI log keeps.
+fn observed(line: &str) {
+    use std::io::Write;
+    writeln!(std::io::stderr(), "{line}").expect("stderr");
+}
+
+/// How long a watch gets to report a change, and how long an event that is
+/// not expected is waited for.
+const WATCH_WAIT: Duration = Duration::from_secs(5);
+
+/// Reads the events the watch has queued, so the next `changed` is about
+/// the next change: Hyprland sends `monitoradded` and `monitoraddedv2` for
+/// one output, and each would end a wait.
+async fn drain(watch: &mut Watch) {
+    while tokio::time::timeout(Duration::from_millis(300), watch.changed())
+        .await
+        .is_ok()
+    {}
+}
+
+async fn changed(watch: &mut Watch, what: &str) {
+    tokio::time::timeout(WATCH_WAIT, watch.changed())
+        .await
+        .unwrap_or_else(|_| panic!("the watch reported nothing after {what}"))
+        .unwrap_or_else(|error| panic!("the watch failed after {what}: {error}"));
+}
+
+/// `.socket2.sock` reports a reload and an output plugged in and removed,
+/// and a snapshot then shows each. A monitor rule set through `eval` is
+/// said to send no event (`hyprland::Events`); what this Hyprland does is
+/// printed, not asserted, as a record for the backlog's entry on it.
+async fn a_watch_follows_reloads_and_hotplug(backend: &Backend) {
+    let version = Hyprland::from_env()
+        .expect("the harness's Hyprland")
+        .version()
+        .await
+        .expect("its version");
+    let mut watch = backend.watch().await.expect("a watch");
+
+    let now = backend.snapshot().await.expect("snapshot");
+    let x = entry(&now, "DSPLR-SAVE").state.x + 640;
+    backend
+        .apply(&edited(&now, |layout| {
+            entry_mut(layout, "DSPLR-SAVE").state.x = x;
+        }))
+        .await
+        .expect("applied");
+    snapshot_until(backend, "DSPLR-SAVE moved by eval", |layout| {
+        entry(layout, "DSPLR-SAVE").state.x == x
+    })
+    .await;
+    let reported = tokio::time::timeout(WATCH_WAIT, watch.changed())
+        .await
+        .is_ok();
+    observed(&format!(
+        "OBSERVED (Hyprland {version}): a monitor rule set through eval {} an event on .socket2.sock",
+        if reported { "sent" } else { "sent no" }
+    ));
+    drain(&mut watch).await;
+
+    assert_eq!(hyprctl("reload").trim(), "ok");
+    changed(&mut watch, "a reload").await;
+    drain(&mut watch).await;
+
+    let reply = hyprctl("/output create headless DSPLR-WATCH");
+    assert_eq!(reply.trim(), "ok", "creating DSPLR-WATCH: {reply}");
+    changed(&mut watch, "an output plugged in").await;
+    snapshot_until(backend, "DSPLR-WATCH plugged in", |layout| {
+        layout
+            .entries
+            .iter()
+            .any(|e| e.connector() == Some("DSPLR-WATCH"))
+    })
+    .await;
+    drain(&mut watch).await;
+
+    let reply = hyprctl("/output remove DSPLR-WATCH");
+    assert_eq!(reply.trim(), "ok", "removing DSPLR-WATCH: {reply}");
+    changed(&mut watch, "an output removed").await;
+    snapshot_until(backend, "DSPLR-WATCH removed", |layout| {
+        layout
+            .entries
+            .iter()
+            .all(|e| e.connector() != Some("DSPLR-WATCH"))
+    })
+    .await;
+}
+
+/// The M2 exit check (`docs/plan/04-backends.md#hyprland`): whether a
+/// `wlr-output-management` apply undoes a mirror `eval` set, and whether
+/// state the protocol applied survives a later `eval` rule. The protocol is
+/// spoken by dsplr's own `wlr` backend, on Hyprland's own Wayland socket.
+///
+/// The second is asserted: Hyprland's `applyWlrOutputConfig` keeps what the
+/// protocol set per monitor, over its rules, until it restarts (read in its
+/// v0.56.2 source). The first is printed until a run has shown it.
+async fn an_eval_mirror_meets_a_protocol_apply(backend: &Backend) {
+    let version = Hyprland::from_env()
+        .expect("the harness's Hyprland")
+        .version()
+        .await
+        .expect("its version");
+    let runtime = harness_runtime();
+    let display = hyprland_wayland_display();
+    let wlr = Wlr::from_vars(|name| match name {
+        "WAYLAND_DISPLAY" => Some(display.clone().into()),
+        "XDG_RUNTIME_DIR" => Some(runtime.clone().into_os_string()),
+        _ => None,
+    })
+    .await
+    .expect("Hyprland's wlr-output-management");
+    observed(&format!(
+        "Hyprland {version} offers zwlr_output_manager_v1 version {}",
+        wlr.version()
+    ));
+
+    // A mirror, through eval.
+    let now = backend.snapshot().await.expect("snapshot");
+    let source = entry(&now, "DSPLR-2").id.clone();
+    backend
+        .apply(&edited(&now, |layout| {
+            entry_mut(layout, "DSPLR-1").state.mirror_of = Some(source.clone());
+        }))
+        .await
+        .expect("applied");
+    snapshot_until(backend, "DSPLR-1 mirroring DSPLR-2", |layout| {
+        entry(layout, "DSPLR-1").state.mirror_of.as_ref() == Some(&source)
+    })
+    .await;
+
+    // A protocol apply of every head as the protocol reads it, DSPLR-2
+    // moved.
+    let heads = wlr.snapshot().await.expect("the heads");
+    observed(&format!(
+        "the protocol reads the mirroring DSPLR-1 as {:?}",
+        entry(&heads, "DSPLR-1").state
+    ));
+    let moved = 20_000;
+    wlr.apply(&edited(&heads, |layout| {
+        entry_mut(layout, "DSPLR-2").state.x = moved;
+    }))
+    .await
+    .expect("Hyprland applied the configuration");
+    snapshot_until(backend, "DSPLR-2 moved by the protocol", |layout| {
+        entry(layout, "DSPLR-2").state.x == moved
+    })
+    .await;
+    // Hyprland reloads its monitor rules after a protocol apply: give that
+    // its time before reading the mirror.
+    tokio::time::sleep(SETTLE).await;
+    let shown = backend.snapshot().await.expect("snapshot");
+    let mirror = entry(&shown, "DSPLR-1").state.mirror_of.clone();
+    observed(&format!(
+        "OBSERVED (Hyprland {version}): a wlr-output-management apply {} a mirror set through eval (DSPLR-1 mirrors {mirror:?})",
+        if mirror.as_ref() == Some(&source) {
+            "keeps"
+        } else {
+            "undoes"
+        }
+    ));
+
+    // A later eval moves DSPLR-2 and an output the protocol never set. The
+    // latter shows the eval was applied; the former, whether the protocol's
+    // position won.
+    let reply = hyprctl("/output create headless DSPLR-LATE");
+    assert_eq!(reply.trim(), "ok", "creating DSPLR-LATE: {reply}");
+    let now = snapshot_until(backend, "DSPLR-LATE", |layout| {
+        layout
+            .entries
+            .iter()
+            .any(|e| e.connector() == Some("DSPLR-LATE"))
+    })
+    .await;
+    let late = 30_000;
+    backend
+        .apply(&edited(&now, |layout| {
+            entry_mut(layout, "DSPLR-2").state.x = moved + 4_000;
+            let state = &mut entry_mut(layout, "DSPLR-LATE").state;
+            state.mode = Some(Mode::new(1920, 1080, 60_000));
+            state.x = late;
+        }))
+        .await
+        .expect("applied");
+    let shown = snapshot_until(backend, "DSPLR-LATE moved by eval", |layout| {
+        entry(layout, "DSPLR-LATE").state.x == late
+    })
+    .await;
+    let x = entry(&shown, "DSPLR-2").state.x;
+    observed(&format!(
+        "OBSERVED (Hyprland {version}): after the protocol set DSPLR-2's x to {moved}, an eval asking {} left it at {x}",
+        moved + 4_000
+    ));
+    assert_eq!(
+        x, moved,
+        "the protocol's position no longer wins over a later eval rule"
+    );
 }

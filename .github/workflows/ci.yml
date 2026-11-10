@@ -168,7 +168,13 @@ jobs:
   # needs no GPU (pixman), but runs in the same VM so it is the current sway,
   # through the same steps. niri has no headless backend, so it runs nested
   # (winit) in a headless sway, rendering through Mesa's software EGL. KWin
-  # runs on its own virtual backend, which still renders with OpenGL. Mutter
+  # runs on its own virtual backend, which still renders with OpenGL.
+  #
+  # An entry runs each package's `<desktop>_e2e` test under
+  # `tests/e2e/headless-<desktop>.sh`, unless it names its own `test` and
+  # `harness`; `env` is NAME=VALUE words the tests run with. `gui` is the
+  # GUI's test in headless sway: Vulkan through Mesa's lavapipe, keys through
+  # wtype. Mutter
   # runs headless with virtual monitors, on a D-Bus session bus of the
   # harness's own (dbus-run-session, from the dbus package).
   e2e:
@@ -194,6 +200,12 @@ jobs:
           - desktop: mutter
             packages: mutter mesa dbus
             tests: dsplr-backend dsplr
+          - desktop: gui
+            harness: sway
+            test: gui_e2e
+            packages: sway vulkan-swrast wtype
+            tests: dsplr
+            env: VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json
     env:
       IMAGE: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
     steps:
@@ -205,22 +217,26 @@ jobs:
       - run: rustup update --no-self-update stable
       - uses: Swatinem/rust-cache@v2
       - name: Build the tests and fill the VM's share
+        env:
+          TEST: ${{ matrix.test || format('{0}_e2e', matrix.desktop) }}
+          HARNESS: ${{ matrix.harness || matrix.desktop }}
         run: |
           share="$RUNNER_TEMP/e2e"
           mkdir -p "$share/out" "$share/tests"
           chmod 777 "$share/out"
-          # Every package's <desktop>_e2e test, and dsplr itself for the CLI's.
+          # Every package's $TEST test, and dsplr itself for the CLI's.
           for package in ${{ matrix.tests }}; do
-            test_bin=$(cargo test --locked -p "$package" --test "${{ matrix.desktop }}_e2e" --no-run --message-format=json \
-              | jq -r 'select(.reason == "compiler-artifact" and .target.name == "${{ matrix.desktop }}_e2e") | .executable')
-            [ -x "$test_bin" ] || { echo "no ${{ matrix.desktop }} test in $package"; exit 1; }
+            test_bin=$(cargo test --locked -p "$package" --test "$TEST" --no-run --message-format=json \
+              | jq -r --arg test "$TEST" 'select(.reason == "compiler-artifact" and .target.name == $test) | .executable')
+            [ -x "$test_bin" ] || { echo "no $TEST test in $package"; exit 1; }
             cp "$test_bin" "$share/tests/$package"
           done
           cargo build --locked -p dsplr
           cp target/debug/dsplr "$share/"
-          cp "tests/e2e/headless-${{ matrix.desktop }}.sh" "$share/harness.sh"
+          cp "tests/e2e/headless-$HARNESS.sh" "$share/harness.sh"
           cp tests/e2e/vm/guest.sh "$share/"
           echo "${{ matrix.packages }}" > "$share/packages"
+          echo "${{ matrix.env }}" > "$share/env"
       - name: Enable KVM and install QEMU
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
@@ -252,6 +268,7 @@ jobs:
           cat "$out"/test-*.log || true
           status=$(cat "$out/status" 2>/dev/null || echo "missing: the VM did not finish")
           echo "status: $status"
+          if [ -f "$out/reason" ]; then echo "== why"; cat "$out/reason"; fi
           if [ "$status" != 0 ]; then
             echo "== /dev/dri"; cat "$out/dri.txt" || true
             echo "== pacman (tail)"; tail -n 20 "$out/pacman.log" || true

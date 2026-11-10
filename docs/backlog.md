@@ -391,7 +391,9 @@ milestone:
   applies through `eval` and reads `j/monitors`; it needs the protocol only for
   a real change stream. Moving any field onto it is a decision, since
   wlr-applied state overrides Hyprland's rules until restart (Hyprland facts
-  below). Whether an `eval` mirror survives a protocol apply is unchecked.
+  below). Whether an `eval` mirror survives a protocol apply is now the last
+  step of the Hyprland e2e (`an_eval_mirror_meets_a_protocol_apply`), which
+  prints it; it has not run yet (CI's `hyprland` entry is its first run).
 - **Hyprland's change stream misses rule changes; owner's call**: the GUI
   follows Hyprland through `.socket2.sock` (`hyprland::Events`: monitor added or
   removed, config reloaded), as asked for M3, which carries no event for a
@@ -401,8 +403,10 @@ milestone:
   change; that is a `wlr::Connection` held on Hyprland for watching only
   (`Watch::Wlr` already does it on wlroots), at the cost of a second connection
   and Hyprland's protocol support becoming a dependency of the GUI. Options:
-  keep socket2, switch to wlr, or both. Only tested against a fake socket
-  (`hyprland::events` tests); never run on a real or headless Hyprland.
+  keep socket2, switch to wlr, or both. The Hyprland e2e
+  (`a_watch_follows_reloads_and_hotplug`) checks a reload and an output created
+  and removed with `hyprctl output`, and prints whether an `eval` rule sends any
+  event; it has not run yet (CI's `hyprland` entry is its first run).
 - **Each `wlr` request still opens its own connection**: `Watch::Wlr` holds one
   `wlr::Connection` for following changes, but every read, test and apply opens
   its own (`Wlr::connect`) and closes it, so the serial guards only the instant
@@ -609,10 +613,13 @@ milestone:
   moved one only its pending one (seen 2026-11-10 in headless sway).
   `Layout::validate`'s rule, not the canvas's; marking every output of a
   disconnected group on both sides would need it to say which group is which.
-- **The GUI e2e test is not in CI** (`apps/dsplr/tests/gui_e2e.rs`, ignored): it
-  needs Mesa's lavapipe (`vulkan-swrast`) and `wtype` in the sway VM's packages,
-  and a CI entry running it with
-  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Green locally under
+- **The GUI e2e test has not run in CI yet** (`apps/dsplr/tests/gui_e2e.rs`,
+  ignored): CI's `gui` entry runs it under `tests/e2e/headless-sway.sh` in the
+  VM, with `sway vulkan-swrast wtype` and
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json`. Unproven there: that
+  the VM's lavapipe opens the window within the test's `STARTUP` (4 s) on four
+  vCPUs, and that the binary built on the Ubuntu runner finds what it loads at
+  run time (Vulkan loader, xkbcommon, fonts, cursor theme). Green locally under
   `tests/e2e/headless-sway.sh` (2026-11-10): kept with Enter, timed out, killed
   mid-confirm then reverted by the watchdog, and an output plugged in with
   `swaymsg create_output` while the window is open, then reached with Tab,
@@ -847,8 +854,9 @@ checks most of it, and has not run. Read in GNOME Shell 51.1's source:
 `ShowMonitorLabels` refuses callers that do not own one of its allowed names.
 Not verified by anyone: COSMIC's protocol offer and whether it persists outputs
 itself; the Xorg dummy driver giving several RandR outputs; whether an `eval` of
-`hl.monitor` survives a protocol apply; KDE's confirm timeout; the RandR 1.5
-details. Each is checked in its backend's milestone.
+`hl.monitor` survives a protocol apply (the Hyprland e2e now records it, and has
+not run); KDE's confirm timeout; the RandR 1.5 details. Each is checked in its
+backend's milestone.
 
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off

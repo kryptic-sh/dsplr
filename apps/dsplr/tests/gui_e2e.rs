@@ -13,8 +13,8 @@
 //!
 //! Keys go in through `wtype`, which needs one keyboard held for the whole
 //! session (the backlog's harness entry), and are sent as one argument each,
-//! since `wtype` types a space between its arguments. Not in CI's matrix:
-//! its VM has neither lavapipe nor `wtype` yet.
+//! since `wtype` types a space between its arguments. CI's `gui` entry runs
+//! it so, in its VM.
 
 #![cfg(target_os = "linux")]
 

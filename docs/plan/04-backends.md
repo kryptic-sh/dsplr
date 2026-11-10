@@ -97,7 +97,14 @@ So:
   applies immediately, and whether it composes with a protocol apply, is an **M2
   exit check**: the protocol requires every head in a configuration and Hyprland
   reports no mirrored state through it, so a protocol apply may undo an `eval`
-  mirror. Until that is checked those fields are read-only.
+  mirror. Until that is checked those fields are read-only. The check is now the
+  last step of `crates/dsplr-backend/tests/hyprland_e2e.rs`
+  (`an_eval_mirror_meets_a_protocol_apply`), which speaks the protocol through
+  the `wlr` backend on Hyprland's own Wayland socket: it asserts that a position
+  the protocol set is not moved by a later `eval` rule (the backlog's Hyprland
+  facts, read in `applyWlrOutputConfig`), and prints whether the protocol apply
+  kept the `eval` mirror (`OBSERVED` lines in the CI log). Its first run is
+  CI's; the outcome is written here from that log.
 - **Persist** by writing the `monitors.lua` beside the `hyprland.lua` Hyprland
   reads, found as Hyprland finds it (`HYPRLAND_CONFIG`, then
   `$XDG_CONFIG_HOME/hypr`, then `~/.config/hypr`;

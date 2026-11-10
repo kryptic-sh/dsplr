@@ -26,11 +26,17 @@ jobs at the first release. dsplr is Linux-only, so the matrix is ubuntu only.
 VM (an Arch cloud image with a virtio GPU): a runner has no GPU render node, and
 Hyprland cannot allocate buffers without one. Hyprland, sway and niri (nested in
 a headless sway), KWin (its virtual backend) and Mutter (headless, on a D-Bus
-session bus of the harness's own) are in it now; X11 (M7) joins with its
-backend. The `test` job also starts private `dbus-daemon`s for the GNOME
-backend's unit tests, so the runner needs `dbus-daemon` (Ubuntu's images have
-it; not checked in a run yet). Test compositors never run on or against a
-desktop session: private runtime directory, no shared sockets, no seat.
+session bus of the harness's own) are in it now, and a `gui` entry runs the
+GUI's test (`gui_e2e`, which names its own test and harness, `sway`, and runs
+with `VK_DRIVER_FILES` set for lavapipe); X11 (M7) joins with its backend. The
+VM's setup retries its package install with a growing wait, and a step that
+leaves nothing to test with (the install, `seatd`, the test user) ends the run
+with its own status (`pacman failed`) and a `reason` holding its log's tail,
+which the CI step prints. The `test` job also starts private `dbus-daemon`s for
+the GNOME backend's unit tests, so the runner needs `dbus-daemon` (Ubuntu's
+images have it; not checked in a run yet). Test compositors never run on or
+against a desktop session: private runtime directory, no shared sockets, no
+seat.
 
 Conventions as lyr: `RUSTFLAGS=-D warnings`, a concurrency group cancelling
 superseded non-tag runs, `fail-fast: false`, `Swatinem/rust-cache`,

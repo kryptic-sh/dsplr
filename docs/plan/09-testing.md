@@ -57,10 +57,11 @@ mode the monitor rejects, let a confirm time out, kill dsplr mid-confirm and run
   Enter, one left to time out, one whose dsplr is killed mid-confirm, which its
   watchdog reverts, and an output plugged in (`swaymsg create_output`) while the
   window is open, which Tab then reaches, edited and applied with an edit made
-  before it came, each read back with `dsplr list --json`. It is ignored and not
-  in CI's matrix: the VM has neither lavapipe nor `wtype` yet. No click is sent
-  to the window (no pointer injector), so dragging and the panel's widgets are
-  covered by `dsplr-core`'s editor and hit-region tests, a build of the panel's
-  tree, and the window's key and request tests against crcbl's headless shell,
-  not by a pointer in a window. The apply flow every front end drives is
-  unit-tested with a fake backend (`dsplr_core::flow`).
+  before it came, each read back with `dsplr list --json`. It is ignored, and
+  run by CI's `gui` entry in the same VM, with lavapipe (`vulkan-swrast`) and
+  `wtype` installed. No click is sent to the window (no pointer injector), so
+  dragging and the panel's widgets are covered by `dsplr-core`'s editor and
+  hit-region tests, a build of the panel's tree, and the window's key and
+  request tests against crcbl's headless shell, not by a pointer in a window.
+  The apply flow every front end drives is unit-tested with a fake backend
+  (`dsplr_core::flow`).

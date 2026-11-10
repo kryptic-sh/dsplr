@@ -3,6 +3,11 @@
 //! `tests/e2e/headless-hyprland.sh`, raw requests to that harness's Hyprland,
 //! and reading its layout back.
 
+#![allow(
+    dead_code,
+    reason = "included into each Hyprland e2e test binary, and each uses a subset"
+)]
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -63,6 +68,30 @@ pub fn hyprctl(request: &str) -> String {
     let mut reply = String::new();
     stream.read_to_string(&mut reply).expect("reply read");
     reply
+}
+
+/// The name of the harness Hyprland's own Wayland socket in
+/// `XDG_RUNTIME_DIR`, which the harness keeps out of the tests' environment
+/// so detection finds Hyprland by its IPC: the second line of Hyprland's
+/// `hyprland.lock` (its pid, then its socket).
+pub fn hyprland_wayland_display() -> String {
+    let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").expect("set by the harness");
+    let lock = harness_runtime()
+        .join("hypr")
+        .join(signature)
+        .join("hyprland.lock");
+    let text = std::fs::read_to_string(&lock)
+        .unwrap_or_else(|error| panic!("{}: {error}", lock.display()));
+    let display = text
+        .lines()
+        .nth(1)
+        .unwrap_or_else(|| panic!("{} names no socket: {text:?}", lock.display()));
+    assert!(
+        display.starts_with("wayland-"),
+        "{} names {display:?}",
+        lock.display()
+    );
+    display.to_owned()
 }
 
 /// How long Hyprland gets to show a change it accepted.
