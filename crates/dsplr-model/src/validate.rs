@@ -282,7 +282,9 @@ fn check_one_scale(enabled: &[&OutputEntry], problems: &mut Vec<Problem>) {
 
 /// Overlaps and gaps between the enabled outputs that are not mirrors and
 /// have a size. Each overlap is reported once, on the later output. Gaps are
-/// reported on every output not connected, edge to edge, to the first one.
+/// reported on every output outside the largest group connected edge to edge
+/// (the group holding the first output when groups tie), so an output moved
+/// away from the rest is the one marked, not the rest.
 fn check_placement(
     enabled: &[&OutputEntry],
     layout_mode: LayoutMode,
@@ -310,20 +312,38 @@ fn check_placement(
     if placed.len() < 2 {
         return;
     }
-    // Overlapping outputs count as connected: the overlap is already
-    // reported, and a second problem for the same pair would only repeat it.
-    let mut reached = vec![false; placed.len()];
-    reached[0] = true;
-    let mut queue = vec![0];
-    while let Some(i) = queue.pop() {
-        for j in 0..placed.len() {
-            let (a, b) = (placed[i].1, placed[j].1);
-            if !reached[j] && (a.touches(b) || a.overlaps(b)) {
-                reached[j] = true;
-                queue.push(j);
+    // Each output's group: overlapping outputs count as connected, since the
+    // overlap is already reported, and a second problem for the same pair
+    // would only repeat it.
+    let mut group = vec![None; placed.len()];
+    let mut sizes = Vec::new();
+    for start in 0..placed.len() {
+        if group[start].is_some() {
+            continue;
+        }
+        let id = sizes.len();
+        group[start] = Some(id);
+        let mut size = 1;
+        let mut queue = vec![start];
+        while let Some(i) = queue.pop() {
+            for j in 0..placed.len() {
+                let (a, b) = (placed[i].1, placed[j].1);
+                if group[j].is_none() && (a.touches(b) || a.overlaps(b)) {
+                    group[j] = Some(id);
+                    size += 1;
+                    queue.push(j);
+                }
             }
         }
+        sizes.push(size);
     }
+    // The largest group; among equals the first found, which holds the
+    // first output.
+    let main = (0..sizes.len())
+        .rev()
+        .max_by_key(|&id| sizes[id])
+        .expect("at least one group");
+    let reached = group.iter().map(|&id| id == Some(main));
     let severity = if capabilities.gaps_allowed {
         Severity::Warning
     } else {
@@ -631,6 +651,38 @@ mod tests {
                 (Some(id("DP-4")), ProblemKind::Gap),
             ]
         );
+    }
+
+    #[test]
+    fn the_output_dragged_away_is_the_one_marked_not_the_rest() {
+        // DP-1 moved off the row DP-2 and DP-3 still make.
+        let layout = layout(vec![
+            monitor("DP-1", -5000, 0),
+            monitor("DP-2", 0, 0),
+            monitor("DP-3", 1920, 0),
+        ]);
+        assert_eq!(
+            kinds(&layout, &permissive()),
+            [(Some(id("DP-1")), ProblemKind::Gap)]
+        );
+        // Three apart: the largest group is one output each, and the first's
+        // wins the tie.
+        let layout = layout_of_three_apart();
+        assert_eq!(
+            kinds(&layout, &permissive()),
+            [
+                (Some(id("DP-2")), ProblemKind::Gap),
+                (Some(id("DP-3")), ProblemKind::Gap),
+            ]
+        );
+    }
+
+    fn layout_of_three_apart() -> Layout {
+        layout(vec![
+            monitor("DP-1", 0, 0),
+            monitor("DP-2", 5000, 0),
+            monitor("DP-3", 10_000, 0),
+        ])
     }
 
     #[test]

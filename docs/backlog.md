@@ -437,11 +437,6 @@ milestone:
   created and removed with `hyprctl output` are reported, and a monitor rule set
   through `eval` sends no event, by dsplr or anyone, so the watch cannot see
   one; the e2e asserts that, and goes red if Hyprland starts sending one.
-- **Each `wlr` request still opens its own connection**: `Watch::Wlr` holds one
-  `wlr::Connection` for following changes, but every read, test and apply opens
-  its own (`Wlr::connect`) and closes it, so the serial guards only the instant
-  between reading the heads and sending the configuration, and a change made
-  after `dsplr list` is caught by the re-read (step 6), not by `cancelled`.
 - **`wlr` on other compositors**: sway 1.12 (headless) and niri 26.04 (nested)
   have been run. river, labwc and Wayfire are expected to work through the same
   protocol and are not checked; COSMIC's own extension and whether it saves
@@ -695,11 +690,6 @@ milestone:
   the arrows, Tab) where crcbl's docs pair `TextPump` with `crcbl-input`'s
   action map. `crcbl-input` is not on plan 02's dependency list, so adding it is
   the owner's call.
-- **A gap is reported on the outputs not reached from the first one**, so after
-  moving the first output away its neighbour gets the warning outline, and the
-  moved one only its pending one (seen 2026-11-10 in headless sway).
-  `Layout::validate`'s rule, not the canvas's; marking every output of a
-  disconnected group on both sides would need it to say which group is which.
 - **What the GUI e2e covers** (`apps/dsplr/tests/gui_e2e.rs`, ignored; CI's
   `gui` entry, under `tests/e2e/headless-sway.sh` with lavapipe, green in run
   42776828806): kept with Enter, timed out, killed mid-confirm then reverted by
@@ -1140,6 +1130,24 @@ and the `monitors.lua` writer:
   names (`DBusSenderChecker`, GNOME Shell 51.1). dsplr owning one of them would
   pass itself off as GNOME Settings and break the real one while it runs, so
   identify is unsupported on GNOME instead.
+- **One `wlr` connection per backend, so the snapshot's serial guards the
+  apply** (2026-11-10). Every `wlr` read, test and apply opens a connection of
+  its own (`Wlr::connect`), so a configuration's serial guards the time between
+  that connection reading the heads and sending it, and `cancelled` comes only
+  from a change in that time. Keeping one connection, so the serial of the
+  snapshot a change was made from guards its apply, would guard nothing more,
+  because every apply already starts from a snapshot read just before it: the
+  CLI's `apply`, `set` and `restore` read the displays and go straight on to
+  test and apply (`apply::file`, `apply::onto`), and the GUI's backend thread
+  reads them again for each Apply or Restore (`BackendThread::apply`), the
+  user's edits having been carried onto each read the desktop reported meanwhile
+  (`Editor::rebase`). That is the same window a connection per request has,
+  which is how GNOME's remembered serial works out too: it is the serial of the
+  read just before the apply. A change in it is caught by `cancelled` (exit
+  `4`), and one after it by the read-back (step 6). Holding a connection open
+  would add a reconnect path and lifetime rules for no case that differs, and a
+  sway or niri e2e step could not land a change in a window of milliseconds on
+  purpose.
 - **Shelling out to `wlr-randr`, `kscreen-doctor`, `xrandr`, `gnome-randr`.**
   Each desktop is driven through its own interface; those tools are test
   cross-checks only.

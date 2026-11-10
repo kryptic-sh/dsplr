@@ -99,27 +99,28 @@ and this project adheres to
   and an output turned off stops being primary), overscan (KDE) and RGB range
   (KDE, GNOME). A setting the desktop cannot take is disabled, with why as its
   tooltip. The pending layout is checked as it changes: an overlap is outlined
-  in red, a gap in yellow and a second primary output in red, with the problem
-  in the bar. A primary flag on an output that is off is ignored on KDE, as on
-  GNOME, rather than refused. `Tab` and `Shift+Tab` step through the outputs, a
-  click selects one, and `q` or `Escape` quits, asking first when edits are
-  pending. `p` (or `F6`) takes the keyboard into the panel, where `Tab` /
-  `S-Tab` move between its widgets, the arrows move and choose, Enter or space
-  works one, and `Escape` gives the keys back to the canvas; `m` shows the last
-  few messages from the backend over the canvas, which the bar shows one at a
-  time. It reads the displays on a backend thread before the window opens, so a
-  desktop with no backend exits `6` with no window; no window system or no
-  usable GPU exits `1` with the reason. `a` (or Apply) applies the pending edits
-  through the same confirm flow as `dsplr apply`: tested, guarded by the revert
-  point and its watchdog, read back, and kept only once "Keep these display
-  settings?" is answered on one of the dialogs shown on every monitor (Enter
-  keeps; Esc, the countdown, or dsplr dying reverts; the keys work in the dialog
-  that has the keyboard and in the window, and while the change waits the
-  window's title is "dsplr: keep these display settings?"). `s` (or Save) saves
-  the displays where the desktop reads them, as `dsplr save` does, asking in the
-  window before replacing a file dsplr did not write or one edited by hand. The
-  panel also saves the displays as a named profile, restores a profile through
-  the same flow, goes back to the revert point, and reads the displays again.
+  in red, a gap in yellow (on the outputs apart from the largest group, so the
+  one dragged away) and a second primary output in red, with the problem in the
+  bar. A primary flag on an output that is off is ignored on KDE, as on GNOME,
+  rather than refused. `Tab` and `Shift+Tab` step through the outputs, a click
+  selects one, and `q` or `Escape` quits, asking first when edits are pending.
+  `p` (or `F6`) takes the keyboard into the panel, where `Tab` / `S-Tab` move
+  between its widgets, the arrows move and choose, Enter or space works one, and
+  `Escape` gives the keys back to the canvas; `m` shows the last few messages
+  from the backend over the canvas, which the bar shows one at a time. It reads
+  the displays on a backend thread before the window opens, so a desktop with no
+  backend exits `6` with no window; no window system or no usable GPU exits `1`
+  with the reason. `a` (or Apply) applies the pending edits through the same
+  confirm flow as `dsplr apply`: tested, guarded by the revert point and its
+  watchdog, read back, and kept only once "Keep these display settings?" is
+  answered on one of the dialogs shown on every monitor (Enter keeps; Esc, the
+  countdown, or dsplr dying reverts; the keys work in the dialog that has the
+  keyboard and in the window, and while the change waits the window's title is
+  "dsplr: keep these display settings?"). `s` (or Save) saves the displays where
+  the desktop reads them, as `dsplr save` does, asking in the window before
+  replacing a file dsplr did not write or one edited by hand. The panel also
+  saves the displays as a named profile, restores a profile through the same
+  flow, goes back to the revert point, and reads the displays again.
 - The GUI follows the desktop: an output plugged in, unplugged, turned on or off
   or changed by another program shows up in the window as it happens (on
   Hyprland, a monitor added or removed and a config reload; a rule changed with

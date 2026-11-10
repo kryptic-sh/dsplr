@@ -144,10 +144,12 @@ success, so it is not one. Checked:
 - no overlap between enabled, non-mirrored outputs;
 - no gap: the enabled, non-mirrored outputs are connected edge to edge (a shared
   corner is not a connection, and two islands are a gap even though each output
-  in them touches another). An **error** where `Capabilities::gaps_allowed` is
-  off, as on KDE, whose management protocol says "There may be no gaps or
-  overlaps between outputs"; a warning elsewhere (Hyprland and sway allow gaps,
-  but the pointer cannot cross one);
+  in them touches another). It is reported on each output outside the largest
+  connected group (the one holding the first output when groups tie), so an
+  output dragged away from the rest is the one marked. An **error** where
+  `Capabilities::gaps_allowed` is off, as on KDE, whose management protocol says
+  "There may be no gaps or overlaps between outputs"; a warning elsewhere
+  (Hyprland and sway allow gaps, but the pointer cannot cross one);
 - mirroring supported, and mirror sources exist, are enabled and are not mirrors
   themselves;
 - at most one primary among the enabled outputs (`ProblemKind::SecondPrimary`);
