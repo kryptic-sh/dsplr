@@ -33,9 +33,12 @@ pub use plan::{CUSTOM_MODES_SINCE, KWIN_SCALE_STEPS, REPLICATION_SINCE};
 
 /// The longest one read or apply takes, connecting included: an apply that
 /// adds a custom mode waits for the connection, KWin's answer to the mode
-/// list, the new mode, and its answer to the layout, each up to
-/// [`REQUEST_TIMEOUT`].
-pub const OPERATION_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_mul(4);
+/// list, the new mode, its answer to the layout and, when that is not
+/// applied, its answer to the list put back, each up to [`REQUEST_TIMEOUT`].
+/// Every KDE apply has this bound, and the revert watchdog counts it in
+/// ([`crate::Backend::request_timeout`]), since which apply adds a mode is
+/// known only once connected.
+pub const OPERATION_TIMEOUT: Duration = REQUEST_TIMEOUT.saturating_mul(5);
 
 /// What went wrong talking to KWin.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +61,13 @@ pub enum Error {
     /// on these outputs in time.
     #[error("KWin did not list the custom mode it was sent for {}", connectors.join(", "))]
     CustomModeNotListed { connectors: Vec<String> },
+    /// The layout was not applied, and putting the custom mode lists back
+    /// failed too: the mode dsplr added stays in KWin's list.
+    #[error("{cause}; the custom mode dsplr added stays in KWin's list for {}", connectors.join(", "))]
+    CustomModeKept {
+        cause: Box<Self>,
+        connectors: Vec<String>,
+    },
     #[error("KWin refused the configuration{}", reason.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default())]
     Failed {
         /// Why, when KWin said (its `failure_reason`, since version 12).

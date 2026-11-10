@@ -136,6 +136,14 @@ pub fn plan(
     })
 }
 
+/// The custom mode list that puts a device's custom modes back as they were
+/// before `list`, one of [`Plan::mode_lists`], was sent: the same without
+/// the new mode, which is last.
+pub fn without_new(list: &[ListedMode]) -> Vec<ListedMode> {
+    list.split_last()
+        .map_or_else(Vec::new, |(_, kept)| kept.to_vec())
+}
+
 fn unsupported(device: &Device, what: &'static str) -> PlanError {
     PlanError::Unsupported {
         connector: device.head.name.clone(),
@@ -350,7 +358,7 @@ mod tests {
         CAPABILITY_CUSTOM_MODES, CAPABILITY_DISABLE, CAPABILITY_VRR, Device, ListedMode,
         MODE_CUSTOM, ModeExtras, VRR_AUTOMATIC, layout,
     };
-    use super::{DeviceConfig, Plan, Settings, plan};
+    use super::{DeviceConfig, Plan, Settings, plan, without_new};
     use crate::wayland::heads::HeadMode;
     use crate::wayland::plan::PlanError;
 
@@ -633,6 +641,23 @@ mod tests {
         .expect("plans");
         assert_eq!(sent.mode_lists, [None, None, None], "nothing more to add");
         assert_eq!(settings(&sent.devices[2]).mode, Some(2));
+    }
+
+    #[test]
+    fn a_failed_custom_mode_is_taken_out_and_the_kept_ones_stay() {
+        let mut layout = snapshot();
+        layout.entries[2].state.mode = Some(Mode::new(1280, 1024, 60_000));
+        let sent = plan(&layout, &with_a_custom_mode(), Some(&order()), V22, &[]).expect("plans");
+        let list = sent.mode_lists[2].as_ref().expect("a list");
+        assert_eq!(without_new(list), [ListedMode::Cvt(CVT)]);
+        // A device with no custom mode of its own gets an empty list back,
+        // which deletes the one added.
+        let mut devices = with_a_custom_mode();
+        devices[2].mode_extras.clear();
+        let sent = plan(&layout, &devices, Some(&order()), V22, &[]).expect("plans");
+        let list = sent.mode_lists[2].as_ref().expect("a list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(without_new(list), []);
     }
 
     #[test]

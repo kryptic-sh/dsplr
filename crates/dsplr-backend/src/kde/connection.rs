@@ -12,7 +12,7 @@ use dsplr_model::Layout;
 
 use super::Error;
 use super::devices::{Device, ListedMode, ModeExtras, layout};
-use super::plan::{DeviceConfig, Plan, plan};
+use super::plan::{DeviceConfig, Plan, plan, without_new};
 use crate::wayland::client::{Client, Protocol, State};
 use crate::wayland::heads::{HeadMode, SnapshotError};
 use crate::wayland::protocol::kde_output_device::{
@@ -185,64 +185,94 @@ impl Connection {
         if plan.mode_lists.iter().all(Option::is_none) {
             return self.configure(&plan).await;
         }
-        // What each device lists before: KWin adds the new mode as an
-        // object of its own, at the timings it makes for it.
-        let before: Vec<Vec<u64>> = self
+        // Each device sent a list, by its uuid, so a device KWin adds or
+        // removes meanwhile does not shift the others: what it lists
+        // before (KWin adds the new mode as an object of its own, at the
+        // timings it makes for it), the new mode's size and refresh, and
+        // the list to send back if the layout is not applied.
+        let added: Vec<Added> = self
             .devices()
             .iter()
-            .map(|device| device.head.modes.iter().map(|mode| mode.handle).collect())
-            .collect();
-        let wanted: Vec<Option<(i32, i32, i32)>> = plan
-            .mode_lists
-            .iter()
-            .map(|list| match list.as_ref()?.last()? {
-                ListedMode::Mode {
+            .zip(&plan.mode_lists)
+            .filter_map(|(device, list)| {
+                let list = list.as_ref()?;
+                let ListedMode::Mode {
                     width,
                     height,
                     refresh_mhz,
                     ..
-                } => Some((
-                    i32::try_from(*width).ok()?,
-                    i32::try_from(*height).ok()?,
-                    i32::try_from(*refresh_mhz).ok()?,
-                )),
-                ListedMode::Cvt(_) => None,
+                } = *list.last()?
+                else {
+                    return None;
+                };
+                Some(Added {
+                    uuid: device.uuid.clone(),
+                    connector: device.head.name.clone(),
+                    before: device.head.modes.iter().map(|mode| mode.handle).collect(),
+                    wanted: (
+                        i32::try_from(width).ok()?,
+                        i32::try_from(height).ok()?,
+                        i32::try_from(refresh_mhz).ok()?,
+                    ),
+                    restore: without_new(list),
+                })
             })
             .collect();
         self.add_modes(&plan.mode_lists).await?;
-        let added = |kde: &Kde| -> Option<Vec<Option<u64>>> {
-            kde.live()
-                .zip(&before)
-                .zip(&wanted)
-                .map(|((slot, before), wanted)| match wanted {
-                    None => Some(None),
-                    Some(wanted) => new_mode(&slot.device, before, *wanted).map(Some),
-                })
-                .collect()
-        };
-        match self
+        let listed = match self
             .client
             .dispatch_until("list the custom mode it was sent", |kde| {
-                added(kde).is_some()
+                chosen(kde, &added).is_some()
             })
             .await
         {
-            Err(crate::wayland::Error::Timeout { .. }) => {
-                let connectors = self
-                    .devices()
-                    .iter()
-                    .zip(&wanted)
-                    .filter(|(_, wanted)| wanted.is_some())
-                    .map(|(device, _)| device.head.name.clone())
-                    .collect();
-                return Err(Error::CustomModeNotListed { connectors });
+            Err(crate::wayland::Error::Timeout { .. }) => Err(Error::CustomModeNotListed {
+                connectors: added.iter().map(|added| added.connector.clone()).collect(),
+            }),
+            waited => waited.map_err(Error::from),
+        };
+        let applied = match listed {
+            Ok(()) => {
+                let chosen = chosen(&self.client.state().protocol, &added)
+                    .expect("waited for until every new mode was listed");
+                match self.client.state().protocol.plan_with(layout, &chosen) {
+                    Ok(plan) => self.configure(&plan).await,
+                    Err(error) => Err(error.into()),
+                }
             }
-            waited => waited?,
+            Err(error) => Err(error),
+        };
+        let Err(error) = applied else {
+            return Ok(());
+        };
+        // Not applied: the lists go back as they were, so a failed attempt
+        // leaves no mode behind.
+        let restore = self.lists_by_uuid(&added, |added| added.restore.clone());
+        match self.add_modes(&restore).await {
+            Ok(()) => Err(error),
+            Err(_) => Err(Error::CustomModeKept {
+                cause: Box::new(error),
+                connectors: added.iter().map(|added| added.connector.clone()).collect(),
+            }),
         }
-        let chosen = added(&self.client.state().protocol)
-            .expect("waited for until every new mode was listed");
-        let plan = self.client.state().protocol.plan_with(layout, &chosen)?;
-        self.configure(&plan).await
+    }
+
+    /// For each live device, the list `list` makes of the one in `added`
+    /// with its uuid; `None` for the others.
+    fn lists_by_uuid(
+        &self,
+        added: &[Added],
+        list: impl Fn(&Added) -> Vec<ListedMode>,
+    ) -> Vec<Option<Vec<ListedMode>>> {
+        self.devices()
+            .iter()
+            .map(|device| {
+                added
+                    .iter()
+                    .find(|added| added.uuid == device.uuid)
+                    .map(&list)
+            })
+            .collect()
     }
 
     /// Sends `plan`, in which every device's mode is one it lists, as one
@@ -383,6 +413,37 @@ impl Connection {
         let seen = self.client.state().protocol.changes;
         Ok(self.client.wait(|kde| kde.changes != seen).await?)
     }
+}
+
+/// A device a custom mode list was sent for, by its uuid.
+struct Added {
+    uuid: String,
+    connector: String,
+    /// The handles of the modes it listed before.
+    before: Vec<u64>,
+    /// The new mode: width, height and refresh in mHz.
+    wanted: (i32, i32, i32),
+    /// The list that puts its custom modes back as they were.
+    restore: Vec<ListedMode>,
+}
+
+/// The mode object each live device of `kde` is to be set to, by its place
+/// among them: the new one for a device in `added`, `None` for the rest.
+/// `None` as a whole until every device in `added` lists its new mode.
+fn chosen(kde: &Kde, added: &[Added]) -> Option<Vec<Option<u64>>> {
+    let live: Vec<&DeviceSlot> = kde.live().collect();
+    for added in added {
+        let device = live.iter().find(|slot| slot.device.uuid == added.uuid)?;
+        new_mode(&device.device, &added.before, added.wanted)?;
+    }
+    Some(
+        live.iter()
+            .map(|slot| {
+                let added = added.iter().find(|added| added.uuid == slot.device.uuid)?;
+                new_mode(&slot.device, &added.before, added.wanted)
+            })
+            .collect(),
+    )
 }
 
 /// The mode `device` lists that was not among `before` (handles), at the
@@ -940,6 +1001,59 @@ mod tests {
         kde_output_device_v2, kde_output_order_v1,
     };
     use crate::wayland::tests::dispatched;
+
+    #[test]
+    fn the_new_mode_is_found_by_the_device_s_uuid_whatever_its_place() {
+        use super::{Added, DeviceSlot, Kde, chosen};
+        use crate::kde::devices::Device;
+        use crate::wayland::heads::{Head, HeadMode};
+        let slot = |uuid: &str, modes: Vec<(u64, i32, i32, i32)>| DeviceSlot {
+            device: Device {
+                uuid: uuid.into(),
+                head: Head {
+                    modes: modes
+                        .into_iter()
+                        .map(|(handle, width, height, refresh_mhz)| HeadMode {
+                            handle,
+                            width,
+                            height,
+                            refresh_mhz,
+                            preferred: false,
+                        })
+                        .collect(),
+                    ..Head::default()
+                },
+                ..Device::default()
+            },
+            ..DeviceSlot::default()
+        };
+        let added = [Added {
+            uuid: "b".into(),
+            connector: "Virtual-2".into(),
+            before: vec![0],
+            wanted: (1280, 720, 60_000),
+            restore: Vec::new(),
+        }];
+        // A device plugged in before it meanwhile: it is the third now.
+        let mut kde = Kde {
+            devices: vec![
+                slot("new", vec![(0, 1280, 720, 60_000)]),
+                slot("a", vec![(0, 1920, 1080, 60_000)]),
+                slot("b", vec![(0, 1920, 1080, 60_000)]),
+            ],
+            ..Kde::default()
+        };
+        assert_eq!(chosen(&kde, &added), None, "not listed yet");
+        kde.devices[2]
+            .device
+            .head
+            .modes
+            .push(slot("", vec![(1, 1280, 720, 59_855)]).device.head.modes[0].clone());
+        assert_eq!(chosen(&kde, &added), Some(vec![None, None, Some(1)]));
+        // Gone meanwhile: never listed.
+        kde.devices[2].removed = true;
+        assert_eq!(chosen(&kde, &added), None);
+    }
 
     #[test]
     fn the_new_mode_is_the_one_kwin_added_at_the_size_nearest_the_refresh() {

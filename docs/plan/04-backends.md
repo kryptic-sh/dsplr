@@ -242,10 +242,18 @@ As built:
   size, refresh and reduced blanking) then the new one, so none is deleted; the
   second, once the output lists a mode it did not before at the new size (the
   one nearest the refresh asked, since KWin makes the timings and so the refresh
-  itself), sets the layout at that mode object. KWin not listing it within
-  `REQUEST_TIMEOUT` is an error naming the output; the whole apply has
-  `kde::OPERATION_TIMEOUT`. A refresh that came out other than asked is a
-  difference the read-back reports. A revert sends the old layout, at its old
+  itself), sets the layout at that mode object. Each output is followed by its
+  uuid between the two, so one plugged in or out meanwhile shifts none. KWin not
+  listing it within `REQUEST_TIMEOUT` is an error naming the output. When the
+  layout is not applied (that, or KWin refusing it), the lists are sent back
+  without the new mode, so a failed attempt leaves none behind; if that fails
+  too, the error says the mode stays in KWin's list for the output. Every KDE
+  apply is bounded by `kde::OPERATION_TIMEOUT` (five `REQUEST_TIMEOUT`s: the
+  connection, the list, the new mode, the layout, the list put back), and the
+  revert watchdog counts that bound in, since which apply adds a mode is known
+  only once connected; so on KDE the watchdog waits longer than on wlroots for
+  every change. A refresh that came out other than asked is a difference the
+  read-back reports. A revert of a kept change sends the old layout, at its old
   mode, and the added mode stays listed, unused (KWin saves it with the rest).
   Read in the protocol XML of plasma-wayland-protocols v1.23.0; KWin's own
   handling is checked only by the KDE e2e, in CI.

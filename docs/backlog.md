@@ -363,9 +363,15 @@ milestone:
   refresh lands from the one asked (the e2e allows 1 Hz), whether it re-creates
   kept custom modes as new objects, and whether a configuration holding only
   mode lists is applied. The refresh KWin makes is reported as a read-back
-  difference rather than taken as asked, and a reverted custom mode stays in
-  KWin's list, unused: dsplr cannot remove one. Reduced blanking is always off
-  for a new mode; CVT timings are not offered for one.
+  difference rather than taken as asked, and a custom mode of a change reverted
+  after it was applied stays in KWin's list, unused: dsplr cannot remove one
+  (one whose layout was not applied is taken out again). Reduced blanking is
+  always off for a new mode; CVT timings are not offered for one. On management
+  versions 18 to 21 (no `add_cvt`), the custom modes KWin already lists go back
+  in each list sent by their size, the refresh KWin computed and reduced
+  blanking, so KWin makes their timings again from that refresh, which can move
+  it a little each time a list is sent; lists are sent only for an apply that
+  adds a mode, so the drift is per such apply, not per apply. Not observed.
 - **KWin before the device registry**: KWin offers devices only through
   `kde_output_device_registry_v2` (version 21 or later) in 6.8; older Plasma 6
   releases published each `kde_output_device_v2` as a global instead, which
