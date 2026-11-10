@@ -664,7 +664,11 @@ milestone:
   fallback is reported only when the user asked for that preset. Keeping the old
   file's rule where the live value is a fallback was considered and not built:
   it would also keep a rule the user changed on purpose. Not seen on a monitor
-  that can do HDR or 10 bits (CI's output is headless, without an EDID).
+  that can do HDR or 10 bits (CI's output is headless, without an EDID). The
+  comparison is against a fresh read at apply time, not the snapshot the edit
+  started from (`Backend::apply` is not given the flow's `current`), so a preset
+  another program changed in between is put back, as any other setting is, and a
+  `cm = "auto"` that resolves differently between the two is pinned.
 - **A profile asking a desktop-specific setting another desktop lacks is
   refused**: neutral values are dropped (`Layout::drop_neutral_unsupported`),
   others refused (exit `3`), so a Hyprland profile with `wide` or 10 bits, or a
@@ -679,7 +683,10 @@ milestone:
   as naming every output), since the saved rule merges onto it. Read line by
   line (`save::main_rules`): a call spelled `hl.monitor (`, one in a multi-line
   comment, one made in a loop or a function, and one in another file the config
-  requires are not seen, and there a value left out keeps that rule's.
+  requires are not seen, and there a value left out keeps that rule's. A call is
+  cut at its first `)`, even inside a string (`desc:Dell (U2720Q)`), which makes
+  it name every output (safe), and the first `output` text is taken, so a string
+  earlier in the call containing that word can pick the wrong name.
 - **The panel's overscan steps are a guess**: 0 to 10 % by one, then 15 and 20 %
   (`dsplr-core`'s `OVERSCANS`), plus the output's own value; KDE's own settings
   offer every percent. No `dsplr set` flag sets the primary output, overscan or
