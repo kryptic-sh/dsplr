@@ -33,10 +33,13 @@ pub enum MonitorNaming {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct MonitorsLua {
     pub layout: Layout,
-    /// The catch-all `hl.monitor({ output = "", … })` call for monitors the
-    /// file does not name, kept as its text, since its `preferred` and
-    /// `auto` values have no place in a `Layout`.
-    pub catch_all: Option<String>,
+    /// The catch-all `hl.monitor({ output = "", … })` calls for monitors the
+    /// file does not name, in file order, each kept as its text, since their
+    /// `preferred` and `auto` values have no place in a `Layout`. Every one
+    /// is kept, not only the last: Hyprland merges a rule onto the one
+    /// before it of the same name, field by field, so an earlier call's
+    /// fields still count where a later one leaves them out.
+    pub catch_alls: Vec<String>,
 }
 
 /// The description to name an entry's monitor by: only when it has a

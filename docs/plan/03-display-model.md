@@ -48,18 +48,21 @@ capability is present and the conversions for other desktops ignore it.
   EISA id directly; RandR has the EDID property.
 - **`Layout`** — the one struct. A list of **`OutputEntry`**s, each holding the
   hardware facts (`Output`) and the settings (`OutputState`) for one monitor,
-  plus layout-wide settings: the **fallback rule** for monitors not listed
-  (Hyprland's `output = ""` catch-all, sway's `output *`; not built), and
-  GNOME's `layout_mode` (`Layout::layout_mode`, built at M6: always named in a
-  GNOME snapshot, `logical` or `physical`; `None` on every other desktop and in
-  a file that does not name one, sized as `logical`. `dsplr apply` keeps the
-  desktop's mode unless the file names one and the desktop has modes, and a
-  change of mode is a difference the read-back reports and the confirm asks
-  about). `dsplr list --json`, the GUI, the profile store and every converter
-  use this same struct; `Snapshot` is a `Layout` read from the desktop plus its
-  serial, not a separate shape. Apply, test, persist and profiles all take a
-  whole `Layout`, never a single field, because every desktop applies a
-  configuration atomically.
+  plus layout-wide settings: GNOME's `layout_mode` (`Layout::layout_mode`, built
+  at M6: always named in a GNOME snapshot, `logical` or `physical`; `None` on
+  every other desktop and in a file that does not name one, sized as `logical`.
+  `dsplr apply` keeps the desktop's mode unless the file names one and the
+  desktop has modes, and a change of mode is a difference the read-back reports
+  and the confirm asks about). `dsplr list --json`, the GUI, the profile store
+  and every converter use this same struct; `Snapshot` is a `Layout` read from
+  the desktop plus its serial, not a separate shape. Apply, test, persist and
+  profiles all take a whole `Layout`, never a single field, because every
+  desktop applies a configuration atomically. The **fallback rule** for monitors
+  not listed (Hyprland's `output = ""` catch-all, sway's `output *`) is not a
+  `Layout` setting: no backend reports it live and profiles are applied live, so
+  it stays in the saved file, which `dsplr save` keeps as it is
+  ([05](05-persistence-and-profiles.md); [12](12-open-questions.md), question
+  11).
 - **`Output`** (hardware facts) — connector name, description, `OutputId`,
   physical size in mm, available `Mode`s. **Optional**, because a `Layout` read
   back from a config file (`monitors.lua`, a sway outputs file) knows a

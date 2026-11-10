@@ -122,8 +122,17 @@ pub fn save(
         rules: "output commands",
         first_wins: false,
         kept: kept_ids(&kept),
+        kept_catch_all: kept
+            .iter()
+            .any(|block| block.name == "*")
+            .then_some(KEPT_CATCH_ALL),
     })
 }
+
+/// What [`Saved::kept_catch_all`] says when the file had `output *`
+/// commands.
+const KEPT_CATCH_ALL: &str =
+    "its `output *` commands, which every output takes where its own block does not say otherwise";
 
 /// The outputs `kept` are for, each once, as the user would name them: not
 /// the catch-alls `*`, `-` and `--` (every output, the focused one), which
@@ -461,6 +470,7 @@ output "AOC Q27G4 SERIAL0000001" {
         assert_eq!(saved.include_line, "include outputs");
         assert_eq!(saved.rules, "output commands");
         assert!(saved.kept.is_empty());
+        assert_eq!(saved.kept_catch_all, None);
         assert_eq!(config.read(), with_header(LIVE_BODY, Comment::Hash));
         assert!(config.read().starts_with("# Managed by dsplr; "));
         assert_eq!(ownership(&config.read(), Comment::Hash), Ownership::Managed);
@@ -507,6 +517,11 @@ output "AOC Q27G4 SERIAL0000001" {
                 OutputId::Description("Dell Inc. U2720Q X1".into()),
             ],
             "* is carried but is no monitor of its own"
+        );
+        assert_eq!(
+            saved.kept_catch_all,
+            Some(super::KEPT_CATCH_ALL),
+            "and is said"
         );
         let text = config.read();
         let names: Vec<String> = read_outputs(&text)

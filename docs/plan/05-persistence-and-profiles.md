@@ -43,7 +43,15 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   `vrr` is written only when on or automatic, so a fullscreen-only rule that
   Hyprland reports as off is never overwritten.
 - The catch-all `hl.monitor({ output = "", mode = "preferred", … })` from the
-  template is preserved if present.
+  template is preserved if present: every such call of a file dsplr can read
+  (its own, nwg-displays', or one approved after a conflict), as its text and in
+  its order, since Hyprland merges same-name rules field by field and an earlier
+  call's fields count where a later one leaves them out. They go first in the
+  saved file. dsplr never writes one of its own, and says when it kept one
+  (`Saved::kept_catch_all`). A file dsplr cannot read carries nothing over,
+  catch-alls included, after `--force`. nwg-displays' `monitors.lua` (the
+  fixture in `dsplr-persist`) has none. This is the fallback rule plan 03 keeps
+  out of `Layout` ([12](12-open-questions.md), question 11).
 - Importing: an existing nwg-displays-generated `monitors.lua` is read as a
   starting point and replaced with a dsplr-managed one on first save, after a
   confirm.
@@ -107,11 +115,13 @@ the saved file.
 - A file in dsplr's own form (only `output` commands setting what dsplr writes,
   as blocks or on one line, with comments) keeps its commands for outputs not
   connected now, `*` included, written first so the saved blocks win on a
-  reload. A command naming a connected output by its connector **or** its
-  identifier is dropped, whichever name the new block uses, since at startup an
-  identifier's command would beat a saved block by connector. A file with
-  anything else (`bg`, `power`, `scale_filter`, `set $var`) cannot be carried
-  over and takes `--force`, as on Hyprland.
+  reload. dsplr says when it kept `*` commands, and never writes one of its own
+  (plan 03's fallback rule; [12](12-open-questions.md), question 11). A command
+  naming a connected output by its connector **or** its identifier is dropped,
+  whichever name the new block uses, since at startup an identifier's command
+  would beat a saved block by connector. A file with anything else (`bg`,
+  `power`, `scale_filter`, `set $var`) cannot be carried over and takes
+  `--force`, as on Hyprland.
 - After saving, dsplr says when the main config's own `output` commands win over
   the saved file, each case with its own fix: one after the `include` setting a
   connected output (by connector, identifier or `*`) wins on a reload, and
@@ -166,6 +176,8 @@ second niri on the saved file, and by `niri validate` on what was written.
   its revert then goes back at runtime only, the file keeping the unconfirmed
   layout until it is saved again, as on sway; on niri the file is also what any
   later change to that output's node reloads.
+- niri has no rule for outputs a config does not name: a node names one output,
+  whole (below), so there is no catch-all to keep or write.
 - Names: niri matches a node by connector or by `"Make Model Serial"` (`Unknown`
   for a part not reported, none at all when all three are missing), each whole
   and ignoring ASCII case (`"smithay winit unknown"` named the nested `winit`

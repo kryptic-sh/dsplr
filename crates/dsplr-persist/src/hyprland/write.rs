@@ -97,8 +97,9 @@ pub fn monitor_call(
 }
 
 /// Every call for `file`, in the order Hyprland should read them: the
-/// catch-all first (it only applies to monitors no other rule names, so its
-/// place does not matter), then each entry in layout order.
+/// catch-alls first, in their order (they only apply to monitors no other
+/// rule names, so their place among the others does not matter), then each
+/// entry in layout order.
 ///
 /// # Errors
 ///
@@ -111,7 +112,7 @@ pub fn monitor_calls(file: &MonitorsLua, naming: MonitorNaming) -> Result<String
         .map(|entry| monitor_call(&file.layout, entry, naming))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(file
-        .catch_all
+        .catch_alls
         .iter()
         .map(|catch_all| format!("{}\n", catch_all.trim_end()))
         .chain(calls)
@@ -234,7 +235,7 @@ mod tests {
     fn the_owners_layout_writes_by_description_by_default() {
         let file = MonitorsLua {
             layout: owners_layout(),
-            catch_all: None,
+            catch_alls: Vec::new(),
         };
         assert_eq!(
             monitor_calls(&file, MonitorNaming::default()).unwrap(),
@@ -260,10 +261,10 @@ hl.monitor({
     fn the_catch_all_goes_first_and_connector_naming_names_ports() {
         let file = MonitorsLua {
             layout: owners_layout(),
-            catch_all: Some(
+            catch_alls: vec![
                 r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#
                     .into(),
-            ),
+            ],
         };
         let text = monitor_calls(&file, MonitorNaming::Connector).unwrap();
         assert!(

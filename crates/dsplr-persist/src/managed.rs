@@ -270,6 +270,10 @@ pub struct Saved {
     /// Outputs the file named before that are not connected now, whose
     /// settings were carried over as they were.
     pub kept: Vec<OutputId>,
+    /// What the file kept of its rule for monitors it does not name (its
+    /// catch-all), carried over as it was, said as the user is told it;
+    /// `None` when it had none, or the desktop has no such rule (niri).
+    pub kept_catch_all: Option<&'static str>,
 }
 
 const MARKER: &str = "Managed by dsplr";

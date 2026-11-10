@@ -73,7 +73,7 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
         line: error.line,
         kind: ReadErrorKind::Syntax(error.message),
     })?;
-    let mut catch_all = None;
+    let mut catch_alls = Vec::new();
     let mut rules: Vec<(String, usize, Rule)> = Vec::new();
     for call in calls {
         let Some((output, line)) = call
@@ -92,7 +92,7 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
             return Err(invalid("output", &output, line));
         };
         if output.is_empty() {
-            catch_all = Some(call.text);
+            catch_alls.push(call.text);
             continue;
         }
         let index = match rules.iter().position(|(name, ..)| *name == output) {
@@ -134,7 +134,7 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
             entries,
             ..Default::default()
         },
-        catch_all,
+        catch_alls,
     })
 }
 
@@ -376,7 +376,7 @@ mod tests {
                     ],
                     ..Default::default()
                 },
-                catch_all: None,
+                catch_alls: Vec::new(),
             }
         );
     }
@@ -422,17 +422,18 @@ mod tests {
                 ],
                 ..Default::default()
             },
-            catch_all: Some(
+            catch_alls: vec![
                 r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#
                     .into(),
-            ),
+                r#"hl.monitor({ output = "", position = "auto-right" })"#.into(),
+            ],
         };
         let text = monitor_calls(&file, MonitorNaming::Description).unwrap();
         assert_eq!(read_monitors_lua(&text).unwrap(), file);
     }
 
     #[test]
-    fn later_calls_for_the_same_output_win_field_by_field() {
+    fn later_calls_for_the_same_output_win_field_by_field_and_every_catch_all_is_kept() {
         let file = read_monitors_lua(
             r#"
 hl.monitor({ output = "DP-1", mode = "1920x1080@60", position = "0x0", scale = 1, vrr = 1 })
@@ -448,9 +449,14 @@ hl.monitor({ output = "", mode = "highres" })
             (state.x, state.adaptive_sync),
             (1920, Some(AdaptiveSync::On))
         );
+        // Hyprland merges them too, so the first's fields still count where
+        // the second leaves them out: both are kept, in order.
         assert_eq!(
-            file.catch_all.as_deref(),
-            Some(r#"hl.monitor({ output = "", mode = "highres" })"#)
+            file.catch_alls,
+            [
+                r#"hl.monitor({ output = "", mode = "preferred" })"#,
+                r#"hl.monitor({ output = "", mode = "highres" })"#
+            ]
         );
     }
 

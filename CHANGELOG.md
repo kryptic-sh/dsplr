@@ -283,14 +283,16 @@ and this project adheres to
   beside `disabled = true`), is not overwritten without `--force`; one another
   tool wrote (nwg-displays') is replaced after a yes on the terminal or `--yes`,
   and with no terminal and no `--yes` nothing is saved. Each refusal shows the
-  diff of what saving would change. The old file's catch-all `output = ""` rule,
-  its rules for monitors not connected now, and its adaptive sync, bit depth and
-  colour preset (which Hyprland does not report) are carried into the new file;
-  the kept rules go before the saved ones, so they never win over them, and
-  within each a rule whose description starts another's (`AOC Q27G4 SER1`,
-  `AOC Q27G4 SER12`) goes first, since Hyprland uses the last rule matching a
-  monitor and matches a description by its start. A `monitors.lua` that is a
-  symbolic link is refused, naming its target, rather than replaced with a file.
+  diff of what saving would change. The old file's catch-all `output = ""` calls
+  (every one, in order, since Hyprland merges them; dsplr says it kept them and
+  never writes one of its own), its rules for monitors not connected now, and
+  its adaptive sync, bit depth and colour preset (which Hyprland does not
+  report) are carried into the new file; the kept rules go before the saved
+  ones, so they never win over them, and within each a rule whose description
+  starts another's (`AOC Q27G4 SER1`, `AOC Q27G4 SER12`) goes first, since
+  Hyprland uses the last rule matching a monitor and matches a description by
+  its start. A `monitors.lua` that is a symbolic link is refused, naming its
+  target, rather than replaced with a file.
 - Reading a `monitors.lua` refuses `vrr = 3` and any setting beside
   `disabled = true` instead of reading them as `vrr = 2` and dropping the
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under
@@ -322,15 +324,16 @@ and this project adheres to
   output by connector there), which is reported even before the config includes
   the file. As on Hyprland, a file edited by hand needs `--force`, another
   tool's needs a yes or `--yes`, a link is refused, and every refusal shows the
-  diff; a file in dsplr's form keeps its commands for outputs not connected now,
-  while one with settings dsplr does not write (`bg`, `power`, `scale_filter`)
-  needs `--force`. A layout with a mirror, which sway has not, and saving on a
-  wlroots compositor other than sway are refused with exit `3` before anything
-  is written; it counts as sway only when the socket `SWAYSOCK` names answers
-  sway's IPC and is served by the same process as the Wayland socket, so a stale
-  `SWAYSOCK` under another compositor, or one a compositor nested in sway
-  inherited, does not. That socket is asked only by `dsplr save` and
-  `dsplr backend`, so one that hangs delays no other command.
+  diff; a file in dsplr's form keeps its commands for outputs not connected now
+  and its `output *` commands (said when kept), while one with settings dsplr
+  does not write (`bg`, `power`, `scale_filter`) needs `--force`. A layout with
+  a mirror, which sway has not, and saving on a wlroots compositor other than
+  sway are refused with exit `3` before anything is written; it counts as sway
+  only when the socket `SWAYSOCK` names answers sway's IPC and is served by the
+  same process as the Wayland socket, so a stale `SWAYSOCK` under another
+  compositor, or one a compositor nested in sway inherited, does not. That
+  socket is asked only by `dsplr save` and `dsplr backend`, so one that hangs
+  delays no other command.
 - `dsplr save` makes the current layout last on niri: it writes a dsplr-managed
   `outputs.kdl` beside the `config.kdl` niri reads (`NIRI_CONFIG`, else
   `$XDG_CONFIG_HOME/niri` or `~/.config/niri`, as niri looks), one

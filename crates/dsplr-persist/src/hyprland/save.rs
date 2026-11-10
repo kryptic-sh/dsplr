@@ -127,8 +127,13 @@ pub fn save(
         rules: "hl.monitor calls",
         first_wins: false,
         kept: kept.into_iter().map(|entry| entry.id).collect(),
+        kept_catch_all: (!file.catch_alls.is_empty()).then_some(KEPT_CATCH_ALL),
     })
 }
+
+/// What [`Saved::kept_catch_all`] says when the file had a catch-all.
+const KEPT_CATCH_ALL: &str =
+    "its catch-all hl.monitor({ output = \"\" }) rule, which monitors it does not name take";
 
 fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
     MonitorsLua {
@@ -136,7 +141,7 @@ fn with_nothing_kept(layout: &Layout) -> MonitorsLua {
             entries: in_hyprland_order(layout.entries.clone()),
             ..Default::default()
         },
-        catch_all: None,
+        catch_alls: Vec::new(),
     }
 }
 
@@ -221,7 +226,7 @@ fn merged(layout: &Layout, old: &MonitorsLua) -> (MonitorsLua, Vec<OutputEntry>)
             entries,
             ..Default::default()
         },
-        catch_all: old.catch_all.clone(),
+        catch_alls: old.catch_alls.clone(),
     };
     (file, kept)
 }
@@ -539,13 +544,12 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         fs::write(config.monitors(), old).unwrap();
         let saved = config.save(&live(), Some(old)).unwrap();
         assert_eq!(saved.kept, [OutputId::Connector("DP-9".into())]);
+        assert_eq!(saved.kept_catch_all, Some(super::KEPT_CATCH_ALL));
 
         let file = read_monitors_lua(&config.read()).unwrap();
         assert_eq!(
-            file.catch_all.as_deref(),
-            Some(
-                r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#
-            )
+            file.catch_alls,
+            [r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#]
         );
         let names: Vec<String> = file
             .layout
@@ -614,13 +618,15 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
     }
 
     #[test]
-    fn the_catch_all_of_a_file_dsplr_wrote_is_kept_on_every_save() {
+    fn the_catch_alls_of_a_file_dsplr_wrote_are_kept_on_every_save() {
         let config = Config::new("");
-        let catch_all =
-            r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#;
+        let catch_alls = [
+            r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#,
+            r#"hl.monitor({ output = "", scale = 2 })"#,
+        ];
         let first = MonitorsLua {
             layout: live(),
-            catch_all: Some(catch_all.into()),
+            catch_alls: catch_alls.map(str::to_owned).into(),
         };
         let text = with_header(
             &monitor_calls(&first, MonitorNaming::Description).unwrap(),
@@ -631,7 +637,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         moved.entries[1].state.y = 200;
         config.save(&moved, None).unwrap();
         let file = read_monitors_lua(&config.read()).unwrap();
-        assert_eq!(file.catch_all.as_deref(), Some(catch_all));
+        assert_eq!(file.catch_alls, catch_alls);
         assert_eq!(file.layout.entries[1].state.y, 200);
     }
 
@@ -641,9 +647,10 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         let mut layout = live();
         layout.entries[1].state.scale = 1.25;
         layout.entries[1].state.x = -2048;
-        config.save(&layout, None).unwrap();
+        let saved = config.save(&layout, None).unwrap();
+        assert_eq!(saved.kept_catch_all, None, "none is made up");
         let file = read_monitors_lua(&config.read()).unwrap();
-        assert_eq!(file.catch_all, None);
+        assert!(file.catch_alls.is_empty());
         let entries = &file.layout.entries;
         assert_eq!(entries.len(), 2);
         for (read, saved) in entries.iter().zip(&layout.entries) {
@@ -879,7 +886,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
                 &monitor_calls(
                     &MonitorsLua {
                         layout: old,
-                        catch_all: None,
+                        catch_alls: Vec::new(),
                     },
                     MonitorNaming::Description,
                 )

@@ -174,7 +174,7 @@ pub fn monitor_rules(layout: &Layout) -> Result<String, Error> {
     Ok(monitor_calls(
         &MonitorsLua {
             layout: layout.clone(),
-            catch_all: None,
+            catch_alls: Vec::new(),
         },
         MonitorNaming::Connector,
     )?)

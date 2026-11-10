@@ -267,6 +267,16 @@ milestone:
 
 ## Open work in the Linux-owned crates
 
+- **The fallback rule is not a `Layout` field** (plan 12, question 11, for the
+  owner): `dsplr save` keeps every Hyprland `output = ""` call and sway
+  `output *` command of a file it can read, says so (`Saved::kept_catch_all`),
+  and never writes one; `dsplr list`, the GUI and profiles cannot show or set
+  one. Building `Layout::fallback` is the alternative there. Verified by unit
+  tests only (`dsplr-persist`'s Hyprland reader and saver, sway's saver, the
+  CLI's message); no e2e saves over a file with a catch-all. niri's lack of a
+  catch-all is from plan 05's account of how niri 26.04 matches names, not a
+  test of an `output "*"` node. KDE and GNOME keep their own configs, which
+  dsplr does not write.
 - **The KDE e2e has not run anywhere** (`crates/dsplr-backend/tests/kwin_e2e.rs`
   and `apps/dsplr/tests/kwin_e2e.rs`, under `tests/e2e/headless-kwin.sh`): the
   owner's machine has no `kwin_wayland`, so their first run is CI's `kwin`
@@ -480,6 +490,13 @@ milestone:
   `pcall(require, "monitors")`, a require inside another required file, a call
   written `hl.monitor (`, or text inside a multi-line `--[[ ]]` comment is
   misjudged, and only the message printed after the save is wrong.
+- **A Hyprland save drops comments outside the calls it keeps**: a kept rule or
+  catch-all is its source text from `hl.monitor` to the closing `)`
+  (`lua::Call::text`), so comments inside a call survive and a comment on the
+  lines above it does not. A catch-all written other than with an `output`
+  field, or with Lua's call-without-parentheses form, makes the file unreadable
+  (`read_monitors_lua`), so replacing it takes `--force` rather than dropping it
+  silently.
 - **What `dsplr save` cannot see on sway**: `sway --config`, and
   `/etc/sway/config` (with no config of the user's own, saving fails and says to
   copy it). It reads its own environment, not sway's. Whether the config loads

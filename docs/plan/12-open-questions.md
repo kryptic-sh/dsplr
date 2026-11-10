@@ -51,3 +51,19 @@ pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
     is profiles that hold "unset" and "preferred", resolved at restore time,
     which follows kanshi exactly but changes `OutputState` and the JSON form
     every writer and backend uses (`docs/backlog.md`).
+11. **The fallback rule for monitors not listed.** Plan 03 puts it in `Layout`.
+    Default (built, after M8): it stays in the saved file, kept as it is, and is
+    not a `Layout` field. No backend reports one live (Hyprland's catch-all,
+    sway's `output *` and the rest are config, not output state), no live apply
+    but Hyprland's `eval` could set one, and profiles are applied live, so a
+    field would have no producer but the file readers and no consumer but the
+    writers, which already keep it. `dsplr save` keeps every Hyprland
+    `output = ""` call and every sway `output *` command of a file it can read,
+    never writes one of its own, and says it kept them; niri, KDE and GNOME have
+    none to keep. The alternative is a `Layout::fallback` (an optional mode rule
+    such as preferred or highest, a scale, enabled), read from those files,
+    carried in profiles and the JSON form as an optional field, edited in the
+    GUI and written per desktop (`Unsupported` on niri, KDE and GNOME, and on
+    sway for a mode rule other than preferred, which sway cannot say without a
+    size). Worth it once something should set the rule for the user rather than
+    keep theirs.

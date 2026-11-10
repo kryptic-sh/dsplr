@@ -164,6 +164,7 @@ pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
             .iter()
             .map(|id| format!("kept the settings for {id}, which is not connected now")),
     );
+    messages.extend(saved.kept_catch_all.map(|what| format!("kept {what}")));
     messages.extend(include_note(saved));
     messages
 }
@@ -248,7 +249,25 @@ mod tests {
             first_wins: false,
             included,
             kept: Vec::new(),
+            kept_catch_all: None,
         }
+    }
+
+    #[test]
+    fn a_kept_catch_all_is_said_after_the_kept_outputs() {
+        let saved = Saved {
+            kept: vec![dsplr_model::OutputId::Connector("DP-9".into())],
+            kept_catch_all: Some("its catch-all rule"),
+            ..saved(false, true)
+        };
+        let messages = super::saved_messages(&dsplr_backend::Persisted::File(saved));
+        assert_eq!(
+            messages[1..3],
+            [
+                "kept the settings for DP-9, which is not connected now",
+                "kept its catch-all rule"
+            ]
+        );
     }
 
     #[test]

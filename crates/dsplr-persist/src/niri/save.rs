@@ -138,6 +138,8 @@ pub fn save(
         rules: "output nodes",
         first_wins: true,
         kept: kept_ids(kept.iter().map(|node| node.name.as_str())),
+        // niri has no rule for every output: a node names one whole.
+        kept_catch_all: None,
     })
 }
 
