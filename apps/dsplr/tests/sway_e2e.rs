@@ -131,6 +131,7 @@ async fn dsplr_applies_sets_and_reverts_on_sway() {
     set_edits_one_output(&backend).await;
     profiles_are_saved_picked_and_restored(&backend).await;
     kanshi_profiles_are_imported_and_restored(&backend).await;
+    autorandr_profiles_are_imported_and_restored(&backend, &runtime).await;
     watch_restores_profiles_as_outputs_come_and_go(&runtime).await;
     backend_flag_uses_the_one_named_or_says_why_not(&backend).await;
     save_writes_outputs_and_asks_before_replacing_one(&backend).await;
@@ -1274,6 +1275,97 @@ async fn save_writes_outputs_and_asks_before_replacing_one(backend: &Backend) {
         .await
         .shows(&start)
         .await;
+}
+
+/// autorandr's profiles, where autorandr finds them in the harness's
+/// private `XDG_CONFIG_HOME`, written as autorandr writes them for outputs
+/// with no EDID: the profile dsplr can hold restores, and the scaled one is
+/// skipped.
+async fn autorandr_profiles_are_imported_and_restored(backend: &Backend, runtime: &Path) {
+    let start = backend.snapshot().await.expect("snapshot");
+    let snapshot = || async { backend.snapshot().await.expect("snapshot") };
+    let autorandr = config_home().join("autorandr");
+    let write = |profile: &str, config: &str, setup: &str| {
+        let dir = autorandr.join(profile);
+        std::fs::create_dir_all(&dir).expect("the profile's directory made");
+        std::fs::write(dir.join("config"), config).expect("config written");
+        std::fs::write(dir.join("setup"), setup).expect("setup written");
+    };
+    // As autorandr's `output_configuration` and `output_setup` write them,
+    // with autorandr's `--CONNECTED-BUT-EDID-UNAVAILABLE-` for an output it
+    // read no EDID for; headless outputs have no rate, so none is given.
+    let setup = "HEADLESS-1 --CONNECTED-BUT-EDID-UNAVAILABLE--HEADLESS-1\n\
+                 HEADLESS-2 --CONNECTED-BUT-EDID-UNAVAILABLE--HEADLESS-2\n";
+    write(
+        "adock",
+        "output HEADLESS-1\ncrtc 0\nmode 1280x720\npos 0x0\n\
+         output HEADLESS-2\ncrtc 1\ngamma 1.0:0.9:0.9\nmode 1920x1080\npos 1280x300\nrotate left\n",
+        setup,
+    );
+    write(
+        "scaled",
+        "output HEADLESS-1\nmode 1280x720\npos 0x0\nscale 2x2\n",
+        setup,
+    );
+
+    // Found as autorandr finds them: its system directory made one that
+    // does not exist, so the machine's own cannot count.
+    let output = Command::new(dsplr_bin())
+        .args(["profile", "import", "autorandr"])
+        .env("XDG_CONFIG_DIRS", runtime.join("no-system-autorandr"))
+        .stdin(Stdio::null())
+        .output()
+        .expect("dsplr runs");
+    let (code, text) = exit_and_output(&output);
+    assert_eq!(code, Some(1), "the scaled profile is skipped: {text}");
+    for said in [
+        "autorandr's \"adock\"",
+        "saved profile \"adock\"",
+        "HEADLESS-1: autorandr read no EDID for it; named by its connector here",
+        "HEADLESS-1: 1280x720 names no rate",
+        "HEADLESS-2: `crtc 1`, `gamma 1.0:0.9:0.9` not imported",
+        "autorandr's \"scaled\"",
+        "skipped: HEADLESS-1: `scale 2x2` is a RandR transform dsplr does not set",
+    ] {
+        assert!(text.contains(said), "{said:?} not in:\n{text}");
+    }
+
+    let (code, text) = dsplr(&["restore", "adock", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let expected = edited(&start, |layout| {
+        let state = &mut entry_mut(layout, "HEADLESS-2").state;
+        (state.x, state.y) = (1280, 300);
+        state.transform = Transform::Rotate90;
+    });
+    assert_eq!(snapshot().await, expected);
+    revert_to(backend, &start).await;
+
+    // Named, one profile's directory: kept unless --force.
+    let adock = autorandr.join("adock");
+    let path = adock.to_str().expect("a UTF-8 path");
+    let (code, text) = dsplr(&["profile", "import", "autorandr", path]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("--force replaces it"), "{text}");
+    let (code, text) = dsplr(&["profile", "import", "autorandr", path, "--force"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("replaces the existing profile \"adock\""),
+        "{text}"
+    );
+
+    // A file is not where autorandr keeps profiles.
+    let config = adock.join("config");
+    let (code, text) = dsplr(&[
+        "profile",
+        "import",
+        "autorandr",
+        config.to_str().expect("a UTF-8 path"),
+    ]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("is a file; name a directory"), "{text}");
+
+    let (code, text) = dsplr(&["profile", "rm", "adock"]);
+    assert_eq!(code, Some(0), "{text}");
 }
 
 /// kanshi's config, where kanshi finds it in the harness's private

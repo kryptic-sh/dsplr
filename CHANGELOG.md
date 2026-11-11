@@ -65,6 +65,31 @@ and this project adheres to
   description glob other than a trailing `*`) is skipped with why, `exec` is not
   run, and a profile already in the store is replaced only with `--force`;
   either makes the exit `1`.
+- `dsplr profile import autorandr [PATH] [--force]` imports autorandr's profiles
+  into dsplr's store, from every directory autorandr loads them from (each of
+  `$XDG_CONFIG_DIRS` with `/autorandr`, then `~/.autorandr`, else
+  `$XDG_CONFIG_HOME/autorandr`) unless a directory of profiles, or one
+  profile's, is given; a link to a profile kept elsewhere is imported, one that
+  autorandr reads as another name for a profile is not. Each output is named by
+  the EDID in its `setup` line (its make, model and serial, the make as the
+  EDID's three-letter PNP code), or by its connector when the EDID gives no
+  serial or there is none to read (autorandr's
+  `--CONNECTED-BUT-EDID-UNAVAILABLE--OUTPUT`, a `*` pattern, an older
+  autorandr's MD5), which is said. Until dsplr maps PNP codes to the company
+  names wlroots and Hyprland report, a profile naming a monitor by its EDID does
+  not match it there; it matches where the make is the PNP code (GNOME's Mutter
+  reports it so, as will dsplr's coming X11 backend). An output named by its
+  connector carries the X driver's name (`HDMI-1`, `HDMI1`, `HDMI-A-0`), which a
+  Wayland desktop may name otherwise (`HDMI-A-1`), so such a profile matches
+  there only where the names agree. `mode`, `rate`, `pos`, `rotate` and
+  `reflect`, `primary`, `off` and `same-as` are taken, and outputs autorandr
+  puts at one place become mirrors; `crtc`, `gamma`, `panning`, `filter`,
+  properties and any other option are left out, said per output; a `scale` or
+  `transform` other than 1, a relative position or `auto` skips the profile with
+  why, as does anything that makes autorandr fail to load its profiles (it then
+  loads none; dsplr skips just that one). Hook scripts are not run, and a
+  profile already in the store is replaced only with `--force`; a skipped or
+  unwritten profile makes the exit `1`.
 - `dsplr watch`, the hotplug profile daemon: it stays running and, each time the
   set of connected outputs changes (and once when it starts), applies the
   profile `dsplr restore` would pick for them, kept without asking as

@@ -470,6 +470,67 @@ whatever started it, usually the compositor), and said.
 - Exit `0` when every kanshi profile was imported, `1` when one was skipped or
   not written.
 
-Importing autorandr's profiles waits for M7: they are X11 configs, outputs named
-by RandR's names and monitors fingerprinted by raw EDID, which dsplr's
-identities need the EDID parser and the `Randr` backend for (`docs/backlog.md`).
+## Importing autorandr profiles
+
+`dsplr profile import autorandr [PATH] [--force]` (M8,
+`dsplr_persist::autorandr`) reads autorandr's profiles as autorandr 1.15 does
+(`autorandr.py`, commit `0855315d`; only the format is followed, none of its GPL
+code is taken): every directory it loads profiles from, in its order, a later
+one's profile replacing an earlier one's of the same name (each of
+`$XDG_CONFIG_DIRS`, `/etc/xdg` when unset, with `/autorandr`; then
+`~/.autorandr` when it exists, else the config home's `autorandr`), or the
+directory given, which may also be one profile's (a file is refused). autorandr
+takes a relative directory as it is, so an empty `XDG_CONFIG_DIRS` has it read
+`./autorandr`; dsplr ignores relative entries, as its other lookups and the XDG
+spec do, so an empty one gives no system directory, and the config home is
+dsplr's own (`$XDG_CONFIG_HOME` when absolute, else `~/.config`).
+
+A profile is a directory holding `config` and `setup`. A link in a profile
+directory is a profile like any other, so one a dotfile manager made to a
+profile kept elsewhere is imported; but a link whose target, as written, names a
+loaded profile is another name for it to autorandr, and is not imported (said);
+one naming a built-in profile leads to nothing to import. autorandr loads no
+profile at all when one of them has a `setup` line not of two words, a `config`
+line before its first `output` line or one of only whitespace inside a block, or
+an output on with no `setup` line; dsplr skips just that profile, with why, and
+imports the rest, deliberately.
+
+- Each profile becomes a dsplr profile of its directory's name, or one made from
+  it (said), as the kanshi import makes names.
+- Each output is named by the EDID its `setup` line holds (`dsplr_model::edid`):
+  the monitor's make, model and serial when it has a serial, else its connector.
+  The connector names it too when there is no EDID to read (autorandr's
+  `--CONNECTED-BUT-EDID-UNAVAILABLE--OUTPUT`, an EDID pattern with a `*`, an
+  older autorandr's MD5 of the EDID, bytes that are not one); each such is said.
+  The make is the EDID's PNP code, so until make normalisation lands
+  (`docs/backlog.md`) such a profile does not match the monitor on wlroots
+  compositors or Hyprland, which report a company name; it matches where the
+  make is the PNP code (Mutter, and the coming `Randr` backend).
+- An output named by its connector carries the X driver's name for it (`HDMI-1`
+  from modesetting, `HDMI1` from intel, `HDMI-A-0` from amdgpu), which need not
+  be the name a Wayland desktop gives the same port (`HDMI-A-1`), so such a
+  profile matches there only where the names agree (`docs/backlog.md`).
+- `mode` (its leading `WxH`; a longer mode name is said), `rate`, `pos`,
+  `rotate` and `reflect` (into a `Transform` as the RandR planner sets them
+  back: `left` is `Rotate90`, `reflect x` is flipped, `reflect y` is flipped
+  half a turn further), `primary` and `off` are taken. `same-as` makes a mirror
+  on its source, a chain followed to the source at its end, as xrandr's
+  `set_positions` places each; one naming an output that is off goes to 0,0, as
+  xrandr puts it, and is no mirror (said). Outputs at one position become a
+  mirror of the first there (said). A mode without a rate takes the highest rate
+  the output lists at that size when it is connected under that name, said, and
+  skips the profile when it is not.
+- What a layout has no place for (`crtc`, `gamma`, `panning`, `filter`, `dpi`,
+  `x-prop-*` properties, any other option) is left out, said per output;
+  xrandr's defaults autorandr leaves out anyway (`panning 0x0`,
+  `gamma 1.0:1.0:1.0`, `scale 1x1`, the identity `transform`) say nothing. What
+  would put the outputs elsewhere than autorandr puts them (a `scale` or
+  `transform` other than 1, `left-of` and the other relative positions, `auto`,
+  `preferred`, `scale-from`) skips the profile, with why.
+- An output `off` with no `setup` line is dropped, as autorandr drops it, and
+  said. The hook scripts autorandr would run (`block`, `preswitch`,
+  `postswitch`, `postsave`, `predetect`, and the files in their `.d`
+  directories, where they are executable), in a profile's directory or in
+  autorandr's own directories, are not run, and said.
+- A profile already in the store is replaced only with `--force`; the exit is
+  `0` when every profile was imported, `1` when one was skipped or not written.

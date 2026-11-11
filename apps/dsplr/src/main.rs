@@ -166,7 +166,7 @@ enum Command {
     /// none, 1 where no window can be opened.
     Identify,
     /// List, show and remove the profiles `dsplr save --profile` saves, and
-    /// import kanshi's.
+    /// import kanshi's or autorandr's.
     Profile {
         #[command(subcommand)]
         command: ProfileCommand,
@@ -198,9 +198,12 @@ enum ProfileCommand {
     Import {
         /// The tool whose profiles to import.
         from: ImportFrom,
-        /// Its config file; kanshi's own lookup when left out
-        /// (`$XDG_CONFIG_HOME/kanshi/config`, else
-        /// `~/.config/kanshi/config`).
+        /// Where its profiles are, the tool's own lookup when left out.
+        /// kanshi: its config file (`$XDG_CONFIG_HOME/kanshi/config`, else
+        /// `~/.config/kanshi/config`). autorandr: a directory of profiles,
+        /// or one profile's (each of `$XDG_CONFIG_DIRS`, default `/etc/xdg`,
+        /// with `/autorandr`; then `~/.autorandr`, else
+        /// `$XDG_CONFIG_HOME/autorandr`).
         path: Option<PathBuf>,
         /// Replace a profile of the same name in the store.
         #[arg(long)]
@@ -212,6 +215,7 @@ enum ProfileCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum ImportFrom {
     Kanshi,
+    Autorandr,
 }
 
 /// The flags of every command that changes the displays through the confirm
@@ -343,6 +347,11 @@ async fn run(command: Command) -> Exit {
                 path,
                 force,
             } => profile::import_kanshi(path, force).await,
+            ProfileCommand::Import {
+                from: ImportFrom::Autorandr,
+                path,
+                force,
+            } => profile::import_autorandr(path, force).await,
         },
     }
 }
@@ -689,7 +698,18 @@ mod tests {
                 command: ProfileCommand::Import { ref path, force: true, .. }
             }) if path.as_deref() == Some(std::path::Path::new("/k/config"))
         ));
-        assert!(Cli::try_parse_from(["dsplr", "profile", "import", "autorandr"]).is_err());
+        let cli = Cli::try_parse_from(["dsplr", "profile", "import", "autorandr"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Profile {
+                command: ProfileCommand::Import {
+                    from: ImportFrom::Autorandr,
+                    path: None,
+                    force: false
+                }
+            })
+        ));
+        assert!(Cli::try_parse_from(["dsplr", "profile", "import", "xrandr"]).is_err());
     }
 
     #[test]

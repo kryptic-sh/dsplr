@@ -1,7 +1,7 @@
 //! dsplr's profile store from the command line
 //! (`docs/plan/05-persistence-and-profiles.md`, "dsplr's profile store"):
 //! `dsplr save --profile NAME`, `dsplr restore [NAME]`,
-//! `dsplr profile list|show|rm`, and `dsplr profile import kanshi`.
+//! `dsplr profile list|show|rm`, and `dsplr profile import kanshi|autorandr`.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -106,24 +106,7 @@ pub async fn import_kanshi(path: Option<PathBuf>, force: bool) -> Exit {
     for note in &read.notes {
         eprintln!("dsplr: {note}");
     }
-    let live = match crate::detection().await.backend {
-        Some(backend) => match backend.snapshot().await {
-            Ok(layout) => Some(layout),
-            Err(error) => {
-                eprintln!(
-                    "dsplr: cannot read the displays from {} ({error}), so nothing kanshi leaves to an output is taken from it",
-                    backend.name()
-                );
-                None
-            }
-        },
-        None => {
-            eprintln!(
-                "dsplr: no desktop found, so nothing kanshi leaves to an output is taken from it"
-            );
-            None
-        }
-    };
+    let live = live("kanshi").await;
     let dir = match store() {
         Ok(dir) => dir,
         Err(exit) => return exit,
@@ -133,15 +116,100 @@ pub async fn import_kanshi(path: Option<PathBuf>, force: bool) -> Exit {
         eprintln!("dsplr: {} has no profiles", path.display());
         return Exit::Success;
     }
+    store_imported("kanshi", &dir, imported, skipped, force)
+}
+
+/// `dsplr profile import autorandr [PATH]`: autorandr's profiles into the
+/// store (`docs/plan/05-persistence-and-profiles.md`, "Importing autorandr
+/// profiles"), from `PATH` (a directory of profiles, or one profile's) or
+/// from every directory autorandr loads profiles from. As the kanshi
+/// import: the displays are read for what autorandr leaves to an output, a
+/// profile of the same name in the store is replaced only with `force`,
+/// and the exit is `0` when every profile was imported, else `1`.
+pub async fn import_autorandr(path: Option<PathBuf>, force: bool) -> Exit {
+    use dsplr_persist::autorandr;
+
+    let dirs = match path {
+        Some(path) if path.is_file() => {
+            eprintln!(
+                "dsplr: {} is a file; name a directory of autorandr's profiles, or one profile's (holding config and setup)",
+                path.display()
+            );
+            return Exit::Failure;
+        }
+        Some(path) => vec![path],
+        None => autorandr::default_dirs(|name| std::env::var_os(name)),
+    };
+    let read = match &dirs[..] {
+        [dir] if autorandr::is_profile(dir) => autorandr::read_one(dir),
+        dirs => match autorandr::read(dirs) {
+            Ok(read) => read,
+            Err(error) => {
+                eprintln!("dsplr: cannot import autorandr's profiles: {error}");
+                return Exit::Failure;
+            }
+        },
+    };
+    for note in &read.notes {
+        eprintln!("dsplr: {note}");
+    }
+    let live = live("autorandr").await;
+    let dir = match store() {
+        Ok(dir) => dir,
+        Err(exit) => return exit,
+    };
+    let (imported, skipped) = autorandr::import(&read, live.as_ref());
+    if imported.is_empty() && skipped.is_empty() {
+        let dirs: Vec<String> = dirs.iter().map(|dir| dir.display().to_string()).collect();
+        eprintln!("dsplr: no autorandr profiles in {}", dirs.join(", "));
+        return Exit::Success;
+    }
+    store_imported("autorandr", &dir, imported, skipped, force)
+}
+
+/// The desktop's outputs now, for what `tool` leaves to an output, or
+/// `None`, said, when there is no desktop or it cannot be read.
+async fn live(tool: &str) -> Option<Layout> {
+    match crate::detection().await.backend {
+        Some(backend) => match backend.snapshot().await {
+            Ok(layout) => Some(layout),
+            Err(error) => {
+                eprintln!(
+                    "dsplr: cannot read the displays from {} ({error}), so nothing {tool} leaves to an output is taken from it",
+                    backend.name()
+                );
+                None
+            }
+        },
+        None => {
+            eprintln!(
+                "dsplr: no desktop found, so nothing {tool} leaves to an output is taken from it"
+            );
+            None
+        }
+    }
+}
+
+/// Each of `tool`'s profiles imported into the store at `dir`, with its
+/// notes, and each skipped one with why. A profile of the same name in the
+/// store is replaced only with `force`. `1` when one was skipped or not
+/// written.
+fn store_imported(
+    tool: &str,
+    dir: &std::path::Path,
+    imported: Vec<dsplr_persist::kanshi::Imported>,
+    skipped: Vec<dsplr_persist::kanshi::Skipped>,
+    force: bool,
+) -> Exit {
     let mut exit = Exit::Success;
     for profile in imported {
-        eprintln!("dsplr: kanshi's {}:", profile.from);
+        eprintln!("dsplr: {tool}'s {}:", profile.from);
         for note in &profile.notes {
             eprintln!("dsplr:   {note}");
         }
-        // Said, since a name made from kanshi's can be one the store had.
-        let replacing = force && profile::path(&dir, &profile.name).exists();
-        match store_layout(&dir, &profile.name, profile.layout, force) {
+        // Said, since a name made from the tool's can be one the store had.
+        let replacing = force && profile::path(dir, &profile.name).exists();
+        match store_layout(dir, &profile.name, profile.layout, force) {
             Ok(messages) => {
                 if replacing {
                     eprintln!(
@@ -175,7 +243,7 @@ pub async fn import_kanshi(path: Option<PathBuf>, force: bool) -> Exit {
     }
     for profile in skipped {
         eprintln!(
-            "dsplr: kanshi's {}: skipped: {}",
+            "dsplr: {tool}'s {}: skipped: {}",
             profile.from, profile.reason
         );
         exit = Exit::Failure;

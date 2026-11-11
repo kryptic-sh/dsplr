@@ -26,27 +26,11 @@ use dsplr_model::{
 pub use config::{ConfigError, KanshiConfig, KanshiMode, KanshiOutput, KanshiProfile};
 pub use scfg::ScfgError;
 
+pub use crate::import::{Imported, Skipped};
+
 use crate::identity::identifier;
+use crate::import::name_from;
 use crate::profile::ProfileName;
-
-/// A kanshi profile as a dsplr profile.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Imported {
-    pub name: ProfileName,
-    /// The kanshi profile it came from: its name, or kanshi's for an
-    /// anonymous one, and where it is.
-    pub from: String,
-    pub layout: Layout,
-    /// What was not taken from kanshi as written, one note each.
-    pub notes: Vec<String>,
-}
-
-/// A kanshi profile not imported, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Skipped {
-    pub from: String,
-    pub reason: String,
-}
 
 /// Each profile of `config` as a dsplr profile, in kanshi's order, or why
 /// it was skipped. `live` is the desktop's outputs now, when it could be
@@ -93,8 +77,7 @@ pub fn import(config: &KanshiConfig, live: Option<&Layout>) -> (Vec<Imported>, V
     (imported, skipped)
 }
 
-/// The dsplr name for `profile`: its own, when it is a profile name; else
-/// one made from it, its unusable characters each `_`; an anonymous one is
+/// The dsplr name for `profile`: [`name_from`] its own; an anonymous one is
 /// `kanshi-N`, kanshi's own number for it.
 fn profile_name(profile: &KanshiProfile, notes: &mut Vec<String>) -> Result<ProfileName, String> {
     let Some(name) = &profile.name else {
@@ -102,32 +85,7 @@ fn profile_name(profile: &KanshiProfile, notes: &mut Vec<String>) -> Result<Prof
         notes.push(format!("anonymous in kanshi; named kanshi-{number} here"));
         return ProfileName::from_str(&format!("kanshi-{number}")).map_err(|e| e.to_string());
     };
-    if let Ok(name) = ProfileName::from_str(name) {
-        return Ok(name);
-    }
-    let made: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let made = made.replace("..", "_.");
-    let made = made.trim_end_matches([' ', '.']);
-    let made = if made.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
-        made.to_owned()
-    } else {
-        format!("_{made}")
-    };
-    let made = ProfileName::from_str(&made)
-        .map_err(|error| format!("its name \"{name}\" cannot be a dsplr profile's: {error}"))?;
-    notes.push(format!(
-        "named \"{made}\" here: \"{name}\" is not a dsplr profile name"
-    ));
-    Ok(made)
+    name_from(name, notes)
 }
 
 /// `profile`'s outputs as a layout.

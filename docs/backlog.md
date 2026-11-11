@@ -67,8 +67,8 @@ rules in `docs/plan/05-persistence-and-profiles.md` ("Hotplug profiles").
 `apps/dsplr/tests/sway_e2e.rs` plugs outputs in and unplugs them under it on a
 second headless sway 1.12 of its own (2026-11-10). The GUI's profile picker was
 built with the window in M3 (`dsplr-gui`'s `panel.rs`: pick a stored profile,
-Restore). `dsplr profile import kanshi` imports kanshi's profiles; autorandr's
-waits for M7 (below).
+Restore). `dsplr profile import kanshi` and `dsplr profile import autorandr`
+import kanshi's and autorandr's profiles.
 
 Since 2026-11-09 one session (the Linux one) builds every crate, by the owner's
 call; the "Linux-owned" and "Windows-owned" headings below keep the old split
@@ -758,6 +758,23 @@ milestone:
   check weekly (`cron.yml`'s `miri` job); a dsplr job for these four tests would
   take seconds plus a nightly toolchain. Not added: a CI job is the owner's
   call.
+- **autorandr profiles named by connector use X's names**: an output
+  `dsplr profile import autorandr` names by its connector (its EDID has no
+  serial, or `setup` holds autorandr's no-EDID marker, a `*` pattern or an older
+  MD5) keeps the X driver's name for the port: `HDMI-1` from modesetting,
+  `HDMI1` from intel, `HDMI-A-0` from amdgpu. Wayland desktops name it from the
+  kernel's connector (`HDMI-A-1`), so such a profile restores there only where
+  the names happen to agree. Not mapped: the mapping depends on the driver the
+  profile was saved under, which autorandr does not record. Needs a decision
+  (map by driver conventions, ask at import, or leave it to the RandR backend),
+  and is said in the CHANGELOG and plan 05.
+- **A CRTC that reflects only in y refuses a flipped transform**: the RandR
+  planner sets a flipped transform as `RR_Reflect_X` with the same rotation
+  (`randr::plan::rotation`), and `can_use_rotation` refuses it on a CRTC whose
+  rotations offer `RR_Reflect_Y` but not `RR_Reflect_X`. The same picture is
+  `RR_Reflect_Y` turned half a turn further (`RRTransformCompute`), which xrandr
+  would be given by a user's `--reflect y` and succeed with. Trying that
+  equivalent before refusing would cover it; no such CRTC has been seen.
 - **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
 - **What the RandR apply planner's tests do not reach** (`randr::plan`): only
@@ -811,13 +828,6 @@ milestone:
   watch's revert point, and the watch's keep then reports the change replaced. A
   lock every flow takes would cover both; not built, as the window is a
   restore's few seconds.
-- **autorandr import waits for M7**: an autorandr profile
-  (`~/.config/autorandr/<name>/config` and `setup`, read in autorandr's
-  `autorandr.py`, commit `0855315d`) names X11 outputs by RandR's names
-  (`HDMI-1`, `eDP1`), which are not Wayland's, and fingerprints each monitor by
-  its raw EDID in `setup`. dsplr's identities need the make, model and serial
-  out of that EDID (the EDID parser is M7's) and its connectors are the
-  desktop's, so the import is only sound alongside the `Randr` backend.
 - **kanshi import: unset settings are frozen at import; owner's call**: kanshi
   keeps an output's own value for whatever a profile leaves unset (a setting not
   given, a mode without a refresh, `mode preferred`); a dsplr profile holds
@@ -938,11 +948,11 @@ milestone:
   both get make, model and serial from libdisplay-info (wlroots 0.20 and
   aquamarine 0.16 link it), whose make is a company name (`ASUSTek COMPUTER INC`
   for `AUS`, `The Linux Foundation` for `LNX`, libdisplay-info 0.3.0 run here).
-  `dsplr_model::edid::Edid::identity` (for the coming `Randr` backend and the
-  autorandr import) gives the model and serial as libdisplay-info does, checked
-  against it on built EDIDs and one real monitor, and the PNP code as the make;
-  until the table exists, a profile saved on Wayland names a monitor's make
-  differently from one an EDID read on X11 gives, so the two do not match.
+  `dsplr_model::edid::Edid::identity` (for the coming `Randr` backend, and used
+  by the autorandr import) gives the model and serial as libdisplay-info does,
+  checked against it on built EDIDs and one real monitor, and the PNP code as
+  the make; until the table exists, a profile saved on Wayland names a monitor's
+  make differently from one an EDID read on X11 gives, so the two do not match.
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
   before the panic message. The next 27 runs passed, including one that
