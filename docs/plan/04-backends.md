@@ -443,7 +443,36 @@ GNOME sessions on X11 when chosen with `--backend randr`.
   shrink or move, `SetScreenSize` to the new bounding box, set each CRTC's mode,
   position and rotation, ungrab. This is xrandr's own algorithm; it is
   transcribed with its source cited and tested against recorded screen
-  resources.
+  resources. The planner is written (`dsplr_backend::randr::plan`, xrandr
+  1.5.4's `pick_crtcs`, `check_crtc_for_output`, `set_positions`,
+  `set_screen_size`, `mark_changing_crtcs` and `apply`): pure, it turns a
+  snapshot of the server (dsplr's own structs, which the crcbl RandR client's
+  replies are copied into) and a layout into the ordered requests. Layout
+  entries play xrandr's `--output` arguments, in the layout's order. Where it
+  differs from xrandr: an output changes only when its mode, position, rotation
+  or on/off state differ from the server's (xrandr sets every CRTC it is told
+  about again). A CRTC's panning is carried over as xrandr carries it (read,
+  then set again after the CRTC), unless it no longer fits the CRTC's new mode
+  or position: Xorg's `xf86RandR12CrtcSet` checks the area
+  (`xf86RandR13VerifyPanningArea`) and then pans the CRTC into
+  `[x1, x2 - HDisplay]` by `[y1, y2 - VDisplay]` (`xf86RandR13Pan`) right after
+  setting it, so the CRTC must lie inside the area. Panning that does not fit is
+  reset before the CRTC is turned off, or before it is set when it is not, since
+  a reset sent after would leave the CRTC where the old area clamped it; the
+  plan notes it (`randr::Note::PanningReset`, "panning on HDMI-1 reset") for the
+  user. Only Xorg pans (Xvfb has none), so this rests on its source alone. The
+  primary output is set only when the layout makes one primary, as xrandr
+  without `--primary` or `--noprimary`: `OutputState::primary` is a plain flag,
+  so a profile from a desktop with no primary says false everywhere, and that
+  must not clear X's. A mode the output does not list is added from the screen's
+  modes (`--addmode`), or else made with VESA CVT timings transcribed from
+  libxcvt 0.1.3 (`--newmode` with `cvt`'s line), and refused where CVT has no
+  mode of that size. A flipped transform is `RR_Reflect_X` with the same
+  rotation: `RRTransformCompute` reflects in the rotated frame, so the picture
+  is flipped before it turns, as `wl_output.transform` defines the flipped
+  values. xrandr's and libxcvt's notices, which both ask to be kept with copies,
+  are in `crates/dsplr-backend/src/randr/LICENSES/`: xrandr's is an X11-style
+  permission notice (HPND), libxcvt's is MIT.
 - **No test primitive** (`Unsupported`), **no per-output scale**, **no native
   persistence**: persistence is dsplr's store plus `dsplr restore` at login
   ([05](05-persistence-and-profiles.md#x11)).

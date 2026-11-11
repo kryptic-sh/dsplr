@@ -760,6 +760,26 @@ milestone:
   call.
 - **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
   `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
+- **What the RandR apply planner's tests do not reach** (`randr::plan`): only
+  Xvfb was available, which has one CRTC, one output (`screen`), no rotations
+  and a maximum equal to its start size, so every multi-CRTC case (a CRTC search
+  that moves an output, clones sharing a CRTC, CRTCs running out) is checked
+  against hand-built snapshots and the planner's own reading of `xrandr.c`, not
+  against xrandr on a real server. The Xvfb cases were checked against
+  `xrandr --dryrun --verbose` there, and the custom-mode one by sending it. The
+  flipped-transform mapping (`RR_Reflect_X`) is read from the X server's
+  `RRTransformCompute` and checked against wlroots' `wlr_box_transform`, not
+  seen on a monitor. Panning is checked against the X server's
+  `xf86RandR13VerifyPanningArea` as read, not on a server. Xvfb resets when its
+  last client disconnects unless started with `-noreset`, which drops created
+  modes; the harness needs it.
+- **What the RandR backend has to supply the planner with**: CRTC transforms are
+  not in `randr::Snapshot`, and the planner assumes none (a CRTC scaled with
+  `xrandr --scale` would be sized wrongly), so the reader should read them and
+  refuse or reset a non-identity one; adaptive sync is refused by the planner,
+  so the reader must report `None` for it (plan 04 has it read-only); and the
+  sender has to map `ModeRef::Created(n)` to the XID in the `n`th `RRCreateMode`
+  reply.
 
 - **Where `dsplr watch` has run**: on sway (`sway_e2e.rs`: hotplug both ways, no
   loop on its own applies, a change waiting to be kept, a reconnect), on niri

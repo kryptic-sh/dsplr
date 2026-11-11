@@ -8,7 +8,8 @@
 //! `outputs.kdl`, KWin saves each layout it applies itself, and Mutter saves
 //! `monitors.xml` once GNOME Shell's dialog keeps it; other wlroots
 //! compositors have no native persistence and use dsplr's profile store
-//! (`dsplr save --profile`), and X11 is not written yet.
+//! (`dsplr save --profile`). X11 has its apply planner ([`randr`]) and no
+//! backend yet.
 //! Every backend is Linux-only; on other targets [`Backend`] has no variants
 //! and detection says why.
 
@@ -27,6 +28,7 @@ pub mod gnome;
 pub mod hyprland;
 #[cfg(target_os = "linux")]
 pub mod kde;
+pub mod randr;
 #[cfg(target_os = "linux")]
 pub mod wayland;
 #[cfg(target_os = "linux")]
