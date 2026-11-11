@@ -358,7 +358,8 @@ fn read(connection: &Connection) -> Result<Snapshot, Error> {
     })
 }
 
-#[cfg(test)]
+// Abstract-namespace sockets and /proc/net/unix are Linux's.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::time::{Duration, Instant};
 

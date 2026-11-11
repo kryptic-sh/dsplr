@@ -1071,6 +1071,12 @@ and the `monitors.lua` writer:
   which records the sockets and locks below `:90` and fails with `!!` when any
   changed by the time the servers are up or by exit (another session's server
   there starting or stopping counts too).
+- **The X guard fails a local run when another session's X server comes or
+  goes**: `tests/e2e/x-guard.sh` cannot tell a server the harness disturbed from
+  one another session started or stopped below `:90` while it ran (a test Xvfb
+  of theirs on `:2`, say), so it fails the run with `!!` either way. By design:
+  a false alarm costs a rerun, a missed hijack costs the desktop's display. CI's
+  VM runs one harness at a time, so it does not see this.
 - **sway numbers each new headless output afresh**: after
   `swaymsg create_output` and `swaymsg output HEADLESS-3 unplug` (sway 1.12
   supports `unplug` for headless, Wayland and X11 outputs), the next output is

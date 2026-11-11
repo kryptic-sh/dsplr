@@ -10,7 +10,7 @@ use std::time::Duration;
 use dsplr_backend::{Backend, Named};
 use dsplr_persist::revert::{self, RevertPoint};
 
-use dsplr_core::flow::report;
+use dsplr_core::flow::{Failure, report};
 
 use crate::apply::{settle, settle_limit};
 use crate::{Exit, find_backend};
@@ -86,16 +86,18 @@ pub async fn go_back(
     say: &mut dyn FnMut(String),
 ) -> Exit {
     if let Err(error) = backend.apply(&point.layout).await {
-        say(format!(
-            "cannot go back to the revert point: {error}; `dsplr restore --revert` tries again"
-        ));
-        return if error.is_refused_before_sending() {
-            Exit::Refused
-        } else if error.is_refusal() || error.is_stale() {
-            Exit::BackendRefused
-        } else {
-            Exit::Failure
+        // Classified as the flow classifies an apply: what sent nothing
+        // (the backend cannot apply at all, or cannot take the layout) is
+        // refused, and trying again would do the same.
+        let retry = "; `dsplr restore --revert` tries again";
+        let (exit, hint) = match crate::apply::failure(&error) {
+            Failure::Unsupported(_) => (Exit::Refused, ""),
+            Failure::NotTaken(_) => (Exit::Refused, retry),
+            Failure::Refused(_) | Failure::Stale(_) => (Exit::BackendRefused, retry),
+            Failure::Failed(_) => (Exit::Failure, retry),
         };
+        say(format!("cannot go back to the revert point: {error}{hint}"));
+        return exit;
     }
     match settle(backend, &point.layout, &backend.capabilities()).await {
         Ok(differences) => {

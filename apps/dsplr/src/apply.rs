@@ -178,13 +178,10 @@ pub async fn drive(
                 Some(Guard {
                     path,
                     point,
-                    mut process,
+                    process,
                     ..
                 }) => {
-                    // Already gone is as good; a kill that fails leaves it
-                    // to wake, find no revert point and exit.
-                    let _ = process.kill();
-                    let _ = process.wait();
+                    process.end();
                     revert::remove_if(&path, &point.token)
                         .map(drop)
                         .map_err(|error| error.to_string())
@@ -219,7 +216,46 @@ struct Guard {
     point: RevertPoint,
     watchdog: Instant,
     /// The watchdog's process.
-    process: std::process::Child,
+    process: Watchdog,
+}
+
+/// A revert watchdog's process, reaped when it exits however the change
+/// ends, so a long-running dsplr (the GUI, `dsplr watch`) leaves no zombie
+/// behind each change.
+struct Watchdog(Option<std::process::Child>);
+
+impl Watchdog {
+    /// Ends it now, for a change that sent nothing: there is nothing for it
+    /// to revert.
+    fn end(mut self) {
+        if let Some(mut child) = self.0.take() {
+            // Already gone is as good; a kill that fails leaves it to wake,
+            // find no revert point and exit, and the wait to reap it then.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl Drop for Watchdog {
+    /// A kept or reverted change's watchdog waits out its delay before it
+    /// finds its revert point gone and exits; a thread waits for it, so it
+    /// is reaped then. One that has exited is reaped here.
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        // Should no thread start, the child stays unreaped until dsplr
+        // exits, as every watchdog did before.
+        let _ = thread::Builder::new()
+            .name("dsplr-watchdog-reaper".to_owned())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+    }
 }
 
 /// Step 3's guard: writes `current` as the revert point and starts its
@@ -251,7 +287,7 @@ fn prepare(
         path,
         point,
         watchdog: started + delay,
-        process,
+        process: Watchdog(Some(process)),
     })
 }
 
@@ -448,6 +484,29 @@ pub fn is_yes(answer: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A watchdog let go of while it still runs is reaped once it exits:
+    /// its process does not stay behind as a zombie of a long-running dsplr.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_watchdog_let_go_of_is_reaped_when_it_exits() {
+        let child = std::process::Command::new("sleep")
+            .arg("0.2")
+            .spawn()
+            .expect("sleep starts");
+        let proc = std::path::PathBuf::from(format!("/proc/{}", child.id()));
+        drop(super::Watchdog(Some(child)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // A zombie keeps its /proc entry until it is reaped.
+        while proc.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} is still there: not reaped",
+                proc.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     use dsplr_model::{Layout, LayoutMode, Mode, Output, OutputEntry, OutputId, OutputState};
 
     use super::{Unbound, bind, is_yes, to_origin};

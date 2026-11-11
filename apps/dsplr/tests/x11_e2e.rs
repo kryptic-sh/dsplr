@@ -116,6 +116,19 @@ fn the_cli_finds_and_lists_xvfb() {
     assert!(!text.contains("revert point"), "{text}");
     assert!(!revert.exists(), "{} left behind", revert.display());
     assert_eq!(watchdogs(&runtime), Vec::<String>::new());
+
+    // A revert point left from before (another desktop's, say) cannot be
+    // gone back to either: refused, with no hint that trying again would
+    // help, and kept.
+    let point = dsplr_persist::revert::RevertPoint::new(layout);
+    dsplr_persist::revert::save(&revert, &point).expect("revert point written");
+    let (code, text) = dsplr(&["restore", "--revert"]);
+    assert_eq!(code, Some(REFUSED), "{text}");
+    assert!(
+        text.contains("cannot go back to the revert point") && !text.contains("tries again"),
+        "{text}"
+    );
+    std::fs::remove_file(&revert).expect("revert point removed");
 }
 
 /// The exit code of a layout refused with nothing sent (`Exit::Refused`).
