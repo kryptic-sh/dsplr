@@ -53,6 +53,10 @@ if [ -z "${_DSPLR_MUTTER_BUS_STARTED:-}" ]; then
     dbus-run-session -- "$0" "$@"
 fi
 unset _DSPLR_MUTTER_BUS_STARTED
+# Records the X sockets and locks below :90, checked once the servers are up
+# and at exit (x-guard.sh).
+# shellcheck source=tests/e2e/x-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/x-guard.sh"
 runtime="$DSPLR_E2E_MUTTER"
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
   echo "dbus-run-session gave no bus" >&2
@@ -70,6 +74,8 @@ cleanup() {
   [ -n "${command_pid:-}" ] && kill -- "-$command_pid" 2>/dev/null
   kill "${mutter_pid:-}" 2>/dev/null
   wait 2>/dev/null
+  # After the servers have exited, which is when they remove their sockets.
+  x_guard_check || exit 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -105,6 +111,9 @@ export WAYLAND_DISPLAY=wayland-0
 export DSPLR_E2E_MUTTER_OUTPUTS="${#monitors[@]}"
 # The bus the tests check they talk to: the harness's, never the session's.
 export DSPLR_E2E_MUTTER_BUS="$DBUS_SESSION_BUS_ADDRESS"
+# The servers are up and nothing below :90 was touched; else stop before any
+# test.
+x_guard_check || exit 1
 # In a session and process group of its own, so cleanup can end all of it.
 # A background job of a script is no group leader, so setsid runs it in
 # place and its pid names the group.

@@ -152,6 +152,16 @@ pub enum PlanError {
     /// The snapshot names a CRTC, output or mode it does not describe.
     #[error("the server's state is inconsistent: {0}")]
     Inconsistent(String),
+    /// A CRTC on screen has a transform (`xrandr --scale`, `--transform`),
+    /// which the planner neither sets nor resets, and which sizes the CRTC
+    /// otherwise than its mode: planning over it would size the screen
+    /// wrongly.
+    #[error(
+        "{} {} a RandR transform (xrandr --scale or --transform), which dsplr does not set; `xrandr --output NAME --transform none` takes it off",
+        if outputs.is_empty() { "a CRTC driving no output".to_owned() } else { outputs.join(", ") },
+        if outputs.len() > 1 { "have" } else { "has" }
+    )]
+    Transformed { crtc: CrtcXid, outputs: Vec<String> },
 }
 
 /// The requests that set `layout` on the server `snapshot` was read from.
@@ -265,6 +275,17 @@ impl<'a> Planner<'a> {
         for crtc in &snapshot.crtcs {
             if let Some(mode) = crtc.mode {
                 planner.listed_mode(mode)?;
+                if crtc.transform.is_some() {
+                    return Err(PlanError::Transformed {
+                        crtc: crtc.id,
+                        outputs: snapshot
+                            .outputs
+                            .iter()
+                            .filter(|output| crtc.outputs.contains(&output.id))
+                            .map(|output| output.name.clone())
+                            .collect(),
+                    });
+                }
             }
         }
         Ok(planner)
@@ -1030,6 +1051,25 @@ pub const fn rotation(transform: Transform) -> Rotation {
         | Transform::Flipped270 => Rotation(turn.0 | Rotation::REFLECT_X.0),
         _ => turn,
     }
+}
+
+/// The transform a CRTC's rotation and reflection show: [`rotation`]'s
+/// inverse, which a flipped transform comes back from. `RR_Reflect_Y` is
+/// `RR_Reflect_X` turned half a turn further, and both reflections together
+/// are half a turn and none (`RRTransformCompute` reflects either axis in
+/// the turned frame). `None` for bits that are not one rotation.
+pub fn transform(rotation: Rotation) -> Option<Transform> {
+    let turns = match rotation.direction() {
+        Rotation::ROTATE_0 => 0,
+        Rotation::ROTATE_90 => 1,
+        Rotation::ROTATE_180 => 2,
+        Rotation::ROTATE_270 => 3,
+        _ => return None,
+    };
+    let x = rotation.0 & Rotation::REFLECT_X.0 != 0;
+    let y = rotation.0 & Rotation::REFLECT_Y.0 != 0;
+    let turns = if y { (turns + 2) % 4 } else { turns };
+    Transform::from_wayland(if x != y { 4 + turns } else { turns })
 }
 
 /// xrandr's `crtc_can_use_rotation`: the CRTC can do the rotation and

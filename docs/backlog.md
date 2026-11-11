@@ -753,8 +753,60 @@ milestone:
   `RR_Reflect_Y` turned half a turn further (`RRTransformCompute`), which xrandr
   would be given by a user's `--reflect y` and succeed with. Trying that
   equivalent before refusing would cover it; no such CRTC has been seen.
-- **e2e for X11**: M7 adds a `headless-x11.sh` harness and a CI matrix entry, as
-  `tests/e2e/headless-mutter.sh` and the `mutter` entry did for `gnome`.
+- **The X11 e2e has one CRTC**: `tests/e2e/headless-x11.sh` runs Xvfb, whose one
+  CRTC drives one output, `screen`, so applying (M7's next step) needs a server
+  with several: Xorg's `dummy` driver, run unprivileged through the server
+  binary (`/usr/lib/Xorg`, not `Xorg.wrap`), which crcbl's own X11 tests use
+  (`tools/x11-display.sh` in crcbl: sixteen outputs, `DUMMY0` on, a CVT mode
+  added to the others). Not tried in dsplr yet, nor whether CI's VM can run it
+  (`xf86-video-dummy` on Arch).
+- **X11's apply is unsupported until it is written**: `dsplr set --yes` and
+  every other apply on X11 is refused with nothing sent (exit `3`): the flow
+  takes `Error::Unsupported` from an apply as it takes a layout the backend
+  cannot send, discards the revert point unshown and ends its watchdog. The
+  prepare step before it still writes the revert point, replacing any earlier
+  one (a change of another desktop's left waiting to be kept, say), which goes
+  away once the RandR backend applies (M7's next step).
+- **X11 reads without probing**: `randr::x11` reads `GetScreenResourcesCurrent`,
+  which returns the server's last known outputs without asking the driver. On a
+  driver without hotplug detection a newly plugged monitor shows only after
+  something probes (`xrandr` does, with `GetScreenResources`, which has the
+  driver probe its outputs; how long that takes, and what it does to a screen,
+  depends on the driver and was not measured). An option: probe only on an
+  explicit refresh (the GUI's, a `dsplr list --probe`), never on every read. Not
+  decided.
+- **For applying on X11 (M7's next step)**:
+  - a CRTC's pending transform (`GetCrtcTransform`'s pending fields, set but not
+    yet in force) is not read; one that is not the identity takes effect at the
+    next `SetCrtcConfig`, so it has to be refused or reset before one;
+  - `--backend randr` under a Wayland session reads the compositor's Xwayland,
+    whose RandR sets nothing on its outputs; applying there has to be refused
+    (detection never picks it there, the flag does);
+  - interlaced modes: `Mode` has no interlace flag, so 1920x1080i and 1920x1080p
+    at one refresh differ only by their handle; check which a layout without
+    handles (a profile, a file) gets from `plan::choose_mode`, which takes the
+    one the output is driven at, else the nearest refresh.
+- **A scaled CRTC's size is wrong in `dsplr list`**: a CRTC with a transform
+  (`xrandr --scale 2x2`) shows its mode's size, not the area it covers, and
+  neither the CLI nor the GUI says so; the planner refuses to plan over it
+  (`PlanError::Transformed`), so only applying says why. A `Layout` read from a
+  desktop has no place for a note or problem about an output, so there is
+  nothing to show it with; giving the snapshot one (or a read-only scale) is the
+  owner's call.
+- **X11 on FreeBSD is not compiled**: the RandR backend is built where crcbl-x11
+  is (the `x11` cfg from `build.rs`: Linux and FreeBSD), and only Linux is built
+  here or in CI. Detection off Linux tries X11 alone.
+- **Adaptive sync on X11 reads as unknown**: the driver's `vrr_capable` output
+  property says whether a monitor could run variable refresh, not what is set
+  (that is a driver option), and `OutputState::adaptive_sync` has no read-only
+  form, so the snapshot gives `None` and the planner refuses any value. Showing
+  `vrr_capable` needs a place in the model for a read-only fact (the owner's
+  call); not read.
+- **crcbl-x11 reads the screen's size only at connect time**:
+  `Connection::screen` is the setup's copy, and a later size arrives only in a
+  `ScreenChangeNotify`; there is no `GetGeometry` on the root. So each RandR
+  read connects afresh to have the size the screen has now. Raised with the
+  crcbl session.
 - **What the RandR apply planner's tests do not reach** (`randr::plan`): only
   Xvfb was available, which has one CRTC, one output (`screen`), no rotations
   and a maximum equal to its start size, so every multi-CRTC case (a CRTC search
@@ -768,13 +820,9 @@ milestone:
   `xf86RandR13VerifyPanningArea` as read, not on a server. Xvfb resets when its
   last client disconnects unless started with `-noreset`, which drops created
   modes; the harness needs it.
-- **What the RandR backend has to supply the planner with**: CRTC transforms are
-  not in `randr::Snapshot`, and the planner assumes none (a CRTC scaled with
-  `xrandr --scale` would be sized wrongly), so the reader should read them and
-  refuse or reset a non-identity one; adaptive sync is refused by the planner,
-  so the reader must report `None` for it (plan 04 has it read-only); and the
-  sender has to map `ModeRef::Created(n)` to the XID in the `n`th `RRCreateMode`
-  reply.
+- **What sending a RandR plan has to do**: map `ModeRef::Created(n)` to the XID
+  in the `n`th `RRCreateMode` reply. (CRTC transforms are read and refused,
+  `PlanError::Transformed`, and adaptive sync reads as `None`.)
 
 - **Where `dsplr watch` has run**: on sway (`sway_e2e.rs`: hotplug both ways, no
   loop on its own applies, a change waiting to be kept, a reconnect), on niri
@@ -1002,6 +1050,27 @@ and the `monitors.lua` writer:
 
 ## Behaviour that surprised us but is not a bug
 
+- **A test X server can take the desktop's display**: an X server, or a
+  compositor's Xwayland, takes the first display whose lock is missing or names
+  a pid it cannot see (one in another PID namespace, or really dead), and
+  unlinks that display's socket path before it binds its own: Xvfb with
+  `-displayfd` and no number (Xtrans), and wlroots 0.20.2's
+  `open_display_sockets` (`xwayland/sockets.c`, read in its release tarball),
+  which binds them at startup even when Xwayland starts lazily; Hyprland's own
+  XWayland code is reported to do the same (not read here). Run from a sandboxed
+  session, the harnesses were in another PID namespace than the desktop, so
+  Hyprland's live lock on `:0` looked stale, and a harness's Xvfb took `:0` and
+  deleted the desktop's `/tmp/.X11-unix/X0` on exit (2026-11-12). Any headless
+  sway or Hyprland with Xwayland on could have done the same. Since then:
+  `headless-x11.sh` passes an explicit number from `:90` up, counts every lock
+  as taken and refuses a number below `:90`; the sway, niri and Hyprland
+  harnesses turn Xwayland off (`xwayland disable`, `xwayland-satellite { off }`,
+  `xwayland = { enabled = false }`), KWin starts none without `--xwayland` and
+  Mutter runs with `--no-x11`, and niri 26.04 skips any display with a lock
+  anyway (`pick_x11_display`); and every harness sources `tests/e2e/x-guard.sh`,
+  which records the sockets and locks below `:90` and fails with `!!` when any
+  changed by the time the servers are up or by exit (another session's server
+  there starting or stopping counts too).
 - **sway numbers each new headless output afresh**: after
   `swaymsg create_output` and `swaymsg output HEADLESS-3 unplug` (sway 1.12
   supports `unplug` for headless, Wayland and X11 outputs), the next output is

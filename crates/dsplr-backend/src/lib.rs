@@ -8,10 +8,12 @@
 //! `outputs.kdl`, KWin saves each layout it applies itself, and Mutter saves
 //! `monitors.xml` once GNOME Shell's dialog keeps it; other wlroots
 //! compositors have no native persistence and use dsplr's profile store
-//! (`dsplr save --profile`). X11 has its apply planner ([`randr`]) and no
-//! backend yet.
-//! Every backend is Linux-only; on other targets [`Backend`] has no variants
-//! and detection says why.
+//! (`dsplr save --profile`). X11's backend ([`randr`]) reads the outputs
+//! and plans a layout, and does not apply one yet.
+//! Every backend but X11's is Linux-only; X11's is built where crcbl-x11
+//! is, Linux and FreeBSD (the `x11` cfg, `build.rs`; FreeBSD is not
+//! compiled here). On other targets [`Backend`] has no variants and
+//! detection says why.
 
 use std::time::Duration;
 
@@ -48,6 +50,8 @@ pub enum Backend {
     Kde(kde::Kde),
     #[cfg(target_os = "linux")]
     Wlr(wlr::Wlr),
+    #[cfg(x11)]
+    Randr(randr::Randr),
 }
 
 /// Following a desktop's changes ([`Backend::watch`]).
@@ -98,6 +102,9 @@ pub enum Error {
     #[cfg(target_os = "linux")]
     #[error(transparent)]
     Wlr(#[from] wlr::Error),
+    #[cfg(x11)]
+    #[error(transparent)]
+    Randr(#[from] randr::Error),
     /// The backend cannot do this at all; nothing was sent.
     #[error("{what} is not supported here: {reason}")]
     Unsupported {
@@ -172,11 +179,15 @@ impl Error {
             Self::Wlr(wlr::Error::Plan(wlr::PlanError::NotConnected(_)))
             | Self::Kde(kde::Error::Plan(kde::PlanError::NotConnected(_)))
             | Self::Gnome(gnome::Error::Plan(gnome::PlanError::NotConnected(_))) => false,
+            #[cfg(x11)]
+            Self::Randr(randr::Error::Plan(randr::PlanError::NotConnected(_))) => false,
             #[cfg(target_os = "linux")]
             Self::Wlr(wlr::Error::Plan(_))
             | Self::Kde(kde::Error::Plan(_))
             | Self::Gnome(gnome::Error::Plan(_))
             | Self::Hyprland(hyprland::Error::Write(_)) => true,
+            #[cfg(x11)]
+            Self::Randr(randr::Error::Plan(_)) => true,
             _ => false,
         }
     }
@@ -202,6 +213,8 @@ impl Error {
             | Self::Gnome(
                 gnome::Error::Stale(_) | gnome::Error::Plan(gnome::PlanError::NotConnected(_)),
             ) => true,
+            #[cfg(x11)]
+            Self::Randr(randr::Error::Plan(randr::PlanError::NotConnected(_))) => true,
             _ => false,
         }
     }
@@ -220,6 +233,8 @@ impl Backend {
             Self::Kde(_) => "kde",
             #[cfg(target_os = "linux")]
             Self::Wlr(_) => "wlr",
+            #[cfg(x11)]
+            Self::Randr(_) => "randr",
         }
     }
 
@@ -238,6 +253,8 @@ impl Backend {
             Self::Kde(_) => kde::OPERATION_TIMEOUT,
             #[cfg(target_os = "linux")]
             Self::Wlr(_) => wlr::OPERATION_TIMEOUT,
+            #[cfg(x11)]
+            Self::Randr(_) => randr::OPERATION_TIMEOUT,
         }
     }
 
@@ -353,6 +370,20 @@ impl Backend {
                 native_persistence: wlr.names_compositor(),
                 ..Capabilities::default()
             },
+            // Mirrors are outputs sharing a CRTC or CRTCs at one place;
+            // custom modes are made with CVT timings; no scale per output,
+            // no test request, no native persistence; the screen starts at
+            // the origin (the planner moves a layout there, as xrandr does).
+            // Adaptive sync is the driver's to set, not RandR's.
+            #[cfg(x11)]
+            Self::Randr(_) => Capabilities {
+                custom_modes: true,
+                mirroring: true,
+                gaps_allowed: true,
+                origin_required: true,
+                primary: true,
+                ..Capabilities::default()
+            },
         }
     }
 
@@ -372,6 +403,8 @@ impl Backend {
                 wlr.compositor().await,
                 wlr::Compositor::Sway | wlr::Compositor::Niri
             ),
+            #[cfg(x11)]
+            Self::Randr(_) => false,
         }
     }
 
@@ -387,6 +420,8 @@ impl Backend {
             Self::Gnome(_) | Self::Kde(_) => true,
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) | Self::Wlr(_) => false,
+            #[cfg(x11)]
+            Self::Randr(_) => false,
         }
     }
 
@@ -406,6 +441,11 @@ impl Backend {
             Self::Kde(ref kde) => Ok(Watch::Kde(Box::new(kde.connect().await?))),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(Watch::Wlr(Box::new(wlr.connect().await?))),
+            #[cfg(x11)]
+            Self::Randr(_) => Err(Error::Unsupported {
+                what: "following X11's output changes",
+                reason: "the RandR backend reads the outputs but does not follow their changes yet",
+            }),
         }
     }
 
@@ -420,6 +460,8 @@ impl Backend {
             Self::Kde(ref kde) => Ok(kde.snapshot().await?),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.snapshot().await?),
+            #[cfg(x11)]
+            Self::Randr(ref randr) => Ok(randr.snapshot().await?),
         }
     }
 
@@ -433,8 +475,8 @@ impl Backend {
     /// the apply flow then skips the step rather than pretend it ran
     /// (`docs/plan/02-architecture.md`, step 2).
     #[cfg_attr(
-        not(target_os = "linux"),
-        expect(unused_variables, reason = "no backend exists off Linux")
+        not(any(target_os = "linux", x11)),
+        expect(unused_variables, reason = "no backend exists off Linux and FreeBSD")
     )]
     pub async fn test(&self, layout: &Layout) -> Result<(), Error> {
         match *self {
@@ -458,6 +500,14 @@ impl Backend {
             }
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.test(layout).await?),
+            #[cfg(x11)]
+            Self::Randr(ref randr) => {
+                randr.check(layout).await?;
+                Err(Error::Unsupported {
+                    what: "testing a layout",
+                    reason: "RandR has no test request",
+                })
+            }
         }
     }
 
@@ -477,6 +527,11 @@ impl Backend {
             Self::Kde(ref kde) => Ok(kde.apply(layout).await?),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(wlr.apply(layout).await?),
+            #[cfg(x11)]
+            Self::Randr(_) => Err(Error::Unsupported {
+                what: "applying a layout on X11",
+                reason: "the RandR backend reads and plans layouts but does not send them yet",
+            }),
         }
     }
 
@@ -592,6 +647,11 @@ impl Backend {
                     }),
                 }
             }
+            #[cfg(x11)]
+            Self::Randr(_) => Err(Error::Unsupported {
+                what: "saving the layout",
+                reason: "an X server keeps no display config of its own to write; save a profile with `dsplr save --profile NAME` and run `dsplr restore --yes` at login",
+            }),
         }
     }
 }

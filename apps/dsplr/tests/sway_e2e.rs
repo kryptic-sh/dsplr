@@ -1027,7 +1027,7 @@ async fn backend_flag_uses_the_one_named_or_says_why_not(backend: &Backend) {
         ("gnome", "GNOME:"),
         ("kde", "KDE:"),
         ("hyprland", "Hyprland:"),
-        ("x11", "X11: not written yet"),
+        ("x11", "X11: DISPLAY is not set"),
     ] {
         let (code, text) = dsplr(&["--backend", name, "list"]);
         assert_eq!(code, Some(6), "{name}: {text}");

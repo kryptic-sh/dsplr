@@ -1,7 +1,8 @@
 //! What the X server reports about its RandR state, as plain structs: the
 //! screen's resources, each output and CRTC, the screen size and its range,
-//! and the primary output. The backend fills them from the RandR client's
-//! replies; the planner reads only these, so it runs without a server.
+//! the primary output, each output's EDID and each CRTC's transform. The
+//! backend fills them from crcbl-x11's replies (`x11.rs`); the planner and
+//! [`super::snapshot`] read only these, so they run without a server.
 //!
 //! Field names follow the RandR protocol's replies (`randrproto.txt`,
 //! RandR 1.5), so the conversion is a copy. XIDs are 32 bits on the wire.
@@ -166,6 +167,8 @@ pub struct OutputInfo {
     /// The outputs that can share a CRTC with it.
     pub clones: Vec<OutputXid>,
     pub name: String,
+    /// Its `EDID` property's bytes, when it has one.
+    pub edid: Option<Vec<u8>>,
 }
 
 /// `RRGetPanning`'s reply, without its timestamp. All zero is no panning.
@@ -206,6 +209,9 @@ pub struct CrtcInfo {
     /// `None` when it has none (all zero) or the server is older than
     /// RandR 1.3.
     pub panning: Option<Panning>,
+    /// `RRGetCrtcTransform`'s current transform, as 16.16 fixed point, when
+    /// it is not the identity (`xrandr --scale` or `--transform` set it).
+    pub transform: Option<[[i32; 3]; 3]>,
 }
 
 /// `RRGetScreenSizeRange`'s reply.

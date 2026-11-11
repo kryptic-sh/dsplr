@@ -15,6 +15,10 @@
 #   and rustup keep their real homes through CARGO_HOME and RUSTUP_HOME,
 #   pinned before HOME changes.
 set -uo pipefail
+# Records the X sockets and locks below :90, checked once the servers are up
+# and at exit (x-guard.sh).
+# shellcheck source=tests/e2e/x-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/x-guard.sh"
 
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
@@ -27,13 +31,18 @@ cleanup() {
   [ -n "${command_pid:-}" ] && kill -- "-$command_pid" 2>/dev/null
   kill "${sway_pid:-}" 2>/dev/null
   wait 2>/dev/null
+  # After the servers have exited, which is when they remove their sockets.
+  x_guard_check || exit 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # No bar, no wallpaper: nothing but the outputs, and those `dsplr save` writes.
+# No Xwayland: wlroots binds X display sockets at startup even when it starts
+# Xwayland lazily, taking a display whose lock names a pid it cannot see
+# (x-guard.sh), and no test needs X.
 mkdir -p "$runtime/config/sway"
-printf 'swaybg_command -\ninclude outputs\n' > "$runtime/config/sway/config"
+printf 'swaybg_command -\nxwayland disable\ninclude outputs\n' > "$runtime/config/sway/config"
 env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
   XDG_CONFIG_HOME="$runtime/config" \
   WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
@@ -65,6 +74,9 @@ export DSPLR_E2E_SWAY="$runtime"
 # No session bus: dsplr's GNOME detection asks the one the environment
 # names, else the private runtime's, where there is none.
 unset DISPLAY HYPRLAND_INSTANCE_SIGNATURE NIRI_SOCKET DBUS_SESSION_BUS_ADDRESS
+# The servers are up and nothing below :90 was touched; else stop before any
+# test.
+x_guard_check || exit 1
 # In a session and process group of its own, so cleanup can end all of it.
 # A background job of a script is no group leader, so setsid runs it in
 # place and its pid names the group.

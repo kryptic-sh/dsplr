@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs inside CI's e2e VM as root, from cloud-init. /e2e is the host's share:
-# `harness.sh` (one desktop's e2e harness), `tests/` (that desktop's e2e test
-# binaries, one per package), `dsplr` (the binary the CLI's test runs),
+# `harness.sh` (one desktop's e2e harness) and `x-guard.sh` (which it
+# sources), `tests/` (that desktop's e2e test binaries, one per package),
+# `dsplr` (the binary the CLI's test runs),
 # `packages` (what to install) and `env` (NAME=VALUE words the tests run
 # with, maybe none, split on whitespace). Installs them, runs each test
 # under its own harness as an unprivileged user, leaves the logs and the exit
@@ -49,8 +50,8 @@ useradd -m -G video,render,seat t > "$out/useradd.log" 2>&1 ||
   fail "useradd failed" "$out/useradd.log"
 ls -l /dev/dri > "$out/dri.txt" 2>&1
 
-cp -r /e2e/harness.sh /e2e/dsplr /e2e/tests /home/t/
-chown -R t: /home/t/harness.sh /home/t/dsplr /home/t/tests
+cp -r /e2e/harness.sh /e2e/x-guard.sh /e2e/dsplr /e2e/tests /home/t/
+chown -R t: /home/t/harness.sh /home/t/x-guard.sh /home/t/dsplr /home/t/tests
 # Each word quoted for the shell `su -c` starts. With none, nothing: `%q`
 # of no argument would be an empty word, which `env` takes as a command.
 quoted_env=""

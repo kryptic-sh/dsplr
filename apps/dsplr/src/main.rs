@@ -41,7 +41,8 @@ struct Cli {
     /// Use this backend instead of detecting one, for testing, or for a
     /// desktop offering more than one way to drive its displays. It must be
     /// reachable here: dsplr says what it found missing (exit 6) rather than
-    /// use another. `randr` (or `x11`) is not written yet.
+    /// use another. `randr` (or `x11`) reads and plans, and does not apply
+    /// yet.
     #[arg(long, global = true, value_name = "NAME", value_parser = backend_name())]
     backend: Option<Named>,
     #[command(subcommand)]

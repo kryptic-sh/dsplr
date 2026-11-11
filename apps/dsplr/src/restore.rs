@@ -40,12 +40,13 @@ pub fn change_limit(request_timeout: Duration) -> Duration {
 /// Starts the watchdog for the change `token` names: a detached
 /// `dsplr restore --revert --after <secs> --token <token>`, with the
 /// `--backend` this one was given. It inherits the environment, which is how
-/// it reaches the desktop.
+/// it reaches the desktop. The process is returned so that a change which
+/// sent nothing can end it at once rather than leave it waiting.
 ///
 /// # Errors
 ///
 /// When dsplr's own executable cannot be found or started.
-pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
+pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<std::process::Child> {
     let mut command = Command::new(env::current_exe()?);
     command
         .args(watchdog_args(token, after, crate::forced()))
@@ -58,7 +59,7 @@ pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<()> {
     // backend is Linux-only, so no change reaches this off Unix.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    command.spawn().map(drop)
+    command.spawn()
 }
 
 /// The watchdog's arguments: [`spawn_watchdog`]'s command line after the

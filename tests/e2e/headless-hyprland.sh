@@ -20,6 +20,10 @@
 # Hyprland still needs a GPU render node to allocate buffers, so on a runner
 # without one this fails at "Hyprland did not start" or with 0x0 outputs.
 set -uo pipefail
+# Records the X sockets and locks below :90, checked once the servers are up
+# and at exit (x-guard.sh).
+# shellcheck source=tests/e2e/x-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/x-guard.sh"
 
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
@@ -29,6 +33,8 @@ mkdir "$home"
 cleanup() {
   kill "${hypr_pid:-}" "${parent_pid:-}" 2>/dev/null
   wait 2>/dev/null
+  # After the servers have exited, which is when they remove their sockets.
+  x_guard_check || exit 1
 }
 trap cleanup EXIT
 
@@ -44,7 +50,10 @@ if ! [ -S "$runtime/wayland-0" ]; then
 fi
 
 mkdir -p "$runtime/config/hypr"
-printf 'hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })\n' \
+# No Xwayland: Hyprland's binds X display sockets as wlroots' does (reported,
+# not read here; x-guard.sh), and no test needs X. KWin, the parent, starts
+# none without `--xwayland` (`main_wayland.cpp`).
+printf 'hl.config({ xwayland = { enabled = false } })\nhl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })\n' \
   > "$runtime/config/hypr/hyprland.lua"
 env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 \
   XDG_CONFIG_HOME="$runtime/config" \
@@ -75,6 +84,9 @@ export DSPLR_E2E_HYPRLAND="$runtime"
 # No session bus: dsplr's GNOME detection asks the one the environment
 # names, else the private runtime's, where there is none.
 unset WAYLAND_DISPLAY DISPLAY SWAYSOCK NIRI_SOCKET HYPRLAND_CONFIG DBUS_SESSION_BUS_ADDRESS
+# The servers are up and nothing below :90 was touched; else stop before any
+# test.
+x_guard_check || exit 1
 "$@"
 status=$?
 if [ "$status" -ne 0 ]; then

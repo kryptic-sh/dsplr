@@ -10,7 +10,7 @@ At start `dsplr-backend` picks one backend, first match wins:
 | 2     | `WAYLAND_DISPLAY` set and the registry offers `kde_output_management_v2` | `Kde`      |
 | 3     | `org.gnome.Mutter.DisplayConfig` owned on the session bus                | `Gnome`    |
 | 4     | `WAYLAND_DISPLAY` set and the registry offers `zwlr_output_manager_v1`   | `Wlr`      |
-| 5     | `DISPLAY` set and the server has RandR 1.5 or later                      | `Randr`    |
+| 5     | `DISPLAY` set, `WAYLAND_DISPLAY` not, and the server has RandR 1.3+      | `Randr`    |
 
 When `HYPRLAND_INSTANCE_SIGNATURE` is set but its socket cannot be found or does
 not answer, detection stops at row 1 with no backend rather than going on: the
@@ -27,7 +27,12 @@ more than one interface (KDE on X11 is `Randr`; GNOME on X11 offers both
 `DisplayConfig` and RandR, and `Gnome` wins because it persists, which the order
 above gives: Mutter 51.1 has no X11 backend, so this is an older GNOME; which
 release dropped it was not checked). Only the backend named is checked, never
-another in its place ([07](07-cli.md)); `randr` is not written yet.
+another in its place ([07](07-cli.md)). Row 5 is not tried under a Wayland
+session: `DISPLAY` there is the compositor's Xwayland, whose RandR shows its
+outputs and sets nothing on them; `--backend randr` (or `x11`) tries it anyway.
+RandR 1.3 is what dsplr's reads use (`GetScreenResourcesCurrent`,
+`GetOutputPrimary`, `GetPanning`, `GetCrtcTransform`); nothing of 1.4 or 1.5 is
+needed, so it asks no more.
 
 No match is an error that lists what was checked and what was found, never an
 empty canvas.
@@ -435,8 +440,27 @@ not checked (backlog).
 RandR 1.5 on the X server, for i3, bspwm, awesome, Openbox, Xfce, and KDE or
 GNOME sessions on X11 when chosen with `--backend randr`.
 
-- **Read:** screen resources, outputs, CRTCs, modes, the `EDID` output property
-  (parsed for make, model, serial), monitors (RandR 1.5).
+- **Read (built, M7):** through crcbl-x11 0.19.1 (`randr::x11`, a connection of
+  its own per read, its libxcb calls on a detached thread of their own, given up
+  on after `OPERATION_TIMEOUT` and left behind, since libxcb waits for a reply
+  with no deadline): screen resources the size range, the primary output, each
+  output and its `EDID` property, each CRTC with its panning and its transform,
+  the screen's size in pixels and millimetres (from the connection's setup,
+  which is why each read connects afresh). `randr::snapshot` reads that as a
+  layout: connected outputs and any a CRTC still drives; the identity from the
+  EDID (`Edid::output_id` with the RandR output name as connector), else the
+  connector; each mode's refresh as xrandr's `mode_refresh` gives it; a CRTC's
+  rotation and reflection as the transform the planner sets them back with;
+  outputs sharing a CRTC, or CRTCs at one place, as mirrors of the first; the
+  physical size; scale 1; adaptive sync none. A CRTC with a transform
+  (`xrandr --scale`) has no place in the model, and the planner refuses to plan
+  over it (`PlanError::Transformed`), saying how to take it off. The resources
+  are `GetScreenResourcesCurrent`'s, which asks the driver nothing: a monitor
+  plugged in on a driver without hotplug detection shows only once something has
+  probed (`xrandr` does, with `GetScreenResources`). Run against Xvfb in
+  `tests/e2e/headless-x11.sh`. Applying, the change stream and watching are not
+  written yet (`Error::Unsupported`); an apply refused so sends nothing, and the
+  apply flow discards its revert point and ends its watchdog, exit `3`.
 - **Change stream:** `RRSelectInput` for screen, CRTC and output change
   notifications.
 - **Apply:** compute CRTC assignments, grab the server, disable CRTCs that
@@ -477,5 +501,6 @@ GNOME sessions on X11 when chosen with `--backend randr`.
   persistence**: persistence is dsplr's store plus `dsplr restore` at login
   ([05](05-persistence-and-profiles.md#x11)).
 - Mirroring is two outputs on one CRTC, or same-position CRTCs; supported.
-- Adaptive sync on X11 is a driver property (`vrr_capable` / per-driver options)
-  and is shown read-only.
+- Adaptive sync on X11 is a driver property (`vrr_capable` / per-driver
+  options), not RandR's to set. The model has no place for a read-only value, so
+  it reads as unknown, and the planner refuses one (backlog).

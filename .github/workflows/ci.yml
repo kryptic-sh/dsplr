@@ -179,7 +179,9 @@ jobs:
   # through wtype, captures through grim; and dsplr-gui's tests that need a
   # Vulkan device. Mutter
   # runs headless with virtual monitors, on a D-Bus session bus of the
-  # harness's own (dbus-run-session, from the dbus package).
+  # harness's own (dbus-run-session, from the dbus package). X11 is Xvfb with
+  # RandR, one CRTC and one output; crcbl-x11 loads libxcb and libxcb-randr
+  # (both in the libxcb package) with dlopen.
   e2e:
     name: e2e ${{ matrix.desktop }}
     runs-on: ubuntu-latest
@@ -202,6 +204,9 @@ jobs:
             tests: dsplr-backend dsplr
           - desktop: mutter
             packages: mutter mesa dbus
+            tests: dsplr-backend dsplr
+          - desktop: x11
+            packages: xorg-server-xvfb libxcb
             tests: dsplr-backend dsplr
           - desktop: gui
             harness: sway
@@ -244,6 +249,8 @@ jobs:
           cargo build --locked -p dsplr
           cp target/debug/dsplr "$share/"
           cp "tests/e2e/headless-$HARNESS.sh" "$share/harness.sh"
+          # Sourced by every harness, beside it.
+          cp tests/e2e/x-guard.sh "$share/"
           cp tests/e2e/vm/guest.sh "$share/"
           echo "${{ matrix.packages }}" > "$share/packages"
           echo "${{ matrix.env }}" > "$share/env"

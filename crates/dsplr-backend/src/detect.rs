@@ -34,13 +34,13 @@ pub enum Named {
     Kde,
     Gnome,
     Wlr,
-    /// X11's, not written yet.
+    /// X11's, through RandR.
     Randr,
 }
 
 impl Named {
     /// Every name `--backend` takes: each backend's [`Backend::name`], and
-    /// `randr`, also spelled `x11`, for the one not written yet.
+    /// `x11` for `randr` too.
     pub const NAMES: [&str; 6] = ["hyprland", "kde", "gnome", "wlr", "randr", "x11"];
 
     /// The backend `name` names, one of [`Named::NAMES`].
@@ -78,12 +78,27 @@ pub async fn detect_named(named: Named) -> Detection {
     {
         detect_named_with(named, |name| std::env::var_os(name)).await
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(x11, not(target_os = "linux")))]
+    {
+        let mut checks = Vec::new();
+        let backend = match named {
+            Named::Randr => x11(&|name| std::env::var_os(name), &mut checks).await,
+            _ => {
+                checks.push(Check::new(
+                    named.name(),
+                    "not available on this platform: only X11's backend is built off Linux",
+                ));
+                None
+            }
+        };
+        Detection { checks, backend }
+    }
+    #[cfg(not(any(target_os = "linux", x11)))]
     {
         Detection {
             checks: vec![Check::new(
                 named.name(),
-                "not available on this platform: dsplr's backends are Linux-only",
+                "not available on this platform: dsplr's backends are Linux-only, X11's Linux and FreeBSD",
             )],
             backend: None,
         }
@@ -105,22 +120,15 @@ async fn detect_named_with(
         Named::Kde => kde(&var, &mut checks).await,
         Named::Gnome => gnome(&var, &mut checks).await,
         Named::Wlr => wlr(&var, &mut checks).await,
-        Named::Randr => {
-            checks.push(Check::new("X11", NOT_WRITTEN));
-            None
-        }
+        Named::Randr => x11(&var, &mut checks).await,
     };
     Detection { checks, backend }
 }
 
-/// What detection says about the desktop whose backend does not exist yet.
-#[cfg(target_os = "linux")]
-const NOT_WRITTEN: &str = "not written yet (planned for M7)";
-
 /// Finds the backend for the running desktop, in the plan's order: Hyprland,
 /// then KWin's output management, then Mutter's `DisplayConfig` on the
-/// session bus, then a wlroots compositor's output manager, then X11 (not
-/// written yet). When
+/// session bus, then a wlroots compositor's output manager, then X11's
+/// RandR where there is no Wayland session. When
 /// Hyprland's variable is set but
 /// its socket does not answer, detection stops there: this is Hyprland, and
 /// its own `wlr-output-management` would pass for a wlroots compositor. On
@@ -130,12 +138,18 @@ pub async fn detect() -> Detection {
     {
         detect_with(|name| std::env::var_os(name)).await
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(x11, not(target_os = "linux")))]
+    {
+        let mut checks = Vec::new();
+        let backend = x11(&|name| std::env::var_os(name), &mut checks).await;
+        Detection { checks, backend }
+    }
+    #[cfg(not(any(target_os = "linux", x11)))]
     {
         Detection {
             checks: vec![Check::new(
                 "platform",
-                "not Linux: dsplr supports Linux only",
+                "not Linux or FreeBSD: dsplr's backends need one",
             )],
             backend: None,
         }
@@ -180,12 +194,52 @@ async fn detect_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Detect
             backend: Some(backend),
         };
     }
-    checks.push(Check::new("X11", NOT_WRITTEN));
-    Detection {
-        checks,
-        backend: None,
+    // Under a Wayland session, `DISPLAY` is Xwayland's, whose RandR shows
+    // the compositor's outputs and sets nothing on them.
+    if var("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()) {
+        checks.push(Check::new(X11_CHECK, X11_UNDER_WAYLAND));
+        return Detection {
+            checks,
+            backend: None,
+        };
+    }
+    let backend = x11(&var, &mut checks).await;
+    Detection { checks, backend }
+}
+
+/// Why detection does not try X11 under a Wayland session.
+#[cfg(target_os = "linux")]
+const X11_UNDER_WAYLAND: &str = "not tried: WAYLAND_DISPLAY is set, so DISPLAY is the Wayland compositor's Xwayland, whose RandR does not set its outputs (`--backend randr` tries it anyway)";
+
+/// X11, when `DISPLAY` names an X server that answers with RandR 1.3 or
+/// later.
+#[cfg(x11)]
+async fn x11(
+    var: &impl Fn(&str) -> Option<std::ffi::OsString>,
+    checks: &mut Vec<Check>,
+) -> Option<Backend> {
+    match crate::randr::Randr::from_vars(var).await {
+        Ok(Some(randr)) => {
+            checks.push(Check::new(
+                X11_CHECK,
+                format!("RandR {} on {}", randr.version(), randr.display()),
+            ));
+            Some(Backend::Randr(randr))
+        }
+        Ok(None) => {
+            checks.push(Check::new(X11_CHECK, "DISPLAY is not set"));
+            None
+        }
+        Err(error) => {
+            checks.push(Check::new(X11_CHECK, error.to_string()));
+            None
+        }
     }
 }
+
+/// What the X11 check is called in [`Detection::checks`].
+#[cfg(x11)]
+const X11_CHECK: &str = "X11";
 
 /// Why detection stops at a Hyprland that does not answer.
 #[cfg(target_os = "linux")]
@@ -519,7 +573,58 @@ mod tests {
         assert!(wlr[0].found.contains("wayland-7"), "{wlr:?}");
         let x11 = names(Named::Randr).await;
         assert_eq!(only(x11.clone()), ["X11"]);
-        assert!(x11[0].found.contains("not written yet"), "{x11:?}");
+        assert_eq!(x11[0].found, "DISPLAY is not set", "{x11:?}");
+    }
+
+    #[tokio::test]
+    async fn x11_is_not_tried_under_a_wayland_session() {
+        let detection = detect_with(|name| match name {
+            "WAYLAND_DISPLAY" => Some("/tmp/nowhere/wayland-1".into()),
+            "DISPLAY" => Some(":0".into()),
+            _ => None,
+        })
+        .await;
+        assert!(detection.backend.is_none());
+        let x11 = detection.checks.last().expect("checks");
+        assert_eq!(x11.what, "X11");
+        assert!(
+            x11.found.starts_with("not tried: WAYLAND_DISPLAY"),
+            "{x11:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_x_display_that_is_not_there_is_reported() {
+        // A display number no X server has: no lock, and no socket bound to
+        // its name, as a file or in the abstract namespace (both listed in
+        // /proc/net/unix). `unix/:N` keeps libxcb to the local socket, never
+        // TCP (libxcb 1.17 refuses `unix:N` as a name it cannot parse), so
+        // no X server is reached.
+        let bound = std::fs::read_to_string("/proc/net/unix").expect("/proc/net/unix");
+        let display = (100..200)
+            .find(|n| {
+                let socket = format!("/tmp/.X11-unix/X{n}");
+                !bound
+                    .lines()
+                    .any(|line| line.ends_with(&socket) || line.ends_with(&format!("@{socket}")))
+                    && !std::path::Path::new(&socket).exists()
+                    && !std::path::Path::new(&format!("/tmp/.X{n}-lock")).exists()
+            })
+            .expect("a free display number");
+        let detection = detect_named_with(Named::Randr, |name| match name {
+            "DISPLAY" => Some(format!("unix/:{display}").into()),
+            _ => None,
+        })
+        .await;
+        assert!(detection.backend.is_none());
+        assert_eq!(detection.checks.len(), 1);
+        assert!(
+            detection.checks[0]
+                .found
+                .starts_with("cannot connect to the X server"),
+            "{:?}",
+            detection.checks
+        );
     }
 
     #[tokio::test]

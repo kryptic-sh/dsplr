@@ -20,6 +20,10 @@
 #   and rustup keep their real homes through CARGO_HOME and RUSTUP_HOME,
 #   pinned before HOME changes.
 set -uo pipefail
+# Records the X sockets and locks below :90, checked once the servers are up
+# and at exit (x-guard.sh).
+# shellcheck source=tests/e2e/x-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/x-guard.sh"
 
 runtime=$(mktemp -d)
 chmod 700 "$runtime"
@@ -41,11 +45,15 @@ cleanup() {
   [ -n "${command_pid:-}" ] && kill -- "-$command_pid" 2>/dev/null
   kill "${kwin_pid:-}" 2>/dev/null
   wait 2>/dev/null
+  # After the servers have exited, which is when they remove their sockets.
+  x_guard_check || exit 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-# The number of outputs the tests expect; they check it.
+# The number of outputs the tests expect; they check it. No Xwayland: KWin
+# starts one, and binds X display sockets, only with `--xwayland`
+# (`main_wayland.cpp`), which is not given (x-guard.sh).
 outputs=3
 env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
   XDG_CONFIG_HOME="$runtime/config" \
@@ -64,6 +72,9 @@ if ! [ -S "$runtime/wayland-0" ]; then
   exit 1
 fi
 
+# The servers are up and nothing below :90 was touched; else stop before any
+# test.
+x_guard_check || exit 1
 export XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-0 HOME="$home"
 # KWin's config location, where it writes kwinoutputconfig.json.
 export XDG_CONFIG_HOME="$runtime/config"

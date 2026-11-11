@@ -21,6 +21,10 @@
 #   at startup with its environment, which writes WAYLAND_DISPLAY and
 #   NIRI_SOCKET to a file.
 set -uo pipefail
+# Records the X sockets and locks below :90, checked once the servers are up
+# and at exit (x-guard.sh).
+# shellcheck source=tests/e2e/x-guard.sh
+source "$(dirname "${BASH_SOURCE[0]}")/x-guard.sh"
 
 # The facts the tests rest on (the first node wins, writing applies, the
 # answers to an apply) were checked on niri 26.04; say which niri this is, so
@@ -38,6 +42,8 @@ cleanup() {
   [ -n "${command_pid:-}" ] && kill -- "-$command_pid" 2>/dev/null
   kill "${niri_pid:-}" "${sway_pid:-}" 2>/dev/null
   wait 2>/dev/null
+  # After the servers have exited, which is when they remove their sockets.
+  x_guard_check || exit 1
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -45,8 +51,14 @@ trap 'exit 130' INT TERM
 mkdir -p "$runtime/config/sway" "$runtime/config/niri"
 # Each niri's window floats, so a second niri a test starts does not halve
 # the first's window, which is its output.
-printf 'swaybg_command -\nfor_window [all] floating enable\n' > "$runtime/config/sway/config"
-printf 'include optional=true "outputs.kdl"\n' > "$runtime/config/niri/config.kdl"
+# No Xwayland: wlroots binds X display sockets at startup even when it starts
+# Xwayland lazily, taking a display whose lock names a pid it cannot see
+# (x-guard.sh), and no test needs X.
+# niri's own X sockets (its xwayland-satellite integration, where that is
+# installed; niri 26.04 skips any display with a lock, `pick_x11_display`)
+# are turned off too.
+printf 'swaybg_command -\nxwayland disable\nfor_window [all] floating enable\n' > "$runtime/config/sway/config"
+printf 'xwayland-satellite {\n    off\n}\ninclude optional=true "outputs.kdl"\n' > "$runtime/config/niri/config.kdl"
 env -i HOME="$home" PATH="$PATH" XDG_RUNTIME_DIR="$runtime" \
   XDG_CONFIG_HOME="$runtime/config" \
   WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
@@ -84,6 +96,9 @@ if [ -z "${display:-}" ] || ! [ -S "${niri_socket:-}" ]; then
   exit 1
 fi
 
+# The servers are up and nothing below :90 was touched; else stop before any
+# test.
+x_guard_check || exit 1
 export XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" NIRI_SOCKET="$niri_socket" HOME="$home"
 # niri's config, which `dsplr save` writes beside.
 export XDG_CONFIG_HOME="$runtime/config"

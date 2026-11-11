@@ -587,6 +587,7 @@ version = "0.1.0"
 dependencies = [
  "crcbl-wayland",
  "crcbl-wl-scanner",
+ "crcbl-x11",
  "dsplr-model",
  "dsplr-persist",
  "serde",

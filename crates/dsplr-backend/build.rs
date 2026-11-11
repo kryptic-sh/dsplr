@@ -1,5 +1,7 @@
 //! Generates the Wayland protocol code the `wlr` and `kde` backends speak,
-//! with `crcbl-wl-scanner`, against `crcbl_wayland::ffi`.
+//! with `crcbl-wl-scanner`, against `crcbl_wayland::ffi`; and sets the `x11`
+//! cfg where the RandR backend is built (Linux and FreeBSD, where crcbl-x11
+//! has libxcb).
 //!
 //! The XML is vendored in `protocols/` as unmodified copies:
 //!
@@ -50,6 +52,14 @@ const PROTOCOLS: &[(&str, &str)] = &[
 ];
 
 fn main() {
+    // `x11`: where crcbl-x11 has libxcb to bind (its own build script's
+    // `desktop_unix`), so the RandR backend is compiled.
+    println!("cargo::rustc-check-cfg=cfg(x11)");
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if matches!(os.as_str(), "linux" | "freebsd") {
+        println!("cargo::rustc-cfg=x11");
+    }
+
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo sets this"));
     let mut sources = Vec::with_capacity(PROTOCOLS.len());
     for (module, relative) in PROTOCOLS {

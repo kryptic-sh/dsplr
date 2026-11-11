@@ -87,6 +87,7 @@ fn xvfb() -> Snapshot {
             outputs: vec![SCREEN],
             possible: vec![SCREEN],
             panning: None,
+            transform: None,
         }],
         size_range: SizeRange {
             min_width: 1,
@@ -1288,5 +1289,214 @@ fn positions_at_the_ends_of_i32_are_refused_by_their_own_values() {
             x: i32::MAX,
             y: i32::MAX,
         })
+    );
+}
+
+/// An EDID 1.4 base block, built byte by byte: vendor `DEL`, product
+/// 0x12AB, and `serial` in a serial number descriptor when given.
+fn edid(serial: Option<&str>) -> Vec<u8> {
+    let mut b = [0u8; 128];
+    b[..8].copy_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);
+    // D=4, E=5, L=12: 00100 00101 01100.
+    let vendor: u16 = (4 << 10) | (5 << 5) | 12;
+    b[8..10].copy_from_slice(&vendor.to_be_bytes());
+    b[10..12].copy_from_slice(&0x12abu16.to_le_bytes());
+    b[16] = 12;
+    b[17] = 30;
+    b[18] = 1;
+    b[19] = 4;
+    if let Some(serial) = serial {
+        b[72..77].copy_from_slice(&[0, 0, 0, 0xff, 0]);
+        let mut text = [b' '; 13];
+        text[..serial.len()].copy_from_slice(serial.as_bytes());
+        text[serial.len()] = b'\n';
+        b[77..90].copy_from_slice(&text);
+    }
+    let sum = b[..127]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    b[127] = 0u8.wrapping_sub(sum);
+    b.to_vec()
+}
+
+fn read(snapshot: &Snapshot) -> Layout {
+    super::snapshot::layout(snapshot).expect("reads as a layout")
+}
+
+fn by_connector<'a>(layout: &'a Layout, connector: &str) -> &'a OutputEntry {
+    layout
+        .entries
+        .iter()
+        .find(|entry| entry.connector() == Some(connector))
+        .unwrap_or_else(|| panic!("no {connector}"))
+}
+
+#[test]
+fn xvfb_reads_as_one_output_named_by_its_connector() {
+    let layout = read(&xvfb());
+    assert_eq!(layout.entries.len(), 1);
+    let screen = &layout.entries[0];
+    assert_eq!(screen.id, OutputId::Connector("screen".into()));
+    let output = screen.output.as_ref().expect("hardware facts");
+    assert_eq!(output.description, "screen");
+    assert_eq!(output.physical_size_mm, None, "Xvfb gives 0 mm");
+    let mut mode = Mode::new(1920, 1080, 0);
+    mode.handle = Some(ModeHandle(0x3a));
+    assert_eq!(output.modes, [mode.clone()]);
+    assert_eq!(
+        screen.state,
+        OutputState {
+            mode: Some(mode),
+            ..OutputState::default()
+        }
+    );
+}
+
+#[test]
+fn a_docked_laptop_reads_with_identities_modes_and_positions() {
+    let mut snapshot = docked();
+    snapshot.outputs[0].edid = Some(edid(Some("SER1")));
+    snapshot.outputs[0].mm_width = 344;
+    snapshot.outputs[0].mm_height = 194;
+    // A monitor without a serial: named by its connector.
+    snapshot.outputs[1].edid = Some(edid(None));
+    snapshot.outputs[3].connection = super::resources::Connection::Disconnected;
+    snapshot.primary = Some(EDP);
+    let layout = read(&snapshot);
+
+    let names: Vec<_> = layout.entries.iter().map(|e| e.connector()).collect();
+    assert_eq!(
+        names,
+        [Some("eDP-1"), Some("HDMI-1"), Some("DP-1")],
+        "DP-2, disconnected and off, is left out"
+    );
+    let edp = by_connector(&layout, "eDP-1");
+    assert_eq!(
+        edp.id,
+        OutputId::Edid {
+            make: "DEL".into(),
+            model: "0x12AB".into(),
+            serial: "SER1".into(),
+        }
+    );
+    let output = edp.output.as_ref().expect("hardware facts");
+    assert_eq!(output.description, "DEL 0x12AB SER1");
+    assert_eq!(output.physical_size_mm, Some((344, 194)));
+    // eDP-1 lists 1080 first, which is preferred (num_preferred 1).
+    let preferred: Vec<bool> = output.modes.iter().map(|mode| mode.preferred).collect();
+    assert_eq!(preferred, [true, false]);
+    assert_eq!(output.modes[0].refresh_mhz, 60_000);
+    assert!(edp.state.primary && edp.state.enabled);
+    assert_eq!(
+        edp.state.mode.as_ref().map(|m| m.handle),
+        Some(Some(ModeHandle(0x60)))
+    );
+
+    let hdmi = by_connector(&layout, "HDMI-1");
+    assert_eq!(hdmi.id, OutputId::Connector("HDMI-1".into()));
+    assert_eq!(
+        (hdmi.state.x, hdmi.state.y, hdmi.state.primary),
+        (1920, 0, false)
+    );
+    assert_eq!(by_connector(&layout, "DP-1").state.x, 4480);
+}
+
+#[test]
+fn an_output_off_but_connected_reads_as_off() {
+    let layout = read(&laptop());
+    let hdmi = by_connector(&layout, "HDMI-1");
+    assert!(!hdmi.state.enabled && hdmi.state.mode.is_none());
+    assert_eq!(hdmi.output.as_ref().map(|o| o.modes.len()), Some(2));
+}
+
+#[test]
+fn a_rotation_reads_back_as_the_transform_that_sets_it() {
+    for transform in Transform::ALL {
+        assert_eq!(super::plan::transform(rotation(transform)), Some(transform));
+    }
+    // A reflection in y is one in x half a turn further; both are half a
+    // turn.
+    let read_back = |bits: Rotation| super::plan::transform(bits);
+    assert_eq!(
+        read_back(Rotation::ROTATE_90 | Rotation::REFLECT_Y),
+        Some(Transform::Flipped270)
+    );
+    assert_eq!(
+        read_back(Rotation::ROTATE_0 | Rotation::REFLECT_X | Rotation::REFLECT_Y),
+        Some(Transform::Rotate180)
+    );
+    assert_eq!(read_back(Rotation(0)), None);
+
+    let mut snapshot = docked();
+    snapshot.crtcs[1].rotation = Rotation::ROTATE_270 | Rotation::REFLECT_X;
+    assert_eq!(
+        by_connector(&read(&snapshot), "HDMI-1").state.transform,
+        Transform::Flipped270
+    );
+    snapshot.crtcs[1].rotation = Rotation(0);
+    assert!(super::snapshot::layout(&snapshot).is_err());
+}
+
+#[test]
+fn clones_on_one_crtc_and_crtcs_at_one_place_read_as_mirrors() {
+    let mut snapshot = cloning();
+    snapshot.crtcs[0].outputs.push(DVI0);
+    snapshot.outputs[1].crtc = Some(D1);
+    let layout = read(&snapshot);
+    assert_eq!(
+        by_connector(&layout, "DVI-0").state.mirror_of,
+        Some(OutputId::Connector("VGA-0".into()))
+    );
+    assert_eq!(by_connector(&layout, "VGA-0").state.mirror_of, None);
+
+    // HDMI-1 on its own CRTC, where eDP-1's is.
+    let mut laptop = laptop();
+    drive(&mut laptop, C2, HDMI, M1080, 0, 0);
+    let layout = read(&laptop);
+    assert_eq!(
+        by_connector(&layout, "HDMI-1").state.mirror_of,
+        Some(OutputId::Connector("eDP-1".into()))
+    );
+}
+
+#[test]
+fn replies_naming_what_they_do_not_describe_are_refused() {
+    let mut snapshot = docked();
+    snapshot.crtcs[1].mode = Some(ModeXid(0x99));
+    assert!(super::snapshot::layout(&snapshot).is_err());
+    let mut snapshot = docked();
+    snapshot.outputs[1].crtc = Some(CrtcXid(0x99));
+    assert!(super::snapshot::layout(&snapshot).is_err());
+}
+
+#[test]
+fn a_crtc_with_a_transform_is_not_planned_over() {
+    let mut snapshot = docked();
+    snapshot.crtcs[1].transform = Some([[1 << 17, 0, 0], [0, 1 << 17, 0], [0, 0, 1 << 16]]);
+    let refused = plan(&snapshot, &layout(docked_layout()));
+    assert_eq!(
+        refused,
+        Err(PlanError::Transformed {
+            crtc: C2,
+            outputs: vec!["HDMI-1".into()],
+        })
+    );
+    let said = refused.unwrap_err().to_string();
+    assert!(said.starts_with("HDMI-1 has a RandR transform"), "{said}");
+}
+
+#[test]
+fn an_output_on_a_crtc_with_no_mode_and_half_a_size_read_as_off_and_unsized() {
+    // A CRTC an output still names after it was turned off, mode none.
+    let mut snapshot = laptop();
+    snapshot.outputs[1].crtc = Some(C2);
+    snapshot.outputs[1].mm_width = 600;
+    let layout = read(&snapshot);
+    let hdmi = by_connector(&layout, "HDMI-1");
+    assert!(!hdmi.state.enabled);
+    assert_eq!(
+        hdmi.output.as_ref().and_then(|o| o.physical_size_mm),
+        None,
+        "no height: no size"
     );
 }

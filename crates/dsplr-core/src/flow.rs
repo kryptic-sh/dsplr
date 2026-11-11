@@ -367,9 +367,20 @@ impl Flow {
                 };
                 Step::Discard
             }
-            // Nothing was sent, so there is nothing to go back from.
+            // Nothing was sent, so there is nothing to go back from: the
+            // backend cannot take the layout, or cannot apply at all.
             Failure::NotTaken(_) => {
                 self.cannot_take(backend, &error);
+                self.waiting = Waiting::Discard {
+                    show: false,
+                    then: Outcome::Refused,
+                };
+                Step::Discard
+            }
+            Failure::Unsupported(_) => {
+                self.say(format!(
+                    "{backend} cannot apply a layout, so nothing was applied: {error}"
+                ));
                 self.waiting = Waiting::Discard {
                     show: false,
                     then: Outcome::Refused,
@@ -382,7 +393,7 @@ impl Flow {
                 self.say(format!("{backend} refused the layout: {error}"));
                 self.revert(AfterRevert::Always(Outcome::BackendRefused))
             }
-            Failure::Unsupported(_) | Failure::Failed(_) => {
+            Failure::Failed(_) => {
                 self.say(format!("cannot apply the layout on {backend}: {error}"));
                 self.revert(AfterRevert::Always(Outcome::Failed))
             }
@@ -676,6 +687,23 @@ mod tests {
             [Test, Prepare, Apply, Discard, Done(Outcome::Refused)]
         );
         assert_eq!(outcome, Outcome::Refused);
+
+        // A backend that cannot apply at all sent nothing either: the revert
+        // point goes, unshown, and nothing is reverted.
+        let unsupported = Fake {
+            apply: Err(Failure::Unsupported("not written yet".into())),
+            ..Fake::default()
+        };
+        let (steps, outcome, messages) = drive(moved(), can_ask(), &unsupported);
+        assert_eq!(
+            steps,
+            [Test, Prepare, Apply, Discard, Done(Outcome::Refused)]
+        );
+        assert_eq!(outcome, Outcome::Refused);
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("wlr cannot apply a layout, so nothing was applied: not written yet")
+        );
     }
 
     #[test]

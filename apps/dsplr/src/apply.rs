@@ -172,10 +172,23 @@ pub async fn drive(
                     .map(|now| asked.differences(&now, &capabilities))
                     .map_err(|error| error.to_string()),
             ),
+            // Nothing was sent: the revert point goes, and its watchdog,
+            // which would only wake to find it gone, with it.
             Step::Discard => Answer::Discarded(match guard.take() {
-                Some(Guard { path, point, .. }) => revert::remove_if(&path, &point.token)
-                    .map(drop)
-                    .map_err(|error| error.to_string()),
+                Some(Guard {
+                    path,
+                    point,
+                    mut process,
+                    ..
+                }) => {
+                    // Already gone is as good; a kill that fails leaves it
+                    // to wake, find no revert point and exit.
+                    let _ = process.kill();
+                    let _ = process.wait();
+                    revert::remove_if(&path, &point.token)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                }
                 None => Ok(()),
             }),
             Step::Confirm => Answer::Confirmed(match &guard {
@@ -205,6 +218,8 @@ struct Guard {
     path: PathBuf,
     point: RevertPoint,
     watchdog: Instant,
+    /// The watchdog's process.
+    process: std::process::Child,
 }
 
 /// Step 3's guard: writes `current` as the revert point and starts its
@@ -222,17 +237,21 @@ fn prepare(
     let started = Instant::now();
     let point = RevertPoint::guarding(current.clone(), unix_ms(SystemTime::now() + delay));
     revert::save(&path, &point).map_err(cannot_keep)?;
-    if let Err(error) = restore::spawn_watchdog(&point.token, delay) {
-        let mut why = vec![format!("cannot start the revert watchdog: {error}")];
-        if let Err(error) = revert::remove_if(&path, &point.token) {
-            why.push(error.to_string());
+    let process = match restore::spawn_watchdog(&point.token, delay) {
+        Ok(process) => process,
+        Err(error) => {
+            let mut why = vec![format!("cannot start the revert watchdog: {error}")];
+            if let Err(error) = revert::remove_if(&path, &point.token) {
+                why.push(error.to_string());
+            }
+            return Err(why);
         }
-        return Err(why);
-    }
+    };
     Ok(Guard {
         path,
         point,
         watchdog: started + delay,
+        process,
     })
 }
 
