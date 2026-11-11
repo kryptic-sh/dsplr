@@ -1500,3 +1500,56 @@ fn an_output_on_a_crtc_with_no_mode_and_half_a_size_read_as_off_and_unsized() {
         "no height: no size"
     );
 }
+
+#[test]
+fn a_mode_named_without_a_handle_is_progressive_before_interlaced() {
+    // 1920x1080i at 60 Hz (CEA-861's, its field rate 60) listed before
+    // 1920x1080p at 60 Hz, eDP-1 driven at neither.
+    let interlaced = ModeXid(0x66);
+    let mut snapshot = laptop();
+    let mut info = timings(
+        interlaced,
+        (1920, 1080),
+        74_250_000,
+        [2008, 2052, 2200],
+        [1084, 1094, 1125],
+        "1920x1080i",
+    );
+    info.flags |= mode_flags::INTERLACE;
+    assert_eq!(info.refresh_mhz(), 60_000);
+    snapshot.resources.modes.push(info);
+    snapshot.outputs[0].modes.insert(0, interlaced);
+    drive_mode(&mut snapshot, C1, M720);
+    let operations = ops(
+        &snapshot,
+        &layout(vec![on("eDP-1", mode(1920, 1080, 60_000), 0, 0)]),
+    )
+    .expect("plans");
+    assert!(
+        operations.iter().any(|op| matches!(
+            op,
+            Operation::SetCrtcConfig {
+                mode: ModeRef::Listed(M1080),
+                ..
+            }
+        )),
+        "{operations:?}"
+    );
+}
+
+/// Sets `crtc`'s current mode to `mode`, its size with it.
+fn drive_mode(snapshot: &mut Snapshot, crtc: CrtcXid, mode: ModeXid) {
+    let info = snapshot
+        .resources
+        .modes
+        .iter()
+        .find(|info| info.id == mode)
+        .expect("a mode of the snapshot")
+        .clone();
+    let state = snapshot
+        .crtcs
+        .iter_mut()
+        .find(|state| state.id == crtc)
+        .expect("a CRTC of the snapshot");
+    (state.mode, state.width, state.height) = (Some(mode), info.width, info.height);
+}

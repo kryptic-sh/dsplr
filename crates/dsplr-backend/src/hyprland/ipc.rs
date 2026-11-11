@@ -441,7 +441,10 @@ mod tests {
             Err(Error::Write(_))
         ));
         // The test refuses it too, before the apply flow keeps a revert point.
-        for result in [backend.test(&layout).await, backend.apply(&layout).await] {
+        for result in [
+            backend.test(&layout).await,
+            backend.apply(&layout).await.map(drop),
+        ] {
             let error = result.expect_err("refused");
             assert!(
                 matches!(error, crate::Error::Hyprland(Error::Write(_))),

@@ -85,7 +85,13 @@ pub async fn go_back(
     point: &RevertPoint,
     say: &mut dyn FnMut(String),
 ) -> Exit {
-    if let Err(error) = backend.apply(&point.layout).await {
+    let applied = backend.apply(&point.layout).await;
+    if let Ok(notes) = &applied {
+        for note in notes {
+            say(note.clone());
+        }
+    }
+    if let Err(error) = applied {
         // Classified as the flow classifies an apply: what sent nothing
         // (the backend cannot apply at all, or cannot take the layout) is
         // refused, and trying again would do the same.
@@ -196,11 +202,20 @@ mod tests {
     #[test]
     fn the_watchdog_waits_past_two_slow_changes_and_the_prompt() {
         let confirm = Duration::from_secs(20);
+        // X11's request timeout is an apply's, the longest of any backend's,
+        // since a modeset can take seconds.
+        #[cfg(target_os = "linux")]
+        let x11 = [dsplr_backend::randr::APPLY_TIMEOUT];
+        #[cfg(not(target_os = "linux"))]
+        let x11: [Duration; 0] = [];
         for request in [
             Duration::ZERO,
             Duration::from_secs(5),
             Duration::from_secs(10),
-        ] {
+        ]
+        .into_iter()
+        .chain(x11)
+        {
             // An apply and its settle, each request running to its timeout,
             // before and after the prompt.
             let change = request + settle_limit(request);

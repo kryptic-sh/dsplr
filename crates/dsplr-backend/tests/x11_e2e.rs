@@ -1,5 +1,6 @@
 //! The RandR backend against a real X server, the harness's Xvfb: detection
-//! finding it, and its outputs read as a layout.
+//! finding it, its outputs read as a layout, and a layout applied and
+//! applied back.
 //!
 //! Run through the harness, which starts that Xvfb on a display of its own:
 //!
@@ -21,7 +22,7 @@ mod support;
 #[path = "../../../tests/e2e/x11_support.rs"]
 mod x11_support;
 
-use support::entry;
+use support::{edited, entry, entry_mut};
 use x11_support::harness_runtime;
 
 #[tokio::test(flavor = "current_thread")]
@@ -63,11 +64,6 @@ async fn xvfb_is_found_and_read() {
         Err(Error::Unsupported { what, .. }) => assert_eq!(what, "testing a layout"),
         other => panic!("{other:?}"),
     }
-    // Applying is not written yet, and says so.
-    assert!(matches!(
-        backend.apply(&layout).await,
-        Err(Error::Unsupported { .. })
-    ));
     let Backend::Randr(ref randr) = backend else {
         panic!("{backend:?}");
     };
@@ -87,4 +83,88 @@ async fn xvfb_is_found_and_read() {
             dsplr_backend::randr::Operation::UngrabServer
         ]
     );
+
+    // Applied: a CVT mode made for a size `screen` does not list, and the
+    // screen shrunk to it; then back. Xvfb has no panning, so nothing is
+    // noted.
+    let small = edited(&layout, |layout| {
+        entry_mut(layout, "screen").state.mode = Some(Mode::new(1280, 720, 60_000));
+    });
+    assert_eq!(
+        backend.apply(&small).await.expect("applied"),
+        Vec::<String>::new()
+    );
+    let now = backend.snapshot().await.expect("snapshot");
+    let mode = entry(&now, "screen").state.mode.clone().expect("a mode");
+    assert_eq!(
+        (mode.width, mode.height, mode.refresh_mhz),
+        (1280, 720, 59_855)
+    );
+    let after = randr.read().await.expect("the server's state");
+    assert_eq!((after.screen.width, after.screen.height), (1280, 720));
+    // The same layout again finds the mode made before.
+    backend.apply(&small).await.expect("applied again");
+    let again = randr.read().await.expect("the server's state");
+    assert_eq!(after.resources.modes.len(), again.resources.modes.len());
+
+    backend.apply(&layout).await.expect("applied back");
+    let back = backend.snapshot().await.expect("snapshot");
+    assert_eq!(
+        entry(&back, "screen")
+            .state
+            .mode
+            .as_ref()
+            .map(|m| (m.width, m.height)),
+        Some((1920, 1080))
+    );
+    assert_eq!(randr.read().await.expect("read").screen.width, 1920);
+}
+
+/// A request failing under the server grab still leaves the server
+/// ungrabbed: a read on another connection, made while the failed one is
+/// still open, is answered within a second rather than held up by a grab.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the Xvfb harness: tests/e2e/headless-x11.sh"]
+async fn a_request_failing_under_the_grab_leaves_the_server_ungrabbed() {
+    use dsplr_backend::randr::resources::{ModeXid, Rotation};
+    use dsplr_backend::randr::{ModeRef, Operation, Plan};
+
+    harness_runtime();
+    let Some(Backend::Randr(randr)) = dsplr_backend::detect().await.backend else {
+        panic!("no RandR backend");
+    };
+    let before = randr.read().await.expect("the server's state");
+    let crtc = &before.crtcs[0];
+    // A mode the server does not have: X refuses it (BadRRMode).
+    let plan = Plan {
+        operations: vec![
+            Operation::GrabServer,
+            Operation::SetCrtcConfig {
+                crtc: crtc.id,
+                mode: ModeRef::Listed(ModeXid(0x7fff_fff0)),
+                x: 0,
+                y: 0,
+                rotation: Rotation::ROTATE_0,
+                outputs: crtc.outputs.clone(),
+            },
+            Operation::UngrabServer,
+        ],
+        notes: Vec::new(),
+    };
+    let (sent, read) = randr
+        .send_then_read_beside(plan, std::time::Duration::from_secs(1))
+        .await
+        .expect("ran");
+    assert!(
+        matches!(
+            sent,
+            Err(dsplr_backend::randr::Error::X {
+                what: "SetCrtcConfig",
+                ..
+            })
+        ),
+        "{sent:?}"
+    );
+    let read = read.expect("read while the failed connection was still open");
+    assert_eq!(read.crtcs[0].mode, crtc.mode, "nothing changed");
 }

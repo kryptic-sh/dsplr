@@ -19,4 +19,4 @@ pub mod x11;
 pub use plan::{ModeRef, Note, Operation, Plan, PlanError, plan};
 pub use resources::Snapshot;
 #[cfg(x11)]
-pub use x11::{Error, OPERATION_TIMEOUT, Randr};
+pub use x11::{APPLY_TIMEOUT, Error, OPERATION_TIMEOUT, Randr};

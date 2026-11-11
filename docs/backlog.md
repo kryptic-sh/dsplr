@@ -760,13 +760,11 @@ milestone:
   (`tools/x11-display.sh` in crcbl: sixteen outputs, `DUMMY0` on, a CVT mode
   added to the others). Not tried in dsplr yet, nor whether CI's VM can run it
   (`xf86-video-dummy` on Arch).
-- **X11's apply is unsupported until it is written**: `dsplr set --yes` and
-  every other apply on X11 is refused with nothing sent (exit `3`): the flow
-  takes `Error::Unsupported` from an apply as it takes a layout the backend
-  cannot send, discards the revert point unshown and ends its watchdog. The
-  prepare step before it still writes the revert point, replacing any earlier
-  one (a change of another desktop's left waiting to be kept, say), which goes
-  away once the RandR backend applies (M7's next step).
+- **Xwayland is found by its output names**: an apply refuses a server whose
+  outputs are all `XWAYLAND<n>` (`randr::x11::xwayland_outputs`), on top of
+  `WAYLAND_DISPLAY` being set. The `XWAYLAND` extension would say it surely, but
+  crcbl-x11 0.19.1 offers no `QueryExtension`; asked of the crcbl session
+  through the coordinator (2026-11-12). Switch once a release has it.
 - **X11 reads without probing**: `randr::x11` reads `GetScreenResourcesCurrent`,
   which returns the server's last known outputs without asking the driver. On a
   driver without hotplug detection a newly plugged monitor shows only after
@@ -775,17 +773,6 @@ milestone:
   depends on the driver and was not measured). An option: probe only on an
   explicit refresh (the GUI's, a `dsplr list --probe`), never on every read. Not
   decided.
-- **For applying on X11 (M7's next step)**:
-  - a CRTC's pending transform (`GetCrtcTransform`'s pending fields, set but not
-    yet in force) is not read; one that is not the identity takes effect at the
-    next `SetCrtcConfig`, so it has to be refused or reset before one;
-  - `--backend randr` under a Wayland session reads the compositor's Xwayland,
-    whose RandR sets nothing on its outputs; applying there has to be refused
-    (detection never picks it there, the flag does);
-  - interlaced modes: `Mode` has no interlace flag, so 1920x1080i and 1920x1080p
-    at one refresh differ only by their handle; check which a layout without
-    handles (a profile, a file) gets from `plan::choose_mode`, which takes the
-    one the output is driven at, else the nearest refresh.
 - **A scaled CRTC's size is wrong in `dsplr list`**: a CRTC with a transform
   (`xrandr --scale 2x2`) shows its mode's size, not the area it covers, and
   neither the CLI nor the GUI says so; the planner refuses to plan over it
@@ -820,9 +807,6 @@ milestone:
   `xf86RandR13VerifyPanningArea` as read, not on a server. Xvfb resets when its
   last client disconnects unless started with `-noreset`, which drops created
   modes; the harness needs it.
-- **What sending a RandR plan has to do**: map `ModeRef::Created(n)` to the XID
-  in the `n`th `RRCreateMode` reply. (CRTC transforms are read and refused,
-  `PlanError::Transformed`, and adaptive sync reads as `None`.)
 
 - **Where `dsplr watch` has run**: on sway (`sway_e2e.rs`: hotplug both ways, no
   loop on its own applies, a change waiting to be kept, a reconnect), on niri

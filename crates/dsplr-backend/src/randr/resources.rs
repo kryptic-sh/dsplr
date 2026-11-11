@@ -209,8 +209,10 @@ pub struct CrtcInfo {
     /// `None` when it has none (all zero) or the server is older than
     /// RandR 1.3.
     pub panning: Option<Panning>,
-    /// `RRGetCrtcTransform`'s current transform, as 16.16 fixed point, when
-    /// it is not the identity (`xrandr --scale` or `--transform` set it).
+    /// `RRGetCrtcTransform`'s current transform, or else its pending one
+    /// (set, in force from the next `SetCrtcConfig`), as 16.16 fixed point,
+    /// when it is not the identity (`xrandr --scale` or `--transform` set
+    /// it).
     pub transform: Option<[[i32; 3]; 3]>,
 }
 

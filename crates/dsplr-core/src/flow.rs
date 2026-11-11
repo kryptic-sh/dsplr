@@ -115,7 +115,9 @@ pub enum Answer {
     Tested(Result<(), Failure>),
     /// The error says what could not be done, one whole line each.
     Prepared(Result<(), Vec<String>>),
-    Applied(Result<(), Failure>),
+    /// What the backend did that the layout did not ask for, one line
+    /// each, when it applied it.
+    Applied(Result<Vec<String>, Failure>),
     Settled(Result<Vec<Difference>, String>),
     Shown(Result<Vec<Difference>, String>),
     Discarded(Result<(), String>),
@@ -347,10 +349,16 @@ impl Flow {
     }
 
     /// Step 3's apply.
-    fn applied(&mut self, backend: &str, result: Result<(), Failure>) -> Step {
-        let Err(failure) = result else {
-            self.waiting = Waiting::Settle;
-            return Step::Settle;
+    fn applied(&mut self, backend: &str, result: Result<Vec<String>, Failure>) -> Step {
+        let failure = match result {
+            Ok(notes) => {
+                for note in notes {
+                    self.say(note);
+                }
+                self.waiting = Waiting::Settle;
+                return Step::Settle;
+            }
+            Err(failure) => failure,
         };
         let error = failure.text().to_owned();
         match failure {
@@ -478,7 +486,7 @@ mod tests {
     struct Fake {
         test: Result<(), Failure>,
         prepare: Result<(), Vec<String>>,
-        apply: Result<(), Failure>,
+        apply: Result<Vec<String>, Failure>,
         settle: Result<Vec<Difference>, String>,
         confirm: bool,
         revert: bool,
@@ -490,7 +498,7 @@ mod tests {
             Self {
                 test: Ok(()),
                 prepare: Ok(()),
-                apply: Ok(()),
+                apply: Ok(Vec::new()),
                 settle: Ok(Vec::new()),
                 confirm: true,
                 revert: true,
@@ -703,6 +711,22 @@ mod tests {
         assert_eq!(
             messages.last().map(String::as_str),
             Some("wlr cannot apply a layout, so nothing was applied: not written yet")
+        );
+    }
+
+    #[test]
+    fn what_the_backend_did_unasked_is_said() {
+        let noted = Fake {
+            apply: Ok(vec!["panning on HDMI-1 reset".into()]),
+            ..Fake::default()
+        };
+        let (_, outcome, messages) = drive(moved(), can_ask(), &noted);
+        assert_eq!(outcome, Outcome::Kept);
+        assert!(
+            messages
+                .iter()
+                .any(|line| line == "panning on HDMI-1 reset"),
+            "{messages:?}"
         );
     }
 

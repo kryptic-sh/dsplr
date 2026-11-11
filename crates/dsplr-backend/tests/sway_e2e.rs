@@ -102,7 +102,7 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
     });
     for result in [
         backend.test(&unallocatable).await,
-        backend.apply(&unallocatable).await,
+        backend.apply(&unallocatable).await.map(drop),
     ] {
         assert!(
             matches!(result, Err(Error::Wlr(wlr::Error::Failed))),
@@ -125,7 +125,7 @@ async fn a_headless_sway_tests_applies_and_shows_each_layout() {
     );
     for result in [
         backend.test(&mirrored).await,
-        backend.apply(&mirrored).await,
+        backend.apply(&mirrored).await.map(drop),
     ] {
         assert!(
             matches!(

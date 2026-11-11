@@ -192,7 +192,10 @@ async fn mutter_tests_applies_and_shows_each_layout() {
     let apart = edited(&start, |layout| {
         entry_mut(layout, three).state.x += 100;
     });
-    for result in [backend.test(&apart).await, backend.apply(&apart).await] {
+    for result in [
+        backend.test(&apart).await,
+        backend.apply(&apart).await.map(drop),
+    ] {
         let error = result.expect_err("refused");
         assert!(error.is_refusal(), "{error:?}");
         assert!(!error.is_refused_before_sending(), "{error:?}");
@@ -212,7 +215,10 @@ async fn mutter_tests_applies_and_shows_each_layout() {
         entry_mut(layout, one).state.mode = Some(Mode::new(640, 480, 60_000));
     });
     for layout in [&offset, &unlisted] {
-        for result in [backend.test(layout).await, backend.apply(layout).await] {
+        for result in [
+            backend.test(layout).await,
+            backend.apply(layout).await.map(drop),
+        ] {
             assert!(
                 matches!(result, Err(Error::Gnome(gnome::Error::Plan(_)))),
                 "{result:?}"

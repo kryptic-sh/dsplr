@@ -32,6 +32,14 @@ use dsplr_model::Layout;
 /// How long one read of the server's state may take.
 pub const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long an apply may take: its read and plan, and every request it
+/// sends. Longer than a read's [`OPERATION_TIMEOUT`], since a real modeset
+/// takes the driver seconds (DisplayLink, nvidia, DisplayPort link training
+/// across several monitors, one `SetCrtcConfig` after another). The revert
+/// watchdog's delay is counted from it ([`crate::Backend::request_timeout`]),
+/// so it stays above an apply and its revert.
+pub const APPLY_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// The RandR version the reads need: `GetScreenResourcesCurrent`,
 /// `GetOutputPrimary`, `GetPanning` and `GetCrtcTransform` are 1.3's.
 const NEEDED: crcbl_x11::RandrVersion = crcbl_x11::RandrVersion { major: 1, minor: 3 };
@@ -61,10 +69,31 @@ pub enum Error {
     Snapshot(#[from] SnapshotError),
     #[error(transparent)]
     Plan(#[from] super::PlanError),
-    #[error("the X server did not answer {what} within {seconds} s", seconds = OPERATION_TIMEOUT.as_secs())]
-    Timeout { what: &'static str },
+    #[error("the X server did not answer {what} within {seconds} s")]
+    Timeout { what: &'static str, seconds: u64 },
+    /// The server is a Wayland compositor's Xwayland: its outputs are named
+    /// `XWAYLAND0` and on. Its RandR does not set the compositor's outputs.
+    #[error(
+        "this X server is a Wayland compositor's Xwayland (its outputs are {0}), whose RandR does not set the compositor's outputs; use the compositor's own backend"
+    )]
+    Xwayland(String),
     #[error("the thread reading the X server ended: {0}")]
     Thread(String),
+    /// The server answered a configuration request with a status other
+    /// than success.
+    #[error("the X server refused {request}: {status:?}")]
+    Refused {
+        request: &'static str,
+        status: crcbl_x11::SetConfigStatus,
+    },
+    /// The server said its configuration changed since it was read
+    /// (`InvalidConfigTime`, `InvalidTime`; X.Org never says so for
+    /// `SetCrtcConfig`, which checks neither timestamp).
+    #[error("the X server's configuration changed while {request} was sent: {status:?}")]
+    Stale {
+        request: &'static str,
+        status: crcbl_x11::SetConfigStatus,
+    },
 }
 
 /// The X server `DISPLAY` names, driven through RandR.
@@ -74,6 +103,9 @@ pub struct Randr {
     display: String,
     /// The RandR version the server settled on, when it was found.
     version: crcbl_x11::RandrVersion,
+    /// Whether `WAYLAND_DISPLAY` was set: `DISPLAY` is then a Wayland
+    /// compositor's Xwayland, whose RandR sets nothing on its outputs.
+    xwayland: bool,
 }
 
 impl Randr {
@@ -91,12 +123,55 @@ impl Randr {
             return Ok(None);
         };
         let name = display.clone();
-        let version = blocking("RandR's version", move || {
-            let connection = Connection::connect(Some(&name))?;
-            version(&connection)
+        let version = blocking("RandR's version", move || on_server(&name, version)).await?;
+        let xwayland = var("WAYLAND_DISPLAY").is_some_and(|wayland| !wayland.is_empty());
+        Ok(Some(Self {
+            display,
+            version,
+            xwayland,
+        }))
+    }
+
+    /// Whether this X server is a Wayland compositor's Xwayland
+    /// (`WAYLAND_DISPLAY` was set when it was found).
+    #[must_use]
+    pub const fn xwayland(&self) -> bool {
+        self.xwayland
+    }
+
+    /// Sets the server to `layout`: reads its state on a connection of its
+    /// own, plans the requests on it ([`super::plan`]) and sends them there
+    /// ([`send`]), all within [`APPLY_TIMEOUT`]. Returns what the plan did
+    /// that the layout did not ask for ([`super::Note`]), one line each. A
+    /// server whose outputs are Xwayland's is refused, nothing sent.
+    ///
+    /// On a timeout the thread is left behind with its connection, and any
+    /// server grab it holds ends when the server answers it or the
+    /// connection closes; a `SetCrtcConfig` it had sent may still take
+    /// effect then. Every read and apply of a server waits for the one
+    /// before it ([`on_server`]), so the read the apply flow makes next, to
+    /// revert or report, sees what that late apply did, or times out too.
+    ///
+    /// # Errors
+    ///
+    /// As [`Randr::read`]; why the layout cannot be planned; a request the
+    /// server failed or refused.
+    pub async fn apply(&self, layout: &Layout) -> Result<Vec<String>, Error> {
+        let name = self.display.clone();
+        let layout = layout.clone();
+        blocking_for(APPLY_TIMEOUT, "applying the layout", move || {
+            on_server(&name, |connection| {
+                version(connection)?;
+                let snapshot = read(connection)?;
+                if let Some(names) = xwayland_outputs(&snapshot) {
+                    return Err(Error::Xwayland(names));
+                }
+                let plan = super::plan(&snapshot, &layout)?;
+                send(connection, &snapshot, &plan)?;
+                Ok(plan.notes.iter().map(ToString::to_string).collect())
+            })
         })
-        .await?;
-        Ok(Some(Self { display, version }))
+        .await
     }
 
     /// The display name, as `DISPLAY` gave it.
@@ -120,9 +195,48 @@ impl Randr {
     pub async fn read(&self) -> Result<Snapshot, Error> {
         let name = self.display.clone();
         blocking("the outputs", move || {
-            let connection = Connection::connect(Some(&name))?;
-            version(&connection)?;
-            read(&connection)
+            on_server(&name, |connection| {
+                version(connection)?;
+                read(connection)
+            })
+        })
+        .await
+    }
+
+    /// Sends `plan` as it is, without planning, on a connection kept open
+    /// while the server is read on another within `limit`: for the e2e test
+    /// showing that a request failing under the grab leaves the server
+    /// ungrabbed, with a plan the planner would not make. The first result
+    /// is the send's, the second the read's.
+    #[doc(hidden)]
+    pub async fn send_then_read_beside(
+        &self,
+        plan: super::Plan,
+        limit: Duration,
+    ) -> Result<(Result<(), Error>, Result<Snapshot, Error>), Error> {
+        let name = self.display.clone();
+        blocking_for(APPLY_TIMEOUT, "the test's plan", move || {
+            on_server(&name, |connection| {
+                version(connection)?;
+                let snapshot = read(connection)?;
+                let sent = send(connection, &snapshot, &plan);
+                // Read on a second connection while this one stays open:
+                // a grab it still held would hold the read up.
+                let (done, result) = std::sync::mpsc::channel();
+                let beside = name.clone();
+                std::thread::spawn(move || {
+                    let _ = done.send(
+                        Connection::connect(Some(&beside))
+                            .map_err(Error::from)
+                            .and_then(|other| read(&other)),
+                    );
+                });
+                let read = result.recv_timeout(limit).unwrap_or(Err(Error::Timeout {
+                    what: "the read beside the test's plan",
+                    seconds: limit.as_secs(),
+                }));
+                Ok((sent, read))
+            })
         })
         .await
     }
@@ -146,6 +260,60 @@ impl Randr {
         super::plan(&self.read().await?, layout)?;
         Ok(())
     }
+}
+
+/// The names of `snapshot`'s outputs when they are a Wayland compositor's
+/// Xwayland's (`XWAYLAND` and a number, as Xwayland names each output after
+/// the compositor's), `None` when any is not. crcbl-x11 0.19.1 offers no
+/// `QueryExtension`, which would find the `XWAYLAND` extension instead.
+fn xwayland_outputs(snapshot: &Snapshot) -> Option<String> {
+    let xwayland = |name: &str| {
+        name.strip_prefix("XWAYLAND")
+            .is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+    };
+    let names: Vec<&str> = snapshot
+        .outputs
+        .iter()
+        .map(|output| output.name.as_str())
+        .collect();
+    (!names.is_empty() && names.iter().all(|name| xwayland(name))).then(|| names.join(", "))
+}
+
+/// One lock per X server, by display name: what [`on_server`] holds.
+static SERVERS: std::sync::Mutex<Vec<(String, std::sync::Arc<std::sync::Mutex<()>>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The lock for the server `display` names.
+fn server_lock(display: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    let mut servers = SERVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, lock)) = servers.iter().find(|(name, _)| name == display) {
+        return lock.clone();
+    }
+    let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    servers.push((display.to_owned(), lock.clone()));
+    lock
+}
+
+/// Runs `work` on a new connection to the server `display` names, holding
+/// that server's lock throughout: every read and apply of one server, in
+/// this process, runs after the one before it has ended. So when an apply
+/// times out and is left behind, the read that follows waits for it rather
+/// than racing it, and sees what it did. Taken on the worker thread, so the
+/// wait counts in the caller's limit.
+fn on_server<T>(
+    display: &str,
+    work: impl FnOnce(&Connection) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let lock = server_lock(display);
+    // A worker that panicked holding it left nothing half-done that the
+    // lock guards: the server's own state is read afresh each time.
+    let _held = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let connection = Connection::connect(Some(display))?;
+    work(&connection)
 }
 
 /// Runs `work` on a thread of its own, cut off at [`OPERATION_TIMEOUT`].
@@ -181,7 +349,204 @@ async fn blocking_for<T: Send + 'static>(
     match tokio::time::timeout(limit, receive).await {
         Ok(Ok(result)) => result,
         Ok(Err(_)) => Err(Error::Thread("it ended without a result".to_owned())),
-        Err(_) => Err(Error::Timeout { what }),
+        Err(_) => Err(Error::Timeout {
+            what,
+            seconds: limit.as_secs(),
+        }),
+    }
+}
+
+/// Sends `plan`'s requests on `connection`, in order: the modes it makes
+/// first, mapping each [`ModeRef::Created`] to the XID the server gave its
+/// `CreateMode`; then, under a server grab, the CRTCs turned off, the
+/// screen's size, each CRTC set (each `SetPanning` where the plan puts it),
+/// the primary output, and the ungrab. The grab is released on every path,
+/// an error included: when releasing it fails, the connection is gone, and
+/// the grab with it.
+///
+/// [`ModeRef::Created`]: super::ModeRef::Created
+fn send(connection: &Connection, snapshot: &Snapshot, plan: &super::Plan) -> Result<(), Error> {
+    let mut grabbed = false;
+    let result = send_operations(connection, snapshot, plan, &mut grabbed);
+    if grabbed {
+        let ungrabbed = connection
+            .ungrab_server()
+            .and_then(|()| connection.flush())
+            .map_err(|error| Error::X {
+                what: "UngrabServer",
+                error,
+            });
+        // An error before it says more than the ungrab's.
+        result?;
+        ungrabbed?;
+        return Ok(());
+    }
+    result
+}
+
+/// [`send`]'s requests, `grabbed` saying whether the server is grabbed.
+fn send_operations(
+    connection: &Connection,
+    snapshot: &Snapshot,
+    plan: &super::Plan,
+    grabbed: &mut bool,
+) -> Result<(), Error> {
+    use super::{ModeRef, Operation};
+
+    let x = |what| move |error| Error::X { what, error };
+    let root = connection.screen().root;
+    let config_timestamp = snapshot.resources.config_timestamp;
+    let mut created: Vec<u32> = Vec::new();
+    let mode = |mode: ModeRef, created: &[u32]| match mode {
+        ModeRef::Listed(xid) => Ok(xid.0),
+        ModeRef::Created(index) => created.get(index).copied().ok_or_else(|| {
+            Error::Plan(super::PlanError::Inconsistent(format!(
+                "the plan names created mode {index}, which it does not create"
+            )))
+        }),
+    };
+    // Whether a request that changes the configuration has been sent.
+    let mut configured = false;
+    for operation in &plan.operations {
+        match operation {
+            Operation::CreateMode(info) => {
+                let xid = connection
+                    .create_mode(root, &crcbl_mode(info))
+                    .map_err(x("CreateMode"))?;
+                created.push(xid);
+            }
+            Operation::AddOutputMode {
+                output,
+                mode: added,
+            } => connection
+                .add_output_mode(output.0, mode(*added, &created)?)
+                .map_err(x("AddOutputMode"))?,
+            Operation::GrabServer => {
+                connection.grab_server().map_err(x("GrabServer"))?;
+                *grabbed = true;
+            }
+            Operation::DisableCrtc(crtc) => {
+                let reply = connection
+                    .set_crtc_config(
+                        crtc.0,
+                        0,
+                        config_timestamp,
+                        &crcbl_x11::CrtcConfig::default(),
+                    )
+                    .map_err(x("SetCrtcConfig"))?;
+                status("SetCrtcConfig", reply.status, configured)?;
+                configured = true;
+            }
+            Operation::SetScreenSize {
+                width,
+                height,
+                mm_width,
+                mm_height,
+            } => {
+                connection
+                    .set_screen_size(root, *width, *height, *mm_width, *mm_height)
+                    .map_err(x("SetScreenSize"))?;
+                configured = true;
+            }
+            Operation::SetCrtcConfig {
+                crtc,
+                mode: set,
+                x: left,
+                y: top,
+                rotation,
+                outputs,
+            } => {
+                let outputs: Vec<u32> = outputs.iter().map(|output| output.0).collect();
+                let config = crcbl_x11::CrtcConfig {
+                    x: *left,
+                    y: *top,
+                    mode: mode(*set, &created)?,
+                    rotation: crcbl_x11::Rotation(rotation.0),
+                    outputs: &outputs,
+                };
+                let reply = connection
+                    .set_crtc_config(crtc.0, 0, config_timestamp, &config)
+                    .map_err(x("SetCrtcConfig"))?;
+                status("SetCrtcConfig", reply.status, configured)?;
+                configured = true;
+            }
+            Operation::SetPanning { crtc, panning } => {
+                let reply = connection
+                    .set_panning(crtc.0, &crcbl_panning(panning))
+                    .map_err(x("SetPanning"))?;
+                status("SetPanning", reply.status, configured)?;
+                configured = true;
+            }
+            Operation::SetOutputPrimary(output) => {
+                connection
+                    .set_output_primary(root, output.0)
+                    .map_err(x("SetOutputPrimary"))?;
+                configured = true;
+            }
+            Operation::UngrabServer => {
+                connection.ungrab_server().map_err(x("UngrabServer"))?;
+                *grabbed = false;
+            }
+        }
+    }
+    connection.flush().map_err(x("flush"))
+}
+
+/// A configuration request's `status`: success, or why not. A stale one
+/// (`InvalidConfigTime`, `InvalidTime`: the server's configuration changed
+/// since it was read) is [`Error::Stale`], which nothing is reverted for,
+/// only while nothing has been configured yet; once something has
+/// (`configured`), it is [`Error::Refused`], which the apply flow reverts.
+/// X.Org 21.1.26 checks neither timestamp on `SetCrtcConfig`, so never
+/// answers either there.
+fn status(
+    request: &'static str,
+    status: crcbl_x11::SetConfigStatus,
+    configured: bool,
+) -> Result<(), Error> {
+    use crcbl_x11::SetConfigStatus::{InvalidConfigTime, InvalidTime, Success};
+    match status {
+        Success => Ok(()),
+        InvalidConfigTime | InvalidTime if !configured => Err(Error::Stale { request, status }),
+        status => Err(Error::Refused { request, status }),
+    }
+}
+
+/// crcbl-x11's form of `mode`, its id unset (`CreateMode` ignores it).
+fn crcbl_mode(mode: &ModeInfo) -> crcbl_x11::ModeInfo {
+    crcbl_x11::ModeInfo {
+        id: mode.id.0,
+        width: mode.width,
+        height: mode.height,
+        dot_clock: mode.dot_clock,
+        hsync_start: mode.hsync_start,
+        hsync_end: mode.hsync_end,
+        htotal: mode.htotal,
+        hskew: mode.hskew,
+        vsync_start: mode.vsync_start,
+        vsync_end: mode.vsync_end,
+        vtotal: mode.vtotal,
+        flags: mode.flags,
+        name: mode.name.clone(),
+    }
+}
+
+/// crcbl-x11's form of `panning`, at the server's current time.
+const fn crcbl_panning(panning: &Panning) -> crcbl_x11::Panning {
+    crcbl_x11::Panning {
+        timestamp: 0,
+        left: panning.left,
+        top: panning.top,
+        width: panning.width,
+        height: panning.height,
+        track_left: panning.track_left,
+        track_top: panning.track_top,
+        track_width: panning.track_width,
+        track_height: panning.track_height,
+        border_left: panning.border_left,
+        border_top: panning.border_top,
+        border_right: panning.border_right,
+        border_bottom: panning.border_bottom,
     }
 }
 
@@ -304,8 +669,13 @@ fn read(connection: &Connection) -> Result<Snapshot, Error> {
                     .map(|&output| OutputXid(output))
                     .collect(),
                 panning,
-                transform: (transform.current != crcbl_x11::Transform::IDENTITY)
-                    .then_some(transform.current.matrix),
+                // The pending one too: set but not yet in force, it takes
+                // effect at the CRTC's next SetCrtcConfig, so it is no
+                // less in the way of a plan.
+                transform: [transform.current, transform.pending]
+                    .into_iter()
+                    .find(|matrix| *matrix != crcbl_x11::Transform::IDENTITY)
+                    .map(|matrix| matrix.matrix),
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -365,7 +735,8 @@ mod tests {
 
     use crcbl_x11::Connection;
 
-    use super::{Error, blocking_for};
+    use super::{Error, blocking_for, on_server, server_lock, status, xwayland_outputs};
+    use crate::randr::resources::{OutputInfo, Snapshot};
 
     /// A server that takes the connection and never answers: libxcb waits
     /// for its setup reply forever. The call still returns at its limit,
@@ -414,9 +785,97 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("returned, and its runtime ended, within the deadline");
         assert!(
-            matches!(result, Err(Error::Timeout { what: "the test" })),
+            matches!(
+                result,
+                Err(Error::Timeout {
+                    what: "the test",
+                    ..
+                })
+            ),
             "{result:?}"
         );
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_stale_status_is_stale_only_before_anything_was_configured() {
+        use crcbl_x11::SetConfigStatus::{Failed, InvalidConfigTime, InvalidTime, Success};
+        assert!(status("SetCrtcConfig", Success, true).is_ok());
+        for stale in [InvalidConfigTime, InvalidTime] {
+            assert!(matches!(
+                status("SetCrtcConfig", stale, false),
+                Err(Error::Stale { .. })
+            ));
+            // Something was set already: going back is the way out.
+            assert!(matches!(
+                status("SetCrtcConfig", stale, true),
+                Err(Error::Refused { .. })
+            ));
+        }
+        assert!(matches!(
+            status("SetPanning", Failed, false),
+            Err(Error::Refused { .. })
+        ));
+    }
+
+    #[test]
+    fn an_xwayland_server_is_known_by_its_output_names() {
+        let named = |names: &[&str]| Snapshot {
+            outputs: names
+                .iter()
+                .map(|name| OutputInfo {
+                    name: (*name).to_owned(),
+                    ..OutputInfo::default()
+                })
+                .collect(),
+            ..Snapshot::default()
+        };
+        assert_eq!(
+            xwayland_outputs(&named(&["XWAYLAND0", "XWAYLAND1"])),
+            Some("XWAYLAND0, XWAYLAND1".to_owned())
+        );
+        for real in [
+            &["DP-1"][..],
+            &["XWAYLAND0", "DP-1"],
+            &["XWAYLAND"],
+            &["XWAYLANDx"],
+            &[],
+        ] {
+            assert_eq!(xwayland_outputs(&named(real)), None, "{real:?}");
+        }
+    }
+
+    /// A server's work waits for the work on it before, held by a worker
+    /// left running (an apply that timed out, say), and runs once it ends;
+    /// another server's does not wait.
+    #[test]
+    fn work_on_one_server_waits_for_the_work_before_it() {
+        let display = "unix/:test-serial";
+        let held = server_lock(display);
+        let guard = held.lock().expect("lock");
+        let (ran, after) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            // Fails to connect once it has the lock (libxcb cannot parse
+            // the name, so no server is reached): the order is what this
+            // test reads.
+            let _ = on_server(display, |_| Ok(()));
+            let _ = ran.send(Instant::now());
+        });
+        assert!(
+            after.recv_timeout(Duration::from_millis(300)).is_err(),
+            "it ran while the lock was held"
+        );
+        let released = Instant::now();
+        drop(guard);
+        let ran_at = after
+            .recv_timeout(Duration::from_secs(5))
+            .expect("it ran once released");
+        assert!(ran_at >= released);
+        waiting.join().expect("joined");
+
+        // Another server's lock is its own.
+        let other = server_lock("unix/:test-other");
+        let _other = other.lock().expect("lock");
+        assert!(server_lock(display).try_lock().is_ok());
     }
 }

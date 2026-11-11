@@ -458,9 +458,35 @@ GNOME sessions on X11 when chosen with `--backend randr`.
   are `GetScreenResourcesCurrent`'s, which asks the driver nothing: a monitor
   plugged in on a driver without hotplug detection shows only once something has
   probed (`xrandr` does, with `GetScreenResources`). Run against Xvfb in
-  `tests/e2e/headless-x11.sh`. Applying, the change stream and watching are not
-  written yet (`Error::Unsupported`); an apply refused so sends nothing, and the
-  apply flow discards its revert point and ends its watchdog, exit `3`.
+  `tests/e2e/headless-x11.sh`. The transform the planner refuses is the current
+  one or, failing that, the pending one (set, in force from the next
+  `SetCrtcConfig`).
+- **Apply (built, M7):** `Randr::apply` reads, plans and sends on one connection
+  of its own (`randr::x11::send`): the `CreateMode`s first, each
+  `ModeRef::Created(n)` the XID the `n`th one answered; then, under a server
+  grab, the CRTCs turned off, the screen size, each `SetCrtcConfig` (its status
+  checked: `Failed` is the desktop refusing, the two time statuses stale) and
+  each `SetPanning` where the plan puts it, the primary output, and the ungrab,
+  which is released on every path, an error included. What the plan did unasked
+  (a panning reset) comes back as lines the apply flow says. A timed-out apply
+  leaves its thread and connection behind; the flow reads the server again on a
+  new connection before it reverts or reports, since a `SetCrtcConfig` sent
+  under the grab may still take effect; every read and apply of one server holds
+  a lock for it, in this process, so that read waits for the late apply and sees
+  what it did. An apply has its own limit, `APPLY_TIMEOUT` (a modeset can take
+  the driver seconds), which is the backend's request timeout and so what the
+  revert watchdog's delay is counted from. A stale status (the two time
+  statuses, which X.Org 21.1.26 never sends for `SetCrtcConfig`) is stale only
+  before anything was configured, and a refusal, which reverts, after. Created
+  modes stay on their output for the server's life, as with xrandr, and a later
+  apply reuses one by name and timings. Under `--backend randr` with
+  `WAYLAND_DISPLAY` set (Xwayland) applying is `Error::Unsupported`, and a
+  server whose outputs are all `XWAYLAND<n>` is refused before sending
+  (crcbl-x11 0.19.1 offers no `QueryExtension` to find the `XWAYLAND` extension
+  instead). A mode named without a handle takes the progressive one before an
+  interlaced one at the same refresh (`Mode` has no interlace flag). Reverting
+  is the apply flow's as on every backend: a change kept, declined, and reverted
+  by its watchdog run against Xvfb (`apps/dsplr/tests/x11_e2e.rs`).
 - **Change stream:** `RRSelectInput` for screen, CRTC and output change
   notifications.
 - **Apply:** compute CRTC assignments, grab the server, disable CRTCs that

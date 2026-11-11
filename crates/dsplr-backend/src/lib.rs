@@ -152,6 +152,8 @@ impl Error {
             | Self::Kde(kde::Error::Failed { .. })
             | Self::Gnome(gnome::Error::Refused(_))
             | Self::Hyprland(hyprland::Error::Refused { .. }) => true,
+            #[cfg(x11)]
+            Self::Randr(randr::Error::Refused { .. }) => true,
             _ => false,
         }
     }
@@ -187,7 +189,7 @@ impl Error {
             | Self::Gnome(gnome::Error::Plan(_))
             | Self::Hyprland(hyprland::Error::Write(_)) => true,
             #[cfg(x11)]
-            Self::Randr(randr::Error::Plan(_)) => true,
+            Self::Randr(randr::Error::Plan(_) | randr::Error::Xwayland(_)) => true,
             _ => false,
         }
     }
@@ -214,7 +216,9 @@ impl Error {
                 gnome::Error::Stale(_) | gnome::Error::Plan(gnome::PlanError::NotConnected(_)),
             ) => true,
             #[cfg(x11)]
-            Self::Randr(randr::Error::Plan(randr::PlanError::NotConnected(_))) => true,
+            Self::Randr(
+                randr::Error::Stale { .. } | randr::Error::Plan(randr::PlanError::NotConnected(_)),
+            ) => true,
             _ => false,
         }
     }
@@ -253,8 +257,9 @@ impl Backend {
             Self::Kde(_) => kde::OPERATION_TIMEOUT,
             #[cfg(target_os = "linux")]
             Self::Wlr(_) => wlr::OPERATION_TIMEOUT,
+            // An apply's, the longest: a modeset can take seconds.
             #[cfg(x11)]
-            Self::Randr(_) => randr::OPERATION_TIMEOUT,
+            Self::Randr(_) => randr::APPLY_TIMEOUT,
         }
     }
 
@@ -512,26 +517,38 @@ impl Backend {
     }
 
     /// Sets the desktop to `layout`. Returning does not mean the desktop
-    /// shows it yet, or shows it as asked: take a snapshot to see.
+    /// shows it yet, or shows it as asked: take a snapshot to see. Returns
+    /// what the backend did that the layout did not ask for, one line each
+    /// for the user: on X11 a CRTC's panning reset ([`randr::Note`]); on
+    /// every other backend nothing.
+    ///
+    /// On X11 under a Wayland session (`--backend randr` with
+    /// `WAYLAND_DISPLAY` set) the server is the compositor's Xwayland, whose
+    /// RandR sets nothing on its outputs: [`Error::Unsupported`], nothing
+    /// sent.
     #[cfg_attr(
-        not(target_os = "linux"),
-        expect(unused_variables, reason = "no backend exists off Linux")
+        not(any(target_os = "linux", x11)),
+        expect(unused_variables, reason = "no backend exists off Linux and FreeBSD")
     )]
-    pub async fn apply(&self, layout: &Layout) -> Result<(), Error> {
+    pub async fn apply(&self, layout: &Layout) -> Result<Vec<String>, Error> {
         match *self {
             #[cfg(target_os = "linux")]
-            Self::Gnome(ref gnome) => Ok(gnome.apply(layout).await?),
+            Self::Gnome(ref gnome) => Ok(gnome.apply(layout).await.map(|()| Vec::new())?),
             #[cfg(target_os = "linux")]
-            Self::Hyprland(ref hyprland) => Ok(hyprland.apply(layout).await?),
+            Self::Hyprland(ref hyprland) => {
+                Ok(hyprland.apply(layout).await.map(|()| Vec::new())?)
+            }
             #[cfg(target_os = "linux")]
-            Self::Kde(ref kde) => Ok(kde.apply(layout).await?),
+            Self::Kde(ref kde) => Ok(kde.apply(layout).await.map(|()| Vec::new())?),
             #[cfg(target_os = "linux")]
-            Self::Wlr(ref wlr) => Ok(wlr.apply(layout).await?),
+            Self::Wlr(ref wlr) => Ok(wlr.apply(layout).await.map(|()| Vec::new())?),
             #[cfg(x11)]
-            Self::Randr(_) => Err(Error::Unsupported {
-                what: "applying a layout on X11",
-                reason: "the RandR backend reads and plans layouts but does not send them yet",
+            Self::Randr(ref randr) if randr.xwayland() => Err(Error::Unsupported {
+                what: "applying a layout through Xwayland",
+                reason: "WAYLAND_DISPLAY is set, so DISPLAY is a Wayland compositor's Xwayland, whose RandR does not set its outputs; use the compositor's own backend",
             }),
+            #[cfg(x11)]
+            Self::Randr(ref randr) => Ok(randr.apply(layout).await?),
         }
     }
 

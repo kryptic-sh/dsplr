@@ -491,7 +491,16 @@ impl<'a> Planner<'a> {
                 .or_else(|| {
                     candidates
                         .iter()
-                        .min_by_key(|listed| mode.refresh_mhz.abs_diff(listed.refresh_mhz()))
+                        // A progressive mode before an interlaced one at the
+                        // same refresh: `Mode` has no interlace flag, so a
+                        // layout without handles names both (1080i and
+                        // 1080p at 60 Hz) alike.
+                        .min_by_key(|listed| {
+                            (
+                                mode.refresh_mhz.abs_diff(listed.refresh_mhz()),
+                                listed.flags & mode_flags::INTERLACE != 0,
+                            )
+                        })
                 })
                 .map(|listed| listed.id)
         };
