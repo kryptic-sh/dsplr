@@ -270,11 +270,53 @@ does ([04](04-backends.md#gnome-gnome)):
 
 ## X11
 
-No native store. dsplr saves to its own profile store and installs (on confirm)
-an XDG autostart entry `~/.config/autostart/dsplr-restore.desktop` running
-`dsplr restore --yes`. Window managers that do not run XDG autostart (i3, bspwm)
-get the one line to add (`exec --no-startup-id dsplr restore --yes`) shown
-instead. Not written yet (M7).
+No native store. Written (`dsplr_persist::login`, M7), and checked on Xvfb by
+saving, changing the mode, and running the autostart entry's command as a
+session would at login, under each kind of desktop.
+
+- `dsplr save` (and the GUI's save) saves the layout to dsplr's profile store as
+  the profile for the outputs connected now, replacing the one this save kept
+  for them before, as a save on another desktop replaces their settings. It is
+  named by their identities (`login::profile_name`): sorted, joined by a hyphen
+  with a space either side, each character a profile name cannot hold made `_`
+  (`Dell Inc. DELL U2720Q 8KX_2_1 - eDP-1`); a name too long for a profile is
+  `outputs ` and the start of a SHA-256 over them. `dsplr restore` picks it by
+  its outputs, not its name. `dsplr save --profile NAME` is unchanged.
+- The profile is marked as this save's (`"saved_for_outputs": true` beside its
+  layout, `profile::save_for_outputs`); a save under a name leaves the mark out.
+  A save replaces a profile of that name only when it is marked and for the same
+  outputs. Otherwise, a profile the user saved under that name or one kept for
+  other outputs, the hash name is used, and the save says so; when that is taken
+  too, nothing is saved.
+- `dsplr restore --login --yes` puts it back at login, from an XDG autostart
+  entry, `$XDG_CONFIG_HOME/autostart/dsplr-restore.desktop` (XDG Autostart 0.5).
+  `Exec` runs dsplr by its own absolute path (`current_exe`), quoted as the
+  Desktop Entry Specification's `Exec` rules say when it holds a reserved
+  character, so an install in `~/.cargo/bin` runs without the session's `PATH`;
+  `TryExec` names the same path, so the entry is skipped once it is gone. It is
+  a managed file (dsplr's header, `#` comments, before `[Desktop Entry]` as the
+  spec allows): created or overwritten when it is dsplr's, and asked about, with
+  nothing saved, when it is someone else's or was edited (`--yes` replaces it).
+  That check comes first; then the profile is written, then the entry, so an
+  entry never runs without its profile. It is written without a separate
+  confirm, as every other file a save writes is; the save says so.
+- `--login` is there because the entry runs in every session that runs XDG
+  autostart, Wayland ones too. With it, `dsplr restore` changes nothing, says
+  nothing and exits `0` unless the backend found is RandR (not with
+  `WAYLAND_DISPLAY` set, nor on GNOME, whose Mutter is found first) and
+  `XDG_CURRENT_DESKTOP` names none of the desktops that put their own layout
+  back on X11 (`login::OWN_RESTORE`: KDE, XFCE, MATE, X-Cinnamon, LXQt, Budgie,
+  Deepin, Unity). A save on one of those writes no entry and says why.
+- Window managers that run no XDG autostart, found by `XDG_CURRENT_DESKTOP`
+  naming `i3` or `bspwm` (any entry of the list, any case), get no entry, and
+  the line for their startup is shown:
+  `exec --no-startup-id dsplr restore --login --yes` in i3's config,
+  `dsplr restore --login --yes &` in `bspwmrc`, which is a shell script, each
+  with `--login` as the entry has, so the line does nothing in a session that is
+  not X11 (a Wayland session started from the same config). With
+  `XDG_CURRENT_DESKTOP` unset the entry is written and both lines are shown too,
+  as whether the session runs XDG autostart is not known.
+- Through Xwayland (`WAYLAND_DISPLAY` set) a save is refused, as an apply is.
 
 ## dsplr's profile store
 
@@ -345,7 +387,9 @@ a profile, moving an output and restoring it, by name and picked.
 
 `dsplr watch` (M8) is written, and checked on headless sway 1.12 (2026-11-10) by
 plugging outputs in and unplugging them (`swaymsg create_output`,
-`swaymsg output NAME unplug`) under it. Opt-in; it is not started by the GUI.
+`swaymsg output NAME unplug`) under it; on X11 (M7) on Xvfb, by restoring a
+profile when it starts and following a mode xrandr sets, which only one output
+makes no hotplug there. Opt-in; it is not started by the GUI.
 
 - **What it does**: stays running, follows the backend's change stream
   (`Backend::watch`), and each time the set of connected outputs changes,
@@ -360,10 +404,11 @@ plugging outputs in and unplugging them (`swaymsg create_output`,
   pairs (`watch::Connected`), so a mode, position, scale, on/off or mirror
   change does nothing, a monitor moved to another port is a change, and so is an
   unplug and a plug. That is what keeps it from answering its own apply, or
-  undoing a change the user made by hand. A second guard: a picked profile
-  already on screen (no differences once paired) is said and not applied, so a
-  watch restarted, or a desktop that put the layout back itself, applies
-  nothing.
+  undoing a change the user made by hand. A read that finds the same outputs is
+  said (`the displays changed; the same outputs are connected`) and does nothing
+  else. A second guard: a picked profile already on screen (no differences once
+  paired) is said and not applied, so a watch restarted, or a desktop that put
+  the layout back itself, applies nothing.
 - **Debounced**: the displays are read once the changes have been quiet for
   `watch::QUIET`, so a dock attaching several outputs one after another is one
   restore, not one per output; but no later than `watch::QUIET_MAX` after the
@@ -431,6 +476,8 @@ Starting it with the session, one line per compositor (no installer):
 | river                 | `dsplr watch &` in `init`                                                               |
 | labwc                 | `dsplr watch &` in `autostart`                                                          |
 | Wayfire               | `watch = dsplr watch` under `[autostart]` in `wayfire.ini`                              |
+| i3                    | `exec --no-startup-id dsplr watch` in i3's config                                       |
+| bspwm                 | `dsplr watch &` in `bspwmrc`                                                            |
 | An XDG autostart      | a `~/.config/autostart/dsplr-watch.desktop` with `Exec=dsplr watch`                     |
 | KDE Plasma, GNOME     | not needed: the desktop restores its own layouts (`dsplr watch --force` if not)         |
 

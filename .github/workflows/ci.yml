@@ -181,7 +181,11 @@ jobs:
   # runs headless with virtual monitors, on a D-Bus session bus of the
   # harness's own (dbus-run-session, from the dbus package). X11 is Xvfb with
   # RandR, one CRTC and one output; crcbl-x11 loads libxcb and libxcb-randr
-  # (both in the libxcb package) with dlopen.
+  # (both in the libxcb package) with dlopen. `xorg` is the same harness on
+  # Xorg's dummy driver, unprivileged, for several outputs: arranging,
+  # mirroring and a monitor plugged in. The harness runs it only when told
+  # it may (it keeps Xorg off the system bus, so off logind, and off the
+  # GPUs, and checks its log for both), which this VM is for.
   e2e:
     name: e2e ${{ matrix.desktop }}
     runs-on: ubuntu-latest
@@ -208,6 +212,12 @@ jobs:
           - desktop: x11
             packages: xorg-server-xvfb libxcb xorg-xrandr
             tests: dsplr-backend dsplr
+          - desktop: xorg
+            harness: x11
+            test: xorg_e2e
+            packages: xorg-server xf86-video-dummy libxcb xorg-xrandr dbus
+            tests: dsplr-backend dsplr
+            env: DSPLR_E2E_X11_SERVER=xorg DSPLR_E2E_XORG_MAY_TAKE_SESSION=1
           - desktop: gui
             harness: sway
             test: gui_e2e

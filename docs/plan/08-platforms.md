@@ -20,6 +20,6 @@ milestone; the table is corrected then and the "?" removed.
 | Extra fields        | colour preset, bit depth  | —                                                                         | overscan, RGB range, priority     | primary monitor, RGB range, layout mode      | primary output          |
 | Per-monitor dialogs | panels                    | panels                                                                    | panels                            | no (one toplevel; identify unsupported)      | panels                  |
 
-Not supported, by decision: Windows, macOS, X11 without RandR 1.5, Wayland
+Not supported, by decision: Windows, macOS, X11 without RandR 1.3, Wayland
 compositors that offer none of the protocols above (Weston, Mir — dsplr says
 which interfaces it looked for).

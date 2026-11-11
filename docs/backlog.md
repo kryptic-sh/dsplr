@@ -753,17 +753,80 @@ milestone:
   `RR_Reflect_Y` turned half a turn further (`RRTransformCompute`), which xrandr
   would be given by a user's `--reflect y` and succeed with. Trying that
   equivalent before refusing would cover it; no such CRTC has been seen.
-- **The X11 e2e has one CRTC**: `tests/e2e/headless-x11.sh` runs Xvfb, whose one
-  CRTC drives one output, `screen`, so applying (M7's next step) needs a server
-  with several: Xorg's `dummy` driver, run unprivileged through the server
-  binary (`/usr/lib/Xorg`, not `Xorg.wrap`), which crcbl's own X11 tests use
-  (`tools/x11-display.sh` in crcbl: sixteen outputs, `DUMMY0` on, a CVT mode
-  added to the others). Not tried in dsplr yet, nor whether CI's VM can run it
-  (`xf86-video-dummy` on Arch).
+- **What the Xorg dummy harness cannot show**
+  (`DSPLR_E2E_X11_SERVER=xorg tests/e2e/headless-x11.sh`, `xorg_e2e.rs`):
+  xf86-video-dummy 0.4.1 has no rotation or reflection, no EDID (every output is
+  named by its connector), no panning, and an output turned on stays connected
+  when turned off, so unplugging, and `dsplr watch` after an unplug, cannot be
+  run on it. The harness runs it only with `DSPLR_E2E_XORG_MAY_TAKE_SESSION=1`:
+  Xorg is kept off the system bus (`DBUS_SYSTEM_BUS_ADDRESS` at no socket,
+  checked first with `dbus-send`) and on a seat no device is on (`-seat`), and
+  its log must say it failed to reach the bus and mention neither logind nor a
+  DRM device; read from xorg-server 21.1.26's `systemd-logind.c`, `dbus-core.c`,
+  `config/udev.c` and `xf86Config.c`. Before that guard, one local run did reach
+  logind, whose `TakeControl` failed only because Hyprland holds the session.
+  Run locally with xorg-server 21.1.26 and the dummy driver unpacked from Arch's
+  packages into a scratch directory (`DSPLR_E2E_XORG`,
+  `DSPLR_E2E_XORG_MODULES`), not installed; the CI entry installs them in the VM
+  and had not run when this was written.
 - **Xwayland is found by its output names**: an apply refuses a server whose
   outputs are all `XWAYLAND<n>` (`randr::x11::xwayland_outputs`), on top of
   `WAYLAND_DISPLAY` being set. crcbl-x11 0.19.1 offers no `QueryExtension` to
   ask for the `XWAYLAND` extension; see the crcbl-x11 upgrade entry.
+- **X11 saving: choices made without the owner** (`dsplr_persist::login`, plan
+  05's X11 section). Each is a call to confirm or change:
+  - **Profile named by its outputs.** `dsplr save` on X11 names the profile from
+    the connected outputs' identities, so each set of monitors keeps its own and
+    a save replaces only the one it kept for the same monitors (marked
+    `saved_for_outputs`); a profile of that name the user saved, or one kept for
+    other outputs, makes it use the hash name instead, and say so. The other
+    option was refusing a plain `dsplr save` there and requiring
+    `--profile NAME`, as before.
+  - **No separate confirm for the autostart entry.** Plan 05 said "installs (on
+    confirm)". It is written as every other file a save writes is: created or
+    overwritten when it is dsplr's, asked about when it is someone else's, and
+    named in the save's output.
+  - **The desktops that restore their own layout** (`login::OWN_RESTORE`: KDE,
+    XFCE, MATE, X-Cinnamon, LXQt, Budgie, Deepin, Unity, as
+    `XDG_CURRENT_DESKTOP` names them) get no entry, and `dsplr restore --login`
+    declines on them. The list is from what each desktop is known to ship
+    (KScreen, xfsettingsd, the settings daemons' xrandr plugins), not checked on
+    any of them; a desktop missing from it gets an entry that fights its own
+    restore, one wrongly on it gets none. Plain `dsplr restore` and
+    `dsplr watch` are not limited by it.
+  - **bspwm's line** is `dsplr restore --login --yes &` in `bspwmrc` (a shell
+    script), not the i3 `exec --no-startup-id` line plan 05 first gave both.
+    Both lines use `dsplr` from the user's `PATH`, unlike the entry's absolute
+    path.
+  - **i3 and bspwm are found only by `XDG_CURRENT_DESKTOP`**, which display
+    managers set from the session file's `DesktopNames`; started with `startx`
+    it is usually unset, and then the entry is written and both lines shown. Not
+    run under a real i3 or bspwm.
+- **Mirrors without a direction are compared as groups** where the backend sets
+  no `Capabilities::mirror_direction`: X11 and GNOME. On X11 that was seen on
+  Xorg's dummy driver (DUMMY0 asked to mirror DUMMY1 reads back as DUMMY1
+  mirroring DUMMY0). On GNOME it is from reading `gnome::state` (the first
+  connector of a logical monitor is read as the source, in Mutter's order), not
+  seen: whether Mutter keeps the order dsplr sends is unverified. GNOME's
+  primary output is read only on that first connector, so a mirror group read
+  back in another order would still show a primary difference; not handled.
+- **`dsplr watch` and plain `dsplr restore` do not know a desktop that restores
+  its own layout on X11**: on Plasma on X11 detection picks `Randr`, whose
+  `restores_on_hotplug` is false, so `dsplr watch` runs there without `--force`
+  and fights KScreen, as it would Xfce's, MATE's or Cinnamon's daemons; only
+  `dsplr restore --login` and the X11 save check `login::OWN_RESTORE`. Plan 04
+  said `--backend randr` warns under KDE and the watch refuses it; neither was
+  ever built. Options: have the watch check `OWN_RESTORE` too on `Randr`, or
+  make `restores_on_hotplug` take the desktop into account. Needs a decision.
+- **The sway CLI e2e leaves two revert watchdogs behind on every run**
+  (`apps/dsplr/tests/sway_e2e.rs`): two
+  `dsplr restore --revert --after 60 --token …` processes in the harness's
+  private runtime outlive the run, its compositor gone, so they can only fail
+  when their time comes. Seen after every sway run in M7's slices and ended by
+  hand (`kill` by PID, after checking their `XDG_RUNTIME_DIR` is the harness's).
+  Which test leaves them, and whether it is a kept change whose watchdog is not
+  ended or one the test meant to leave, is not checked. The X11 e2e collects its
+  own (`x11_support::watchdogs`); sway's does not.
 - **X11's watch after the server goes away is not tested**: `randr::Watch` ends
   with an error when `poll_event` finds the connection dead, and `dsplr watch`
   and the GUI connect again with their backoff, as on every backend; the X11 e2e
@@ -810,19 +873,18 @@ milestone:
     output-name check (`randr::x11::xwayland_outputs`) as the fallback: an
     absent extension proves nothing, as Xwayland before 23.1 lacks it, it is an
     optional build feature, and `-extension XWAYLAND` turns it off.
-- **What the RandR apply planner's tests do not reach** (`randr::plan`): only
-  Xvfb was available, which has one CRTC, one output (`screen`), no rotations
-  and a maximum equal to its start size, so every multi-CRTC case (a CRTC search
-  that moves an output, clones sharing a CRTC, CRTCs running out) is checked
-  against hand-built snapshots and the planner's own reading of `xrandr.c`, not
-  against xrandr on a real server. The Xvfb cases were checked against
-  `xrandr --dryrun --verbose` there, and the custom-mode one by sending it. The
-  flipped-transform mapping (`RR_Reflect_X`) is read from the X server's
-  `RRTransformCompute` and checked against wlroots' `wlr_box_transform`, not
-  seen on a monitor. Panning is checked against the X server's
-  `xf86RandR13VerifyPanningArea` as read, not on a server. Xvfb resets when its
-  last client disconnects unless started with `-noreset`, which drops created
-  modes; the harness needs it.
+- **What the RandR apply planner's tests do not reach** (`randr::plan`): Xorg's
+  dummy driver runs two outputs arranged side by side, swapped, made primary,
+  mirrored and turned off (`xorg_e2e.rs`); the other multi-CRTC cases (a CRTC
+  search that moves an output, CRTCs running out) are checked against hand-built
+  snapshots and the planner's own reading of `xrandr.c`, not against xrandr on a
+  real server. The Xvfb cases were checked against `xrandr --dryrun --verbose`
+  there, and the custom-mode one by sending it. The flipped-transform mapping
+  (`RR_Reflect_X`) is read from the X server's `RRTransformCompute` and checked
+  against wlroots' `wlr_box_transform`, not seen on a monitor. Panning is
+  checked against the X server's `xf86RandR13VerifyPanningArea` as read, not on
+  a server. Xvfb resets when its last client disconnects unless started with
+  `-noreset`, which drops created modes; the harness needs it.
 
 - **Where `dsplr watch` has run**: on sway (`sway_e2e.rs`: hotplug both ways, no
   loop on its own applies, a change waiting to be kept, a reconnect), on niri
@@ -951,8 +1013,7 @@ milestone:
   owner (the profile store's decisions above).
 - **Profile store gaps**: `dsplr restore` with a profile on Hyprland, and run
   from a real compositor's autostart (river, labwc, niri), have not been run;
-  only headless sway has. The X11 autostart entry and the line shown to i3 and
-  bspwm users are M7's. A profile file changed between the read and the rename
+  only headless sway has. A profile file changed between the read and the rename
   of `dsplr save --profile` is overwritten without the question, as for
   `dsplr save`.
 - **Some error paths of `dsplr apply` have no test**: a test or apply the

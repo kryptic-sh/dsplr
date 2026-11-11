@@ -10,6 +10,11 @@ and this project adheres to
 
 ### Changed
 
+- On GNOME and X11, where a mirror has no source of its own, the check after an
+  apply compares which outputs mirror each other, not which of them is named the
+  source, so a mirror the desktop reads back the other way round is no longer
+  reported as something other than was asked. Hyprland and KDE, which keep the
+  source, still compare it.
 - The confirm dialogs and the identify overlay name each monitor's output by the
   connector the window system reports for it (crcbl 0.19.1's
   `MonitorInfo::connector`), rather than by its position, which stays the
@@ -42,6 +47,31 @@ and this project adheres to
 
 ### Added
 
+- X11 is supported, through RandR 1.3 or later (crcbl-x11 0.19.1): i3, bspwm and
+  other X window managers, found from `DISPLAY` when no Wayland compositor is,
+  Plasma on X11 included. On GNOME on X11 Mutter is found first;
+  `--backend randr` forces RandR there, and under Plasma's KScreen or Mutter
+  dsplr's changes can fight the layout the desktop restores itself. dsplr reads
+  each output (named by its EDID where it has a serial, else by its RandR name),
+  its modes, rotation, reflection, mirrors and the primary output, and applies a
+  layout as xrandr would: CRTCs picked by xrandr's own algorithm, the changes
+  sent under a server grab, a mode the output does not list added, or made with
+  CVT timings as `cvt` makes them, and a panning area the new mode no longer
+  fits reset and said. The apply goes through the same test, confirm and revert
+  watchdog as on every desktop (X has no test request, so the test step checks
+  the plan only). `dsplr watch` and the GUI follow the server's output changes.
+  `dsplr save` keeps the layout as a profile in dsplr's store and has it put
+  back at login; where the session runs XDG autostart dsplr sets that up, and
+  under i3 or bspwm it shows the line to add to their startup; desktops that put
+  their own layout back at login (Plasma, Xfce, MATE, Cinnamon and others) are
+  left to do so. Through Xwayland, applying and saving are refused: the
+  compositor's own backend sets its outputs. A CRTC with a transform
+  (`xrandr --scale`) is refused, with how to take it off. Tested on Xvfb and on
+  Xorg's dummy driver with several outputs; not yet on real monitors.
+- `dsplr watch` says when it reads the displays after a change and finds the
+  same outputs connected
+  (`dsplr: the displays changed; the same outputs are connected`), on every
+  desktop; it restores nothing then, as before.
 - On Hyprland, the colour preset and bit depth are read (`dsplr list --json`,
   the GUI) and set: the panel offers Hyprland's `cm` presets (`srgb`, `wide`,
   `edid`, `hdr`, `hdredid`, `auto`, `dcip3`, `dp3`, `adobe`) and 8 or 10 bits,

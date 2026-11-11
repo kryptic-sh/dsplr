@@ -307,8 +307,11 @@ As built:
   output that is off is ignored, and KWin picks); custom modes from management
   version 18; native persistence and saves on apply; no test, no gaps.
 - **KDE on X11** keeps KScreen's own daemon, which re-applies its saved config
-  and would fight dsplr's `Randr` backend. `--backend randr` under a KDE session
-  warns about this, and `dsplr watch` refuses it there too.
+  and can fight dsplr's `Randr` backend, which detection picks there. Nothing
+  warns about it yet: `dsplr watch` refuses only backends that restore on
+  hotplug themselves (`Backend::restores_on_hotplug`), and `Randr` does not know
+  the desktop; only `dsplr restore --login` and the X11 save look at
+  `XDG_CURRENT_DESKTOP` (`login::OWN_RESTORE`; backlog).
 
 ## GNOME (`Gnome`)
 
@@ -437,8 +440,9 @@ not checked (backlog).
 
 ## X11 (`Randr`)
 
-RandR 1.5 on the X server, for i3, bspwm, awesome, Openbox, Xfce, and KDE or
-GNOME sessions on X11 when chosen with `--backend randr`.
+RandR 1.3 or later on the X server ([detection](#detection)), for i3, bspwm,
+awesome, Openbox, Xfce, and Plasma on X11, which detection finds as `Randr`;
+GNOME on X11 only when chosen with `--backend randr`, as Mutter is found first.
 
 - **Read (built, M7):** through crcbl-x11 0.19.1 (`randr::x11`, a connection of
   its own per read, its libxcb calls on a detached thread of their own, given up
@@ -486,7 +490,13 @@ GNOME sessions on X11 when chosen with `--backend randr`.
   instead). A mode named without a handle takes the progressive one before an
   interlaced one at the same refresh (`Mode` has no interlace flag). Reverting
   is the apply flow's as on every backend: a change kept, declined, and reverted
-  by its watchdog run against Xvfb (`apps/dsplr/tests/x11_e2e.rs`).
+  by its watchdog run against Xvfb (`apps/dsplr/tests/x11_e2e.rs`). Two outputs
+  arranged, made primary, mirrored and turned off, and `dsplr watch` restoring a
+  profile when a monitor is plugged in, run against Xorg's dummy driver
+  (`xorg_e2e.rs`). X keeps no mirror direction (outputs share a CRTC, or CRTCs
+  sit at one place), so the read-back names the first output the source and
+  `Capabilities::mirror_direction` is off: the comparison takes mirrors as
+  groups.
 - **Change stream (built, M7):** `randr::Watch`, one long-lived connection of
   its own selecting `ScreenChangeNotify` and the CRTC, output and output
   property `Notify`s on the root (`RRSelectInput`), its socket watched with
