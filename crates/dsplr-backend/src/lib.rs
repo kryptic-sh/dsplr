@@ -66,6 +66,8 @@ pub enum Watch {
     Kde(Box<kde::Connection>),
     #[cfg(target_os = "linux")]
     Wlr(Box<wlr::Connection>),
+    #[cfg(x11)]
+    Randr(Box<randr::Watch>),
 }
 
 impl Watch {
@@ -82,6 +84,8 @@ impl Watch {
             Self::Kde(ref mut connection) => Ok(connection.changed().await?),
             #[cfg(target_os = "linux")]
             Self::Wlr(ref mut connection) => Ok(connection.changed().await?),
+            #[cfg(x11)]
+            Self::Randr(ref mut watch) => Ok(watch.changed().await?),
         }
     }
 }
@@ -434,8 +438,10 @@ impl Backend {
     /// connection of its own that dispatches the output manager's `done`
     /// events, on KDE one that dispatches each output device's `done` and
     /// the output order, on GNOME Mutter's `MonitorsChanged` on a bus
-    /// connection of its own, on Hyprland its event socket. Read the state
-    /// again after each [`Watch::changed`].
+    /// connection of its own, on Hyprland its event socket, on X11 RandR's
+    /// screen, CRTC, output and output property events on a connection of
+    /// its own ([`randr::Watch`]). Read the state again after each
+    /// [`Watch::changed`].
     pub async fn watch(&self) -> Result<Watch, Error> {
         match *self {
             #[cfg(target_os = "linux")]
@@ -447,10 +453,9 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Wlr(ref wlr) => Ok(Watch::Wlr(Box::new(wlr.connect().await?))),
             #[cfg(x11)]
-            Self::Randr(_) => Err(Error::Unsupported {
-                what: "following X11's output changes",
-                reason: "the RandR backend reads the outputs but does not follow their changes yet",
-            }),
+            Self::Randr(ref randr) => Ok(Watch::Randr(Box::new(
+                randr::Watch::new(randr.display()).await?,
+            ))),
         }
     }
 

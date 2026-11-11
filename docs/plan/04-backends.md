@@ -487,8 +487,23 @@ GNOME sessions on X11 when chosen with `--backend randr`.
   interlaced one at the same refresh (`Mode` has no interlace flag). Reverting
   is the apply flow's as on every backend: a change kept, declined, and reverted
   by its watchdog run against Xvfb (`apps/dsplr/tests/x11_e2e.rs`).
-- **Change stream:** `RRSelectInput` for screen, CRTC and output change
-  notifications.
+- **Change stream (built, M7):** `randr::Watch`, one long-lived connection of
+  its own selecting `ScreenChangeNotify` and the CRTC, output and output
+  property `Notify`s on the root (`RRSelectInput`), its socket watched with
+  tokio's `AsyncFd`, which owns the connection. `changed` returns at a screen,
+  CRTC or output change, or an output property change to the `EDID` atom
+  (interned at setup; a backlight stepping is not a change), and takes the rest
+  of the events already queued with it, so one change is one wake; the caller
+  reads again, on a fresh connection, which has the screen's size as it is now
+  (crcbl-x11 0.19.1 has no `GetGeometry`), so a `ScreenChangeNotify`'s own size
+  is not used. `poll_event` reads only what the socket holds and never waits for
+  the server, and nothing else uses the connection, so it runs on the runtime's
+  thread; connecting and selecting run on a detached thread under
+  `OPERATION_TIMEOUT`. A server gone ends the watch with an error, and
+  `dsplr watch` and the GUI connect again with their backoff. Run against Xvfb:
+  the watch wakes once for each mode xrandr sets, and `dsplr watch` restores a
+  profile when it starts, then reads again after an xrandr change and says the
+  same outputs are connected.
 - **Apply:** compute CRTC assignments, grab the server, disable CRTCs that
   shrink or move, `SetScreenSize` to the new bounding box, set each CRTC's mode,
   position and rotation, ungrab. This is xrandr's own algorithm; it is

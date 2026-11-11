@@ -762,9 +762,14 @@ milestone:
   (`xf86-video-dummy` on Arch).
 - **Xwayland is found by its output names**: an apply refuses a server whose
   outputs are all `XWAYLAND<n>` (`randr::x11::xwayland_outputs`), on top of
-  `WAYLAND_DISPLAY` being set. The `XWAYLAND` extension would say it surely, but
-  crcbl-x11 0.19.1 offers no `QueryExtension`; asked of the crcbl session
-  through the coordinator (2026-11-12). Switch once a release has it.
+  `WAYLAND_DISPLAY` being set. crcbl-x11 0.19.1 offers no `QueryExtension` to
+  ask for the `XWAYLAND` extension; see the crcbl-x11 upgrade entry.
+- **X11's watch after the server goes away is not tested**: `randr::Watch` ends
+  with an error when `poll_event` finds the connection dead, and `dsplr watch`
+  and the GUI connect again with their backoff, as on every backend; the X11 e2e
+  has one Xvfb, which the harness owns, so no test stops a server under a watch.
+  Nor has the GUI run on X11 (its e2e is sway's): its following of X11 changes
+  is the same `Backend::watch`, read, not run.
 - **X11 reads without probing**: `randr::x11` reads `GetScreenResourcesCurrent`,
   which returns the server's last known outputs without asking the driver. On a
   driver without hotplug detection a newly plugged monitor shows only after
@@ -789,11 +794,22 @@ milestone:
   form, so the snapshot gives `None` and the planner refuses any value. Showing
   `vrr_capable` needs a place in the model for a read-only fact (the owner's
   call); not read.
-- **crcbl-x11 reads the screen's size only at connect time**:
-  `Connection::screen` is the setup's copy, and a later size arrives only in a
-  `ScreenChangeNotify`; there is no `GetGeometry` on the root. So each RandR
-  read connects afresh to have the size the screen has now. Raised with the
-  crcbl session.
+- **crcbl-x11 upgrade: what to adopt from crcbl main** (none released yet;
+  0.19.1 is what dsplr builds against):
+  - **`Connection::geometry`** (crcbl `bfc0f5be`): 0.19.1's `Connection::screen`
+    is the setup's copy, and a later size arrives only in a
+    `ScreenChangeNotify`. So each RandR read connects afresh to have the size
+    the screen has now (`randr::x11`), and `randr::Watch` ignores the event's
+    own size. With `geometry`, a read could reuse a connection.
+  - **`set_reply_timeout`** (crcbl `2ef22c54`): a server that never answers is
+    bounded today by `randr::x11`'s detached thread and `OPERATION_TIMEOUT` /
+    `APPLY_TIMEOUT`, leaking the thread on timeout. A reply timeout in libxcb's
+    wait would end it instead.
+  - **`Connection::query_extension`**: check for the `XWAYLAND` extension first
+    and refuse when present. When it is absent, keep the `XWAYLAND<n>`
+    output-name check (`randr::x11::xwayland_outputs`) as the fallback: an
+    absent extension proves nothing, as Xwayland before 23.1 lacks it, it is an
+    optional build feature, and `-extension XWAYLAND` turns it off.
 - **What the RandR apply planner's tests do not reach** (`randr::plan`): only
   Xvfb was available, which has one CRTC, one output (`screen`), no rotations
   and a maximum equal to its start size, so every multi-CRTC case (a CRTC search

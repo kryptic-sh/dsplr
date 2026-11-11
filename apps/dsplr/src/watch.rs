@@ -365,7 +365,8 @@ impl Watching<'_> {
     }
 
     /// Reads the displays and, when the connected outputs are not the ones
-    /// last handled, restores the profile picked for them, unless another
+    /// last handled, restores the profile picked for them (the same ones are
+    /// said, and left as they are), unless another
     /// change waits to be kept ([`Checked::Busy`]; the outputs are then not
     /// handled yet). Nothing picked, or a restore that fails, is said, and
     /// the next change is waited for.
@@ -382,6 +383,7 @@ impl Watching<'_> {
         };
         let connected = Connected::of(&current);
         if !tracker.is_new(&connected) {
+            eprintln!("dsplr: the displays changed; the same outputs are connected");
             return Checked::Done;
         }
         if self.busy() {

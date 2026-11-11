@@ -262,6 +262,27 @@ impl Randr {
     }
 }
 
+/// Connects to the server `display` names, checks its RandR, and runs
+/// `setup` on the connection, on a detached thread under
+/// [`OPERATION_TIMEOUT`]; then hands the connection back with what `setup`
+/// gave, for a caller that keeps it ([`super::watch::Watch`]). Not under the server's lock
+/// ([`on_server`]): a connection kept for the life of a watch would hold up
+/// every read.
+pub(super) async fn connect_and<T: Send + 'static>(
+    display: &str,
+    what: &'static str,
+    setup: impl FnOnce(&Connection) -> Result<T, Error> + Send + 'static,
+) -> Result<(Connection, T), Error> {
+    let name = display.to_owned();
+    blocking(what, move || {
+        let connection = Connection::connect(Some(&name))?;
+        version(&connection)?;
+        let set_up = setup(&connection)?;
+        Ok((connection, set_up))
+    })
+    .await
+}
+
 /// The names of `snapshot`'s outputs when they are a Wayland compositor's
 /// Xwayland's (`XWAYLAND` and a number, as Xwayland names each output after
 /// the compositor's), `None` when any is not. crcbl-x11 0.19.1 offers no

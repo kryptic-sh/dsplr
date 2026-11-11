@@ -14,9 +14,13 @@ pub mod snapshot;
 #[cfg(test)]
 mod tests;
 #[cfg(x11)]
+pub mod watch;
+#[cfg(x11)]
 pub mod x11;
 
 pub use plan::{ModeRef, Note, Operation, Plan, PlanError, plan};
 pub use resources::Snapshot;
+#[cfg(x11)]
+pub use watch::Watch;
 #[cfg(x11)]
 pub use x11::{APPLY_TIMEOUT, Error, OPERATION_TIMEOUT, Randr};

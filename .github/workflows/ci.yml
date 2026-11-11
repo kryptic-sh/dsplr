@@ -206,7 +206,7 @@ jobs:
             packages: mutter mesa dbus
             tests: dsplr-backend dsplr
           - desktop: x11
-            packages: xorg-server-xvfb libxcb
+            packages: xorg-server-xvfb libxcb xorg-xrandr
             tests: dsplr-backend dsplr
           - desktop: gui
             harness: sway

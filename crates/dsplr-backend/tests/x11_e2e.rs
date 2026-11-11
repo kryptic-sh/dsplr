@@ -168,3 +168,54 @@ async fn a_request_failing_under_the_grab_leaves_the_server_ungrabbed() {
     let read = read.expect("read while the failed connection was still open");
     assert_eq!(read.crtcs[0].mode, crtc.mode, "nothing changed");
 }
+
+/// Runs xrandr on the harness's display (its `DISPLAY`) with `args`.
+fn xrandr(args: &[&str]) {
+    let status = std::process::Command::new("xrandr")
+        .args(args)
+        .status()
+        .expect("xrandr runs");
+    assert!(status.success(), "xrandr {args:?}");
+}
+
+/// The watch wakes for a change another client makes (a mode set with
+/// xrandr), once each time, and not without one.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the Xvfb harness: tests/e2e/headless-x11.sh"]
+async fn the_watch_wakes_for_a_change_xrandr_makes() {
+    use std::time::Duration;
+
+    harness_runtime();
+    let backend = dsplr_backend::detect().await.backend.expect("found");
+    // A second mode on `screen` for xrandr to set: CVT's 1280x720, which an
+    // apply makes.
+    let layout = backend.snapshot().await.expect("snapshot");
+    let small = edited(&layout, |layout| {
+        entry_mut(layout, "screen").state.mode = Some(Mode::new(1280, 720, 60_000));
+    });
+    backend.apply(&small).await.expect("applied");
+    backend.apply(&layout).await.expect("applied back");
+
+    let mut watch = backend.watch().await.expect("watching");
+    let quiet = tokio::time::timeout(Duration::from_millis(500), watch.changed()).await;
+    assert!(quiet.is_err(), "woke with nothing changed: {quiet:?}");
+    for mode in ["1280x720_60.00", "1920x1080"] {
+        xrandr(&["--output", "screen", "--mode", mode]);
+        tokio::time::timeout(Duration::from_secs(5), watch.changed())
+            .await
+            .unwrap_or_else(|_| panic!("no change seen for {mode}"))
+            .expect("still following");
+        // The rest of that change's burst was taken with it: one wake.
+        let again = tokio::time::timeout(Duration::from_millis(500), watch.changed()).await;
+        assert!(again.is_err(), "woke twice for {mode}: {again:?}");
+    }
+    let now = backend.snapshot().await.expect("snapshot");
+    assert_eq!(
+        entry(&now, "screen")
+            .state
+            .mode
+            .as_ref()
+            .map(|m| (m.width, m.height)),
+        Some((1920, 1080))
+    );
+}

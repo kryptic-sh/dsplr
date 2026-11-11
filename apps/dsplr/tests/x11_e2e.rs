@@ -27,7 +27,7 @@ mod support;
 #[path = "../../../tests/e2e/x11_support.rs"]
 mod x11_support;
 
-use support::{answered_on_a_terminal, entry, on_a_terminal, plain};
+use support::{Watcher, answered_on_a_terminal, entry, on_a_terminal, plain};
 use x11_support::{harness_runtime, watchdogs};
 
 fn dsplr_bin() -> PathBuf {
@@ -204,3 +204,53 @@ const KILLED_CONFIRM: Duration = Duration::from_secs(15);
 /// timeout (an apply's, `randr::APPLY_TIMEOUT`) and [`KILLED_CONFIRM`],
 /// about 110 s, then its revert, with room.
 const WATCHDOG: Duration = Duration::from_secs(180);
+
+/// `dsplr watch` on X11: it restores the profile picked for the outputs
+/// when it starts, and goes on following the server through a change
+/// another client makes with xrandr (the outputs connected are the same, so
+/// it restores nothing), until it is stopped.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the Xvfb harness: tests/e2e/headless-x11.sh"]
+async fn watch_restores_a_profile_and_follows_xrandr_s_changes() {
+    let runtime = harness_runtime();
+    // A profile at CVT's 1280x720, saved from the screen, then the screen
+    // put back.
+    let (code, text) = dsplr(&["set", "screen", "--mode", "1280x720@60", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["save", "--profile", "small"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr(&["set", "screen", "--mode", "1920x1080", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+
+    let mut command = Command::new(dsplr_bin());
+    command.arg("watch").stdin(Stdio::null());
+    let mut watcher = Watcher::start(command, runtime.join("watch.log"));
+    watcher
+        .restored(listed, 1, "small", |layout| {
+            entry(layout, "screen")
+                .state
+                .mode
+                .as_ref()
+                .is_some_and(|mode| (mode.width, mode.height) == (1280, 720))
+        })
+        .await;
+
+    // Another client's change: seen (the watch woke and read again), and
+    // nothing restored for it.
+    let status = Command::new("xrandr")
+        .args(["--output", "screen", "--mode", "1920x1080"])
+        .status()
+        .expect("xrandr runs");
+    assert!(status.success());
+    watcher
+        .said("dsplr: the displays changed; the same outputs are connected")
+        .await;
+    assert!(watcher.running(), "{}", watcher.log());
+    assert_eq!(watcher.restores(), 1, "{}", watcher.log());
+    assert_eq!(size(), (1920, 1080));
+    let log = watcher.stop();
+    assert!(!log.contains("stopped following"), "{log}");
+
+    let (code, text) = dsplr(&["profile", "rm", "small"]);
+    assert_eq!(code, Some(0), "{text}");
+}
