@@ -85,6 +85,20 @@ milestone:
   the options and trade-off are in the kanshi entry under "Open work in the
   Linux-owned crates"). Blocks nothing.
 
+- **Where the monitor vendor names come from** (the "Make normalisation to the
+  PNP vendor code" entry below; needed for profiles to match across X11/GNOME
+  and Hyprland/wlroots). Hyprland and wlroots report the company name
+  libdisplay-info looks up in hwdata's `pnp.ids` (`/usr/share/hwdata/pnp.ids`,
+  hwdata 0.412, GPL-2.0-or-later); the EDID, RandR and Mutter give the
+  three-letter code. A code maps to one name, but a name can have several codes
+  (`DEL` and `DLL` are both Dell), so the match should turn codes into names,
+  not the other way round. Options: (a) read the system's `pnp.ids` at runtime,
+  which embeds nothing and falls back to the code when the file is missing, but
+  makes hwdata a soft runtime dependency for packagers; (b) embed a generated
+  table, which works everywhere but ships GPL-licensed data in an MIT crate; (c)
+  compare only model and serial when the makes differ in form. Default if not
+  answered: (a).
+
 - **`dsplr save`, decided while building it (2026-11-09); confirm or change**:
   - The seam is `Backend::persist(&self, layout, approved: Option<&str>)`, not
     the plan's `persist(layout)`: a file needing a yes comes back as
@@ -897,12 +911,13 @@ milestone:
   closed, since the terminal may be gone when it fires, so a watchdog that fails
   to revert says so to no one. A log file in the state directory would fix that.
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
-  not written; needs a vendor-name table with a source. Mutter 51.1 reports the
-  PNP code (read in `set_output_details_from_edid`, not seen on a real monitor),
-  so it is wlroots' and Hyprland's resolved names that need mapping: both get
-  make, model and serial from libdisplay-info (wlroots 0.20 and aquamarine 0.16
-  link it), whose make is a company name (`ASUSTek COMPUTER INC` for `AUS`,
-  `The Linux Foundation` for `LNX`, libdisplay-info 0.3.0 run here).
+  not written; needs a vendor-name table with a source (the source is a decision
+  for the owner, under "Decisions waiting on the owner"). Mutter 51.1 reports
+  the PNP code (read in `set_output_details_from_edid`, not seen on a real
+  monitor), so it is wlroots' and Hyprland's resolved names that need mapping:
+  both get make, model and serial from libdisplay-info (wlroots 0.20 and
+  aquamarine 0.16 link it), whose make is a company name (`ASUSTek COMPUTER INC`
+  for `AUS`, `The Linux Foundation` for `LNX`, libdisplay-info 0.3.0 run here).
   `dsplr_model::edid::Edid::identity` (for the coming `Randr` backend and the
   autorandr import) gives the model and serial as libdisplay-info does, checked
   against it on built EDIDs and one real monitor, and the PNP code as the make;
