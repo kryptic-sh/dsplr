@@ -7,19 +7,19 @@ use dsplr_model::Layout;
 
 use crate::profile::ProfileName;
 
-/// A kanshi profile as a dsplr profile.
+/// Another tool's profile as a dsplr profile.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Imported {
     pub name: ProfileName,
-    /// The kanshi profile it came from: its name, or kanshi's for an
-    /// anonymous one, and where it is.
+    /// The profile it came from: its name (or the name the tool gives an
+    /// anonymous one) and where it is.
     pub from: String,
     pub layout: Layout,
-    /// What was not taken from kanshi as written, one note each.
+    /// What was not taken from the tool's profile as written, one note each.
     pub notes: Vec<String>,
 }
 
-/// A kanshi profile not imported, and why.
+/// Another tool's profile not imported, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
     pub from: String,
