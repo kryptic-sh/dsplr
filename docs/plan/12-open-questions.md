@@ -13,9 +13,10 @@ pikr and lyr), X11 in the MVP, the Wayland bindings (1) and the async runtime
    libwayland-client binding that only `crcbl-shell` had, privately; crcbl is
    adding a public `crcbl-wayland` crate for it, with a raw connection API, and
    dsplr's M2 waits for that ([02](02-architecture.md#dependencies-initial)).
-2. **X11 bindings.** Default: `x11rb` with the `randr` feature. Alternative:
-   crcbl-shell's own X11 FFI, which would have to grow RandR. New dependency;
-   needs approval before M7.
+2. **X11 bindings.** **Decided by the owner (2026-11-11): crcbl**, as for
+   Wayland, not `x11rb`. A RandR client crate beside `crcbl-wayland` (the crcbl
+   session's suggestion, kept out of crcbl-shell so games do not carry the set
+   path), and M7 waits for it ([02](02-architecture.md#dependencies-initial)).
 3. **Async runtime.** **Decided by the owner (2026-11-04): a current-thread
    tokio runtime on the backend thread**, driving the Wayland fd (through
    `AsyncFd`), the Hyprland sockets and zbus.

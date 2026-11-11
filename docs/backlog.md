@@ -85,14 +85,6 @@ milestone:
   the options and trade-off are in the kanshi entry under "Open work in the
   Linux-owned crates"). Blocks nothing.
 
-- **X11 bindings**: `x11rb` or crcbl's own X11 FFI (blocks M7). The crcbl
-  session's view (2026-11-09): use `x11rb`. crcbl-shell's RandR is read-only
-  enumeration for games (fullscreen monitor and scale); a set path
-  (`SetCrtcConfig`, `SetScreenSize`, transforms, primary, rollback) would be
-  tested only by dsplr and put a screen-breaking path in every game's
-  dependencies. If the owner wants one stack anyway, crcbl suggests a separate
-  X11 crate beside `crcbl-wayland`, not RandR inside crcbl-shell.
-
 - **`dsplr save`, decided while building it (2026-11-09); confirm or change**:
   - The seam is `Backend::persist(&self, layout, approved: Option<&str>)`, not
     the plan's `persist(layout)`: a file needing a yes comes back as
