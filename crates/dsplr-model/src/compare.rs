@@ -100,7 +100,11 @@ impl Layout {
     /// makes ([`Capabilities::carried_scale`]: a `wl_fixed`, KWin's 120ths),
     /// so those are not differences, and then compared within float noise,
     /// so a scale the desktop itself chose otherwise (Hyprland's clean
-    /// scales) shows up.
+    /// scales) shows up. Mirrors are compared by source where the backend
+    /// keeps one ([`Capabilities::mirror_direction`]), and elsewhere by the
+    /// outputs each one mirrors or is mirrored by, whichever of them is
+    /// named the source; there `primary` is compared for the group: the
+    /// primary read back must be in the group of the one asked for.
     pub fn differences(&self, actual: &Self, capabilities: &Capabilities) -> Vec<Difference> {
         let mut differences = Vec::new();
         if let (Some(asked), Some(got)) = (self.layout_mode, actual.layout_mode)
@@ -116,7 +120,13 @@ impl Layout {
         for asked in &self.entries {
             match actual.entries.iter().find(|got| got.id == asked.id) {
                 None => differences.push(Difference::Missing(asked.id.clone())),
-                Some(got) => compare(asked, got, capabilities, primary, &mut differences),
+                Some(got) => compare(
+                    (self, asked),
+                    (actual, got),
+                    capabilities,
+                    primary,
+                    &mut differences,
+                ),
             }
         }
         for got in &actual.entries {
@@ -128,11 +138,12 @@ impl Layout {
     }
 }
 
-/// Pushes a [`Difference::Setting`] for each setting of one output pair that
-/// differs, `primary` among them only when `primary` says so.
+/// Pushes a [`Difference::Setting`] for each setting of one output pair, each
+/// beside the layout it is in, that differs, `primary` among them only when
+/// `primary` says so.
 fn compare(
-    asked: &OutputEntry,
-    got: &OutputEntry,
+    (asked_layout, asked): (&Layout, &OutputEntry),
+    (got_layout, got): (&Layout, &OutputEntry),
     capabilities: &Capabilities,
     primary: bool,
     differences: &mut Vec<Difference>,
@@ -194,22 +205,97 @@ fn compare(
             got_sync.to_string(),
         );
     }
-    if a.mirror_of != g.mirror_of {
-        let name = |source: &Option<OutputId>| {
-            source
-                .as_ref()
-                .map_or_else(|| "none".to_owned(), ToString::to_string)
-        };
-        differ(Setting::MirrorOf, name(&a.mirror_of), name(&g.mirror_of));
+    if capabilities.mirror_direction {
+        if a.mirror_of != g.mirror_of {
+            let name = |source: &Option<OutputId>| {
+                source
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), ToString::to_string)
+            };
+            differ(Setting::MirrorOf, name(&a.mirror_of), name(&g.mirror_of));
+        }
+    } else {
+        let asked_with = mirrored_with(asked_layout, &asked.id);
+        let got_with = mirrored_with(got_layout, &got.id);
+        if asked_with != got_with {
+            let names = |with: &[String]| {
+                if with.is_empty() {
+                    "none".to_owned()
+                } else {
+                    with.join(", ")
+                }
+            };
+            differ(Setting::MirrorOf, names(&asked_with), names(&got_with));
+        }
     }
-    if primary && a.primary != g.primary {
-        differ(
-            Setting::Primary,
-            a.primary.to_string(),
-            g.primary.to_string(),
-        );
+    if primary {
+        // Without a direction, the desktop may give the primary to any output
+        // of a mirror group (GNOME's is the logical monitor's): the group
+        // that has it is compared.
+        let (asked_primary, got_primary) = if capabilities.mirror_direction {
+            (a.primary, g.primary)
+        } else {
+            (
+                group_primary(asked_layout, &asked.id),
+                group_primary(got_layout, &got.id),
+            )
+        };
+        if asked_primary != got_primary {
+            differ(
+                Setting::Primary,
+                asked_primary.to_string(),
+                got_primary.to_string(),
+            );
+        }
     }
     compare_known(a, g, &mut differ);
+}
+
+/// Whether `id`, or an output it mirrors or is mirrored by in `layout`
+/// ([`mirrored_with`]), is the primary output.
+fn group_primary(layout: &Layout, id: &OutputId) -> bool {
+    let with = mirrored_with(layout, id);
+    layout.entries.iter().any(|entry| {
+        entry.state.enabled
+            && entry.state.primary
+            && (entry.id == *id || with.contains(&entry.id.to_string()))
+    })
+}
+
+/// The outputs `id` mirrors or is mirrored by in `layout`, by name, sorted,
+/// itself left out: every enabled output whose mirror source, followed to
+/// its end, is `id`'s, and that source. Empty when it mirrors nothing and
+/// nothing mirrors it.
+fn mirrored_with(layout: &Layout, id: &OutputId) -> Vec<String> {
+    let root = |start: &OutputId| {
+        let mut at = start.clone();
+        // At most one step per output, so a cycle cannot loop forever.
+        for _ in 0..layout.entries.len() {
+            match layout
+                .entries
+                .iter()
+                .find(|entry| entry.id == at && entry.state.enabled)
+                .and_then(|entry| entry.state.mirror_of.clone())
+            {
+                Some(source) => at = source,
+                None => break,
+            }
+        }
+        at
+    };
+    let source = root(id);
+    let mut with: Vec<String> = layout
+        .entries
+        .iter()
+        .filter(|entry| entry.state.enabled && root(&entry.id) == source)
+        .map(|entry| entry.id.clone())
+        .chain(std::iter::once(source.clone()))
+        .filter(|other| other != id)
+        .map(|other| other.to_string())
+        .collect();
+    with.sort();
+    with.dedup();
+    with
 }
 
 /// The optional settings, compared only where both sides have a value: a
@@ -326,6 +412,145 @@ mod tests {
         );
         assert_eq!(with(None).differences(&logical, &caps), []);
         assert_eq!(logical.differences(&with(None), &caps), []);
+    }
+
+    /// `names` enabled at the origin, each `(name, source)` mirroring its
+    /// source.
+    fn mirrors(names: &[(&str, Option<&str>)]) -> Layout {
+        Layout {
+            entries: names
+                .iter()
+                .map(|&(name, source)| {
+                    entry(
+                        name,
+                        OutputState {
+                            mirror_of: source.map(|source| OutputId::Connector(source.into())),
+                            ..enabled()
+                        },
+                    )
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn mirror(output: &str, asked: &str, got: &str) -> Difference {
+        Difference::Setting {
+            output: OutputId::Connector(output.into()),
+            setting: Setting::MirrorOf,
+            asked: asked.into(),
+            got: got.into(),
+        }
+    }
+
+    #[test]
+    fn where_mirrors_have_no_direction_either_output_may_read_back_as_the_source() {
+        let undirected = Capabilities {
+            mirroring: true,
+            ..Capabilities::default()
+        };
+        let asked = mirrors(&[("DP-1", Some("DP-2")), ("DP-2", None), ("HDMI-1", None)]);
+        let flipped = mirrors(&[("DP-1", None), ("DP-2", Some("DP-1")), ("HDMI-1", None)]);
+        assert_eq!(asked.differences(&flipped, &undirected), []);
+        // Three in one group, read back with another source.
+        let three = mirrors(&[
+            ("DP-1", Some("DP-2")),
+            ("DP-2", None),
+            ("HDMI-1", Some("DP-2")),
+        ]);
+        let three_back = mirrors(&[
+            ("DP-1", None),
+            ("DP-2", Some("DP-1")),
+            ("HDMI-1", Some("DP-1")),
+        ]);
+        assert_eq!(three.differences(&three_back, &undirected), []);
+        // Other outputs mirroring each other still differ.
+        let other = mirrors(&[("DP-1", Some("HDMI-1")), ("DP-2", None), ("HDMI-1", None)]);
+        assert_eq!(
+            asked.differences(&other, &undirected),
+            [
+                mirror("DP-1", "DP-2", "HDMI-1"),
+                mirror("DP-2", "DP-1", "none"),
+                mirror("HDMI-1", "none", "DP-1"),
+            ]
+        );
+        // As does a mirror that came back as none.
+        let apart = mirrors(&[("DP-1", None), ("DP-2", None), ("HDMI-1", None)]);
+        assert_eq!(asked.differences(&apart, &undirected).len(), 2);
+    }
+
+    #[test]
+    fn where_mirrors_have_no_direction_the_primary_is_compared_by_group() {
+        let caps = |mirror_direction| Capabilities {
+            mirroring: true,
+            primary: true,
+            mirror_direction,
+            ..Capabilities::default()
+        };
+        let with_primary = |layout: Layout, name: &str| {
+            let mut layout = layout;
+            for entry in &mut layout.entries {
+                entry.state.primary = entry.id == OutputId::Connector(name.into());
+            }
+            layout
+        };
+        let asked = with_primary(
+            mirrors(&[("DP-1", Some("DP-2")), ("DP-2", None), ("HDMI-1", None)]),
+            "DP-1",
+        );
+        // Read back flipped, with the primary on the group's other output.
+        let flipped = with_primary(
+            mirrors(&[("DP-1", None), ("DP-2", Some("DP-1")), ("HDMI-1", None)]),
+            "DP-2",
+        );
+        assert_eq!(asked.differences(&flipped, &caps(false)), []);
+        // On an output outside the group: the group lost it, HDMI-1 got it.
+        let elsewhere = with_primary(
+            mirrors(&[("DP-1", Some("DP-2")), ("DP-2", None), ("HDMI-1", None)]),
+            "HDMI-1",
+        );
+        let primary = |output: &str, asked: &str, got: &str| Difference::Setting {
+            output: OutputId::Connector(output.into()),
+            setting: Setting::Primary,
+            asked: asked.into(),
+            got: got.into(),
+        };
+        assert_eq!(
+            asked.differences(&elsewhere, &caps(false)),
+            [
+                primary("DP-1", "true", "false"),
+                primary("DP-2", "true", "false"),
+                primary("HDMI-1", "false", "true"),
+            ]
+        );
+        // With a direction, the primary moving within the group is one.
+        let same_mirror = with_primary(asked.clone(), "DP-2");
+        assert_eq!(
+            asked.differences(&same_mirror, &caps(true)),
+            [
+                primary("DP-1", "true", "false"),
+                primary("DP-2", "false", "true"),
+            ]
+        );
+    }
+
+    #[test]
+    fn where_mirrors_have_a_direction_the_source_must_come_back() {
+        let directed = Capabilities {
+            mirroring: true,
+            mirror_direction: true,
+            ..Capabilities::default()
+        };
+        let asked = mirrors(&[("DP-1", Some("DP-2")), ("DP-2", None)]);
+        let flipped = mirrors(&[("DP-1", None), ("DP-2", Some("DP-1"))]);
+        assert_eq!(
+            asked.differences(&flipped, &directed),
+            [
+                mirror("DP-1", "DP-2", "none"),
+                mirror("DP-2", "none", "DP-1"),
+            ]
+        );
+        assert_eq!(asked.differences(&asked, &directed), []);
     }
 
     #[test]

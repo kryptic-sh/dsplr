@@ -254,3 +254,165 @@ async fn watch_restores_a_profile_and_follows_xrandr_s_changes() {
     let (code, text) = dsplr(&["profile", "rm", "small"]);
     assert_eq!(code, Some(0), "{text}");
 }
+
+/// `dsplr` with each of `vars` set to its value, or unset with `None`, so
+/// the session's own values do not reach it.
+fn dsplr_with(vars: &[(&str, Option<&str>)], args: &[&str]) -> (Option<i32>, String) {
+    let mut command = Command::new(dsplr_bin());
+    command.args(args).stdin(Stdio::null());
+    for &(name, value) in vars {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    exit_and_output(&command.output().expect("dsplr runs"))
+}
+
+/// `dsplr` with `XDG_CURRENT_DESKTOP` as `desktop`, unset with `None`.
+fn dsplr_on(desktop: Option<&str>, args: &[&str]) -> (Option<i32>, String) {
+    dsplr_with(&[("XDG_CURRENT_DESKTOP", desktop)], args)
+}
+
+/// Sets `screen` to `mode` with xrandr, as another client would.
+fn screen_mode(mode: &str) {
+    let status = Command::new("xrandr")
+        .args(["--output", "screen", "--mode", mode])
+        .status()
+        .expect("xrandr runs");
+    assert!(status.success(), "xrandr --mode {mode}");
+}
+
+/// `dsplr save` on X11: the profile for the outputs connected now, and the
+/// autostart entry whose command, run as a session would at login, puts it
+/// back, by dsplr's own path; `restore --login` changing nothing under a
+/// desktop that restores its own layout or under Wayland, and restoring
+/// otherwise; no entry under Xfce, the line for its config under i3; an
+/// entry someone else wrote replaced only when allowed.
+#[test]
+#[ignore = "needs the Xvfb harness: tests/e2e/headless-x11.sh"]
+fn save_writes_a_profile_that_the_autostart_entry_restores() {
+    let runtime = harness_runtime();
+    let config = PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("set"));
+    assert!(config.starts_with(&runtime), "{}", config.display());
+    let autostart = config.join("autostart/dsplr-restore.desktop");
+    // Xvfb's `screen` has no EDID, so the profile is named by its connector.
+    let profile = config.join("dsplr/profiles/screen.json");
+    let exe = std::fs::canonicalize(dsplr_bin()).expect("dsplr's path");
+    let exe = exe.to_str().expect("UTF-8");
+    assert!(
+        !exe.contains([' ', '"', '\\', '$', '%']),
+        "quoted in Exec: {exe}"
+    );
+
+    let (code, text) = dsplr(&["set", "screen", "--mode", "1280x720@60", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    let (code, text) = dsplr_on(None, &["save"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("saved profile \"screen\""), "{text}");
+    assert!(text.contains("wrote "), "{text}");
+    assert!(
+        text.contains("exec --no-startup-id dsplr restore --login --yes"),
+        "{text}"
+    );
+    assert!(profile.is_file(), "{text}");
+    let entry = std::fs::read_to_string(&autostart).expect("the autostart entry");
+    let value = |key: &str| {
+        entry
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap_or_else(|| panic!("no {key} line:\n{entry}"))
+    };
+    let exec = value("Exec=");
+    assert_eq!(exec, format!("{exe} restore --login --yes"));
+    assert_eq!(value("TryExec="), exe);
+
+    // Login: the entry's command, with no terminal, restores the profile.
+    screen_mode("1920x1080");
+    let words: Vec<&str> = exec.split_whitespace().collect();
+    let login = |vars: &[(&str, Option<&str>)]| {
+        let mut command = Command::new(words[0]);
+        command.args(&words[1..]).stdin(Stdio::null());
+        for &(name, value) in vars {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
+        }
+        exit_and_output(&command.output().expect("the entry's command runs"))
+    };
+    let (code, text) = login(&[("XDG_CURRENT_DESKTOP", None)]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(text.contains("restoring profile \"screen\""), "{text}");
+    assert_eq!(size(), (1280, 720));
+
+    // Where the desktop restores its own layout, or the session is Wayland:
+    // nothing, said to no one.
+    screen_mode("1920x1080");
+    for vars in [
+        &[("XDG_CURRENT_DESKTOP", Some("XFCE"))][..],
+        &[("XDG_CURRENT_DESKTOP", Some("X-Cinnamon"))],
+        &[
+            ("XDG_CURRENT_DESKTOP", None),
+            ("WAYLAND_DISPLAY", Some("wayland-dsplr-none")),
+        ],
+    ] {
+        let (code, text) = login(vars);
+        assert_eq!((code, text.as_str()), (Some(0), ""), "{vars:?}");
+        assert_eq!(size(), (1920, 1080), "{vars:?}");
+    }
+    // Under i3 it restores.
+    let (code, text) = login(&[("XDG_CURRENT_DESKTOP", Some("i3"))]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(size(), (1280, 720));
+
+    // Saved again on a desktop that runs XDG autostart: the entry is there
+    // already, and is left as it is; the profile is this save's own, so it
+    // is replaced, not renamed.
+    let (code, text) = dsplr_on(Some("Openbox"), &["save"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("dsplr-restore.desktop runs `dsplr restore --login`"),
+        "{text}"
+    );
+    assert!(text.contains("saved profile \"screen\""), "{text}");
+    assert!(!text.contains("i3"), "{text}");
+    assert_eq!(std::fs::read_to_string(&autostart).unwrap(), entry);
+
+    // Under Xfce, which restores its own layout: no entry, and why.
+    std::fs::remove_file(&autostart).expect("the entry removed");
+    let (code, text) = dsplr_on(Some("XFCE"), &["save"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("XFCE puts its own saved display layout back at login"),
+        "{text}"
+    );
+    assert!(!autostart.exists(), "{text}");
+
+    // Under i3: the line for its config, and no entry.
+    let (code, text) = dsplr_on(Some("i3"), &["save"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert!(
+        text.contains("add this line to i3's config")
+            && text.contains("exec --no-startup-id dsplr restore --login --yes"),
+        "{text}"
+    );
+    assert!(!autostart.exists(), "{text}");
+
+    // Someone else's entry: shown, and replaced only with --yes.
+    let theirs = "[Desktop Entry]\nType=Application\nExec=true\n";
+    std::fs::create_dir_all(autostart.parent().unwrap()).unwrap();
+    std::fs::write(&autostart, theirs).unwrap();
+    let (code, text) = dsplr_on(None, &["save"]);
+    assert_eq!(code, Some(1), "{text}");
+    assert!(text.contains("was not written by dsplr;"), "{text}");
+    assert_eq!(std::fs::read_to_string(&autostart).unwrap(), theirs);
+    let (code, text) = dsplr_on(None, &["save", "--yes"]);
+    assert_eq!(code, Some(0), "{text}");
+    assert_eq!(std::fs::read_to_string(&autostart).unwrap(), entry);
+
+    screen_mode("1920x1080");
+    for leftover in [&autostart, &profile] {
+        std::fs::remove_file(leftover).expect("removed");
+    }
+}

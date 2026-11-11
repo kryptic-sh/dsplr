@@ -12,6 +12,13 @@ pub struct Capabilities {
     pub custom_modes: bool,
     /// An output can mirror another.
     pub mirroring: bool,
+    /// A mirror's source is kept as asked and read back as the source
+    /// (Hyprland's mirror rule, KWin's replication source). Without it
+    /// (X11's outputs sharing a CRTC, GNOME's logical monitors) outputs
+    /// mirroring each other are a group with no source, the read-back names
+    /// any of them as the source, and the read-back is compared by group
+    /// ([`crate::Layout::differences`]).
+    pub mirror_direction: bool,
     /// The `AdaptiveSync` values the backend accepts.
     pub adaptive_sync: Vec<AdaptiveSync>,
     /// Scales other than whole numbers.

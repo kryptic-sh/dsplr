@@ -36,6 +36,8 @@ fn capability_names(capabilities: &Capabilities) -> Vec<String> {
     let Capabilities {
         custom_modes,
         mirroring,
+        // How a mirror reads back, not something a backend can do.
+        mirror_direction: _,
         adaptive_sync,
         fractional_scale,
         per_output_scale,

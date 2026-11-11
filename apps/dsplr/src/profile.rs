@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use dsplr_backend::Backend;
+use dsplr_backend::{Backend, Named};
 use dsplr_model::Layout;
 use dsplr_persist::diff::line_diff;
+use dsplr_persist::login;
 use dsplr_persist::managed::refuse_symlink;
 use dsplr_persist::profile::{self, Fit, Profile, ProfileError, ProfileName, unix_ms};
 
@@ -344,15 +345,49 @@ pub async fn restore(name: Option<&ProfileName>, options: &apply::Options) -> Ex
         eprintln!("dsplr: restoring profile \"{name}\"");
         return apply::file(&backend, &profile.layout, options).await;
     }
-    let profiles = match readable(&dir) {
-        Ok(profiles) => profiles,
-        Err(exit) => return exit,
-    };
     let backend = match find_backend().await {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    let current = match crate::snapshot(&backend).await {
+    restore_picked(&backend, &dir, options).await
+}
+
+/// `dsplr restore --login`: [`restore`] of the profile picked for the
+/// outputs, unless the desktop puts its own layout back
+/// ([`login::own_restore`]) or the session is not X11 (no backend, or
+/// another than RandR: `WAYLAND_DISPLAY` set, or Mutter found first); then
+/// nothing, said to no one, and [`Exit::Success`], as the autostart entry
+/// runs in every session that runs XDG autostart.
+pub async fn restore_at_login(options: &apply::Options) -> Exit {
+    if login::own_restore(&|name: &str| std::env::var_os(name)).is_some() {
+        return Exit::Success;
+    }
+    let Some(backend) = crate::detection()
+        .await
+        .backend
+        .filter(|backend| backend.name() == Named::Randr.name())
+    else {
+        return Exit::Success;
+    };
+    let dir = match store() {
+        Ok(dir) => dir,
+        Err(exit) => return exit,
+    };
+    restore_picked(&backend, &dir, options).await
+}
+
+/// Applies the profile [`profile::pick`] picks in the store at `dir` for
+/// `backend`'s outputs, as [`restore`] does without a name.
+async fn restore_picked(
+    backend: &Backend,
+    dir: &std::path::Path,
+    options: &apply::Options,
+) -> Exit {
+    let profiles = match readable(dir) {
+        Ok(profiles) => profiles,
+        Err(exit) => return exit,
+    };
+    let current = match crate::snapshot(backend).await {
         Ok(layout) => layout,
         Err(exit) => return exit,
     };
@@ -360,7 +395,7 @@ pub async fn restore(name: Option<&ProfileName>, options: &apply::Options) -> Ex
         return Exit::NoProfile;
     };
     eprintln!("dsplr: {}", restoring(profile, fit));
-    apply::onto(&backend, current, &profile.layout, options).await
+    apply::onto(backend, current, &profile.layout, options).await
 }
 
 /// The profile [`profile::pick`] picks among `profiles` for `current`, the

@@ -165,7 +165,7 @@ pub fn refuse_symlink(path: &Path) -> Result<(), FileError> {
 }
 
 /// Writes `new` over the file at `path`, which held `existing` when it was
-/// read (`None`: there was none), if dsplr may:
+/// read (`None`: there was none), if dsplr may ([`check`]):
 /// - nothing `shadowed`, and no file: it is created;
 /// - nothing `shadowed`, and a file dsplr wrote and nobody changed, which
 ///   dsplr could read (`unreadable` is `None`): it is overwritten;
@@ -177,6 +177,27 @@ pub fn refuse_symlink(path: &Path) -> Result<(), FileError> {
 ///
 /// A conflict, or the write failing.
 pub fn replace(
+    path: &Path,
+    existing: Option<&str>,
+    unreadable: Option<String>,
+    new: String,
+    approved: Option<&str>,
+    comment: Comment,
+    shadowed: Vec<String>,
+) -> Result<(), FileError> {
+    let text = new.clone();
+    check(path, existing, unreadable, new, approved, comment, shadowed)?;
+    write_atomic(path, &text).map_err(FileError::io(path))
+}
+
+/// Whether [`replace`] may write `new` over the file at `path`, without
+/// writing it: for a save with other files to write first, so a conflict
+/// leaves all of them alone.
+///
+/// # Errors
+///
+/// The conflict, as [`replace`] would return it.
+pub fn check(
     path: &Path,
     existing: Option<&str>,
     unreadable: Option<String>,
@@ -200,7 +221,7 @@ pub fn replace(
             shadowed,
         })));
     }
-    write_atomic(path, &new).map_err(FileError::io(path))
+    Ok(())
 }
 
 /// Why a save found no config to look in: what both desktops' lookups need
@@ -304,7 +325,7 @@ pub fn ownership(existing: &str, comment: Comment) -> Ownership {
 }
 
 /// Lowercase hex of SHA-256 over `text`'s UTF-8 bytes.
-fn sha256_hex(text: &str) -> String {
+pub(crate) fn sha256_hex(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))

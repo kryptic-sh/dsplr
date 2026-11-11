@@ -1,6 +1,7 @@
 //! Shared by every X11 e2e test (included with `#[path]`, beside
 //! `support.rs`): the check that the test runs under
-//! `tests/e2e/headless-x11.sh`, against its Xvfb and nothing else.
+//! `tests/e2e/headless-x11.sh`, against its X server (Xvfb, or Xorg's dummy
+//! driver) and nothing else.
 
 #![allow(
     dead_code,
@@ -13,12 +14,28 @@ use std::path::PathBuf;
 /// runs under the X11 harness (see [`crate::support::harness_runtime`]), and
 /// that `DISPLAY` is the harness's Xvfb, with no Wayland session to find.
 pub fn harness_runtime() -> PathBuf {
+    on_server("xvfb")
+}
+
+/// [`harness_runtime`], for the harness's Xorg with the dummy driver
+/// (`DSPLR_E2E_X11_SERVER=xorg`).
+pub fn xorg_runtime() -> PathBuf {
+    on_server("xorg")
+}
+
+/// The harness's runtime directory, after checking it runs `server`.
+fn on_server(server: &str) -> PathBuf {
+    let started = std::env::var("DSPLR_E2E_X11_SERVER").unwrap_or_default();
+    assert_eq!(
+        started, server,
+        "the harness started {started:?}, and this test is for {server}: set DSPLR_E2E_X11_SERVER"
+    );
     let runtime = crate::support::harness_runtime("DSPLR_E2E_X11", "tests/e2e/headless-x11.sh");
     let display = std::env::var("DSPLR_E2E_X11_DISPLAY").expect("set by the harness");
     assert_eq!(
         std::env::var("DISPLAY").ok().as_deref(),
         Some(display.as_str()),
-        "DISPLAY is not the harness's Xvfb"
+        "DISPLAY is not the harness's X server"
     );
     assert!(
         std::env::var_os("WAYLAND_DISPLAY").is_none(),

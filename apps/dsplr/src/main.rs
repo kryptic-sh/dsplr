@@ -100,7 +100,11 @@ enum Command {
     /// Save the displays as they are now where the desktop reads them when
     /// it starts: on Hyprland, the monitors.lua beside its hyprland.lua; on
     /// sway, the outputs file beside its config; on niri, the outputs.kdl
-    /// beside its config.kdl, which niri also reloads at once. With
+    /// beside its config.kdl, which niri also reloads at once; on X11, as
+    /// the profile for the outputs connected now in dsplr's own store, with
+    /// an XDG autostart entry running `dsplr restore --login` at login (under
+    /// i3 or bspwm, the line for their startup is shown instead; none where
+    /// the desktop puts its own layout back). With
     /// --profile, as a named profile in dsplr's own store instead, on any
     /// desktop.
     Save {
@@ -133,6 +137,13 @@ enum Command {
         /// Apply the last revert point, without asking.
         #[arg(long, conflicts_with_all = ["yes", "dry_run", "confirm_timeout"])]
         revert: bool,
+        /// Run at login, from the autostart entry `dsplr save` writes on
+        /// X11: change nothing and exit 0, saying nothing, unless this is an
+        /// X11 session whose desktop leaves the displays to dsplr (not KDE,
+        /// Xfce, MATE, Cinnamon, LXQt, Budgie, Deepin or Unity, which put
+        /// their own layout back).
+        #[arg(long, conflicts_with_all = ["name", "revert"])]
+        login: bool,
         /// Run as a change's watchdog: wait this many seconds first.
         #[arg(
             long,
@@ -330,6 +341,12 @@ async fn run(command: Command) -> Exit {
             token,
             ..
         } => restore::run(after.map(Duration::from_secs), token.as_deref()).await,
+        Command::Restore {
+            login: true, apply, ..
+        } => match apply_options(&apply) {
+            Ok(options) => profile::restore_at_login(&options).await,
+            Err(exit) => exit,
+        },
         Command::Restore { name, apply, .. } => match apply_options(&apply) {
             Ok(options) => profile::restore(name.as_ref(), &options).await,
             Err(exit) => exit,
@@ -630,6 +647,27 @@ mod tests {
             &["dsplr", "restore", "--revert", "--yes"],
             &["dsplr", "restore", "--revert", "--dry-run"],
             &["dsplr", "restore", "--revert", "--confirm-timeout", "5"],
+        ] {
+            let error = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn restore_at_login_takes_the_apply_flags_and_no_name() {
+        let cli = Cli::try_parse_from(["dsplr", "restore", "--login", "--yes"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Restore {
+                login: true,
+                name: None,
+                apply: ApplyArgs { yes: true, .. },
+                ..
+            })
+        ));
+        for args in [
+            &["dsplr", "restore", "--login", "desk"][..],
+            &["dsplr", "restore", "--login", "--revert"],
         ] {
             let error = Cli::try_parse_from(args).unwrap_err();
             assert_eq!(error.exit_code(), Exit::Usage as i32, "{args:?}: {error}");

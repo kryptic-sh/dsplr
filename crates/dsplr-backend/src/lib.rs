@@ -109,6 +109,11 @@ pub enum Error {
     #[cfg(x11)]
     #[error(transparent)]
     Randr(#[from] randr::Error),
+    /// Saving on X11, to dsplr's profile store with a restore at login,
+    /// failed.
+    #[cfg(x11)]
+    #[error(transparent)]
+    Login(dsplr_persist::login::SaveError),
     /// The backend cannot do this at all; nothing was sent.
     #[error("{what} is not supported here: {reason}")]
     Unsupported {
@@ -126,6 +131,9 @@ pub enum Error {
 pub enum Persisted {
     /// Written to a file the desktop reads when it starts.
     File(Saved),
+    /// Saved as a profile in dsplr's store, which `dsplr restore --yes`
+    /// puts back at login (X11, whose server keeps no config of its own).
+    Profile(dsplr_persist::login::Saved),
     /// The desktop saved it itself when it applied it, so nothing was
     /// written.
     ByDesktop {
@@ -317,6 +325,7 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Hyprland(_) => Capabilities {
                 mirroring: true,
+                mirror_direction: true,
                 // Set through `vrr` 0, 1 and 2; the snapshot reads none back
                 // (`vrr` there is whether it is active), so a read-back skips
                 // it ([`dsplr_model::Layout::differences`] compares only known
@@ -337,6 +346,7 @@ impl Backend {
             #[cfg(target_os = "linux")]
             Self::Kde(ref kde) => Capabilities {
                 mirroring: kde.management_version() >= kde::REPLICATION_SINCE,
+                mirror_direction: true,
                 adaptive_sync: vec![
                     dsplr_model::AdaptiveSync::Off,
                     dsplr_model::AdaptiveSync::On,
@@ -381,7 +391,8 @@ impl Backend {
             },
             // Mirrors are outputs sharing a CRTC or CRTCs at one place;
             // custom modes are made with CVT timings; no scale per output,
-            // no test request, no native persistence; the screen starts at
+            // no test request, no native persistence (a save goes to dsplr's
+            // profile store, [`Persisted::Profile`]); the screen starts at
             // the origin (the planner moves a layout there, as xrandr does).
             // Adaptive sync is the driver's to set, not RandR's.
             #[cfg(x11)]
@@ -579,6 +590,12 @@ impl Backend {
     /// The same holds on KDE, where KWin has saved only what is on screen,
     /// and on GNOME, where saving applies the layout again.
     ///
+    /// On X11 the layout is saved as the profile for its outputs in dsplr's
+    /// store, and an XDG autostart entry running `dsplr restore --login` is
+    /// written, or under i3 or bspwm the line for their own startup given,
+    /// or nothing where the desktop restores its own layout
+    /// ([`dsplr_persist::login::save`], [`Persisted::Profile`]).
+    ///
     /// A file there that dsplr may not overwrite unasked is
     /// [`Error::Conflict`], and nothing is written; once the user has seen it
     /// and agreed, persist again with `approved` set to the conflict's
@@ -670,10 +687,28 @@ impl Backend {
                 }
             }
             #[cfg(x11)]
-            Self::Randr(_) => Err(Error::Unsupported {
-                what: "saving the layout",
-                reason: "an X server keeps no display config of its own to write; save a profile with `dsplr save --profile NAME` and run `dsplr restore --yes` at login",
+            Self::Randr(ref randr) if randr.xwayland() => Err(Error::Unsupported {
+                what: "saving a layout through Xwayland",
+                reason: "WAYLAND_DISPLAY is set, so DISPLAY is a Wayland compositor's Xwayland, whose outputs are the compositor's to save; use the compositor's own backend",
             }),
+            #[cfg(x11)]
+            Self::Randr(_) => {
+                use dsplr_persist::login::{SaveError, save};
+                use dsplr_persist::managed::FileError;
+                let dir = dsplr_persist::profile::default_dir()
+                    .map_err(|error| Error::Login(SaveError::Profile(error)))?;
+                // The entry runs dsplr by this path, not through the
+                // session's PATH.
+                let exe = std::env::current_exe()
+                    .map_err(|error| Error::Login(SaveError::NoExe(error)))?;
+                match save(|name| std::env::var_os(name), &exe, &dir, layout, approved) {
+                    Ok(saved) => Ok(Persisted::Profile(saved)),
+                    Err(SaveError::File(FileError::Conflict(conflict))) => {
+                        Err(Error::Conflict(conflict))
+                    }
+                    Err(error) => Err(Error::Login(error)),
+                }
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ use std::io::{self, BufRead, IsTerminal};
 
 use dsplr_backend::{Backend, Error, Persisted};
 use dsplr_persist::diff::line_diff;
+use dsplr_persist::login::{self, Login, Wm};
 use dsplr_persist::managed::{Conflict, Ownership, Saved};
 
 use crate::Exit;
@@ -69,9 +70,18 @@ pub fn conflict_notes(conflict: &Conflict) -> Vec<String> {
         (None, Ownership::EditedByHand) => {
             notes.push(format!("{path} was edited by hand since dsplr wrote it"));
         }
-        (None, Ownership::Foreign) => notes.push(format!(
-            "{path} was not written by dsplr (nwg-displays writes one too); dsplr replaces it with its own"
-        )),
+        (None, Ownership::Foreign) => {
+            // nwg-displays writes a monitors.lua too; another tool's file
+            // elsewhere (an autostart entry) is not said to be its.
+            let whose = if conflict.path.ends_with("monitors.lua") {
+                " (nwg-displays writes one too)"
+            } else {
+                ""
+            };
+            notes.push(format!(
+                "{path} was not written by dsplr{whose}; dsplr replaces it with its own"
+            ));
+        }
         (None, Ownership::Managed | Ownership::Absent) => {}
     }
     if !conflict.shadowed.is_empty() {
@@ -156,6 +166,7 @@ pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
         Persisted::File(saved) => saved,
         Persisted::ByDesktop { by } => return vec![format!("already saved, by {by}")],
         Persisted::WhenKept { by } => return vec![format!("handed to {by}")],
+        Persisted::Profile(saved) => return profile_messages(saved),
     };
     let mut messages = vec![format!("saved to {}", saved.path.display())];
     messages.extend(
@@ -166,6 +177,64 @@ pub fn saved_messages(persisted: &Persisted) -> Vec<String> {
     );
     messages.extend(saved.kept_catch_all.map(|what| format!("kept {what}")));
     messages.extend(include_note(saved));
+    messages
+}
+
+/// Where an X11 save went: the profile, and how it is put back at login.
+fn profile_messages(saved: &login::Saved) -> Vec<String> {
+    let name = &saved.name;
+    let mut messages: Vec<String> = saved
+        .taken
+        .iter()
+        .map(|taken| {
+            format!(
+                "the profile named \"{taken}\" is another one (saved by name, or for other outputs), so these outputs are saved under another name"
+            )
+        })
+        .collect();
+    messages.extend([
+        format!("saved profile \"{name}\" to {}", saved.profile.display()),
+        format!(
+            "`dsplr restore` picks it while these outputs are connected, and `dsplr restore \"{name}\"` applies it"
+        ),
+    ]);
+    match saved.login {
+        Login::Autostart {
+            ref path,
+            created,
+            unknown_desktop,
+        } => {
+            messages.push(if created {
+                format!(
+                    "wrote {}, so the session runs `dsplr restore --login` at login and puts it back",
+                    path.display()
+                )
+            } else {
+                format!(
+                    "{} runs `dsplr restore --login` at login and puts it back",
+                    path.display()
+                )
+            });
+            if unknown_desktop {
+                messages.push(format!(
+                    "a window manager that runs no XDG autostart entries runs it from its own startup instead: `{}` in {}, `{}` in {}",
+                    Wm::I3.line(),
+                    Wm::I3.config(),
+                    Wm::Bspwm.line(),
+                    Wm::Bspwm.config()
+                ));
+            }
+        }
+        Login::Line(wm) => messages.push(format!(
+            "{} runs no XDG autostart entries, so to put it back at login add this line to {} (dsplr never edits it):\n  {}",
+            wm.name(),
+            wm.config(),
+            wm.line()
+        )),
+        Login::Desktop(desktop) => messages.push(format!(
+            "{desktop} puts its own saved display layout back at login, so dsplr set nothing up to restore this profile then; `dsplr restore` applies it when run"
+        )),
+    }
     messages
 }
 
@@ -266,6 +335,91 @@ mod tests {
             [
                 "kept the settings for DP-9, which is not connected now",
                 "kept its catch-all rule"
+            ]
+        );
+    }
+
+    fn x11(login: dsplr_persist::login::Login) -> Vec<String> {
+        super::saved_messages(&dsplr_backend::Persisted::Profile(
+            dsplr_persist::login::Saved {
+                name: "eDP-1".parse().unwrap(),
+                profile: PathBuf::from("/h/.config/dsplr/profiles/eDP-1.json"),
+                login,
+                taken: None,
+            },
+        ))
+    }
+
+    #[test]
+    fn an_x11_save_names_the_profile_and_how_it_comes_back_at_login() {
+        use dsplr_persist::login::{Login, Wm};
+
+        let entry = PathBuf::from("/h/.config/autostart/dsplr-restore.desktop");
+        let written = x11(Login::Autostart {
+            path: entry.clone(),
+            created: true,
+            unknown_desktop: false,
+        });
+        assert_eq!(
+            written,
+            [
+                "saved profile \"eDP-1\" to /h/.config/dsplr/profiles/eDP-1.json",
+                "`dsplr restore` picks it while these outputs are connected, and `dsplr restore \"eDP-1\"` applies it",
+                "wrote /h/.config/autostart/dsplr-restore.desktop, so the session runs `dsplr restore --login` at login and puts it back",
+            ]
+        );
+        let unknown = x11(Login::Autostart {
+            path: entry,
+            created: false,
+            unknown_desktop: true,
+        });
+        assert_eq!(
+            unknown[2],
+            "/h/.config/autostart/dsplr-restore.desktop runs `dsplr restore --login` at login and puts it back"
+        );
+        assert!(
+            unknown[3]
+                .contains("`exec --no-startup-id dsplr restore --login --yes` in i3's config")
+                && unknown[3].contains("`dsplr restore --login --yes &` in bspwmrc"),
+            "{unknown:?}"
+        );
+        let i3 = x11(Login::Line(Wm::I3));
+        assert_eq!(
+            i3[2],
+            "i3 runs no XDG autostart entries, so to put it back at login add this line to i3's config (~/.config/i3/config) (dsplr never edits it):\n  exec --no-startup-id dsplr restore --login --yes"
+        );
+        assert_eq!(i3.len(), 3);
+        let xfce = x11(Login::Desktop("XFCE"));
+        assert_eq!(
+            xfce[2],
+            "XFCE puts its own saved display layout back at login, so dsplr set nothing up to restore this profile then; `dsplr restore` applies it when run"
+        );
+    }
+
+    #[test]
+    fn only_a_monitors_lua_is_said_to_be_perhaps_nwg_displays() {
+        use dsplr_persist::managed::{Conflict, Ownership};
+
+        let note = |path: &str| {
+            super::conflict_notes(&Conflict {
+                path: PathBuf::from(path),
+                ownership: Ownership::Foreign,
+                unreadable: None,
+                existing: String::new(),
+                new: String::new(),
+                shadowed: Vec::new(),
+            })
+        };
+        assert_eq!(
+            note("/h/.config/hypr/monitors.lua"),
+            [
+                "/h/.config/hypr/monitors.lua was not written by dsplr (nwg-displays writes one too); dsplr replaces it with its own"
+            ]
+        );
+        assert_eq!(
+            note("/h/.config/autostart/dsplr-restore.desktop"),
+            [
+                "/h/.config/autostart/dsplr-restore.desktop was not written by dsplr; dsplr replaces it with its own"
             ]
         );
     }

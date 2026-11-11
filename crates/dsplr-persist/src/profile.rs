@@ -28,6 +28,12 @@ const EXTENSION: &str = "json";
 /// The field a profile keeps its save time in, beside the layout's own.
 const SAVED_KEY: &str = "saved_unix_ms";
 
+/// The field, `true`, of a profile a plain `dsplr save` on X11 keeps for its
+/// outputs ([`save_for_outputs`]): that save may replace it for the same
+/// outputs, and no other profile. Any other save of the profile leaves it
+/// out, so a profile the user saved under that name is never one.
+const FOR_OUTPUTS_KEY: &str = "saved_for_outputs";
+
 /// The longest name, in bytes: with the extension it stays well under the
 /// 255 bytes a file name can have.
 const MAX_NAME_BYTES: usize = 200;
@@ -220,6 +226,19 @@ pub fn path(dir: &Path, name: &ProfileName) -> PathBuf {
 ///
 /// When its file cannot be read or is not a profile.
 pub fn load(dir: &Path, name: &ProfileName) -> Result<Option<Profile>, ProfileError> {
+    Ok(load_marked(dir, name)?.map(|(profile, _)| profile))
+}
+
+/// [`load`], and whether the profile is one a plain `dsplr save` on X11 kept
+/// for its outputs ([`save_for_outputs`]).
+///
+/// # Errors
+///
+/// As [`load`], and when the mark is not `true` or `false`.
+pub fn load_marked(
+    dir: &Path,
+    name: &ProfileName,
+) -> Result<Option<(Profile, bool)>, ProfileError> {
     let path = path(dir, name);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
@@ -230,7 +249,14 @@ pub fn load(dir: &Path, name: &ProfileName) -> Result<Option<Profile>, ProfileEr
         path: path.clone(),
         reason,
     };
-    let (layout, [saved]) = layout_json::read(&text, [SAVED_KEY]).map_err(invalid)?;
+    let (layout, [saved, for_outputs]) =
+        layout_json::read(&text, [SAVED_KEY, FOR_OUTPUTS_KEY]).map_err(invalid)?;
+    let for_outputs = match for_outputs {
+        None => false,
+        Some(mark) => mark
+            .as_bool()
+            .ok_or_else(|| invalid(format!("`{FOR_OUTPUTS_KEY}` is not true or false: {mark}")))?,
+    };
     let saved_unix_ms = match saved {
         Some(saved) => saved
             .as_u64()
@@ -240,11 +266,14 @@ pub fn load(dir: &Path, name: &ProfileName) -> Result<Option<Profile>, ProfileEr
             .map(unix_ms)
             .map_err(ProfileError::io(&path))?,
     };
-    Ok(Some(Profile {
-        name: name.clone(),
-        layout,
-        saved_unix_ms,
-    }))
+    Ok(Some((
+        Profile {
+            name: name.clone(),
+            layout,
+            saved_unix_ms,
+        },
+        for_outputs,
+    )))
 }
 
 /// Every profile in the store at `dir`, by file name, each with the error
@@ -298,16 +327,35 @@ pub fn list(dir: &Path) -> Result<Vec<Result<Profile, ProfileError>>, ProfileErr
 /// When the profile's file is a symbolic link ([`FileError::Symlink`]), or
 /// the directory or the file cannot be written.
 pub fn save(dir: &Path, profile: &Profile) -> Result<PathBuf, ProfileError> {
+    write(dir, profile, &[(SAVED_KEY, profile.saved_unix_ms.into())])
+}
+
+/// [`save`], marked as the profile a plain `dsplr save` on X11 keeps for its
+/// outputs ([`load_marked`]).
+///
+/// # Errors
+///
+/// As [`save`].
+pub fn save_for_outputs(dir: &Path, profile: &Profile) -> Result<PathBuf, ProfileError> {
+    write(
+        dir,
+        profile,
+        &[
+            (SAVED_KEY, profile.saved_unix_ms.into()),
+            (FOR_OUTPUTS_KEY, true.into()),
+        ],
+    )
+}
+
+/// Writes `profile` with `extra`'s fields beside its layout.
+fn write(dir: &Path, profile: &Profile, extra: &[(&str, Value)]) -> Result<PathBuf, ProfileError> {
     let path = path(dir, &profile.name);
     refuse_symlink(&path)?;
-    let text = layout_json::write(
-        &profile.layout,
-        &[(SAVED_KEY, profile.saved_unix_ms.into())],
-    )
-    .map_err(|reason| ProfileError::Invalid {
-        path: path.clone(),
-        reason,
-    })?;
+    let text =
+        layout_json::write(&profile.layout, extra).map_err(|reason| ProfileError::Invalid {
+            path: path.clone(),
+            reason,
+        })?;
     fs::create_dir_all(dir).map_err(ProfileError::io(dir))?;
     write_atomic(&path, &text).map_err(ProfileError::io(&path))?;
     Ok(path)

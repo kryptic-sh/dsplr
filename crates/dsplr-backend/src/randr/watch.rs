@@ -4,7 +4,7 @@
 //! The connection selects `ScreenChangeNotify` and the CRTC, output and
 //! output property `Notify`s on the root window, and its socket is watched
 //! with tokio's `AsyncFd`. [`Watch::changed`] returns at a RandR event that
-//! can change the layout ([`is_change`]), once per burst: the events queued
+//! can change the layout (`is_change`), once per burst: the events queued
 //! with it are taken too. An output property counts only when it is the
 //! `EDID`: a backlight or another driver property set many times a second
 //! would otherwise have the GUI read the server again each time. The caller
