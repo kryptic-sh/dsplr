@@ -10,6 +10,7 @@ mod arrange;
 mod assign;
 mod capabilities;
 mod compare;
+pub mod edid;
 mod id;
 mod json;
 mod layout;
