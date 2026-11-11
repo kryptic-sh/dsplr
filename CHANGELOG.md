@@ -10,6 +10,17 @@ and this project adheres to
 
 ### Changed
 
+- The confirm dialogs and the identify overlay name each monitor's output by the
+  connector the window system reports for it (crcbl 0.19.1's
+  `MonitorInfo::connector`), rather than by its position, which stays the
+  fallback where none is reported or the one reported names no output (Xvfb's
+  `screen`, RandR 1.0's `default`). Two outputs at one place no longer both read
+  as the first, and a monitor whose output the layout being confirmed turns off
+  is named as none.
+- The GUI's keys are read without Caps Lock (crcbl 0.19.1's `shortcut_keysym`):
+  with Caps Lock on, `h j k l` nudge rather than move to the neighbour, `C-r`
+  redoes, and the dialogs' `y` and `n` answer. dsplr builds on crcbl 0.19.1.
+
 - Hyprland modes, from `hyprctl -j monitors` and from `monitors.lua`, are read
   by one stricter parser: the size is digits only, and the refresh is plain
   digits with at most one decimal point and at most one trailing `Hz`, so forms

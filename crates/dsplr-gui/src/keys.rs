@@ -1,5 +1,7 @@
 //! What a key press does (`docs/plan/06-gui.md`'s key table). Keys are read
-//! from the keysym, so a keymap's layout decides what a key is.
+//! from the keysym, so a keymap's layout decides what a key is: the
+//! window passes each function the press's `shortcut_keysym`, the keysym
+//! with Caps Lock left out (Shift kept), so `h` is `h` with Caps Lock on.
 //!
 //! Four readings, by what has the keyboard: the canvas ([`Keymap`], from
 //! `config.toml`'s `[keys]`), the confirm dialogs, the quit prompt and a

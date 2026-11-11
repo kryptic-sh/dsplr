@@ -565,20 +565,6 @@ milestone:
   dropped-edit notes over the canvas (`draw_messages`, a draw-list snapshot);
   not looked at on screen. A click on it does nothing (`messages_bounds`); a
   click elsewhere on the canvas works as usual and leaves it shown.
-- **Caps Lock turns `h` into `H`, and `C-r` into `C-R`**: keys are matched by
-  the keysym crcbl-shell reports, which is the one for the current xkb state
-  (`Xkb::keysym`, `xkb_state_key_get_one_sym`), Caps Lock included; crcbl 0.18.0
-  exposes no keysym for the level without Caps Lock. So with Caps Lock on, the
-  nudge keys move to the neighbour and redo does nothing. Guessing by swapping a
-  letter's case when `Modifiers::CAPS_LOCK` is set would be wrong for layouts
-  whose Caps Lock is a shift lock or does not touch some keys. crcbl's main has
-  the fix as `ShellEvent::Key::shortcut_keysym` (commit 1c6fcaeb): the keysym
-  with xkb's Lock removed, through a second xkb state, so Shift still applies
-  and Shift Lock stays; it equals the keysym when Caps Lock is off, and on Win32
-  and AppKit; the web shell still applies Caps Lock. It is in no crcbl release
-  yet (when one is cut is the owner's call). Once a release carries it: bump
-  crcbl, and match characters on `shortcut_keysym` in `dsplr-gui`'s
-  `keys::matches`.
 - **The GUI's watch reopening is unit-tested in its decision only**:
   `gui::next_try` (the wait and the line, from `watch::Backoff`) has a test; the
   loop that acts on it in `serve` (`Following`, `next_followed`) has none, and
@@ -622,18 +608,22 @@ milestone:
   dsplr cannot keep; the window shows why and the diff in every case and takes
   Replace (Enter) for all of them, since the user has seen what is lost. Say if
   the hand-edited case should take a second, stronger answer.
-- **The confirm dialogs and identify panels match monitors to outputs by logical
-  position** (`dsplr_core::dialog::match_screens`, within a pixel), since crcbl
-  0.18.0 reports no connector name (C3, below). Read in crcbl-shell 0.18.0's
-  `wayland/mod.rs` (`info`): a monitor's position is its `xdg_output` logical
-  position times its scale where the compositor has `xdg_output`, else
-  `wl_output.geometry`'s logical position as it is, without saying which, so
-  `panels::screen` offers both (the first divided by the scale), first first;
-  its size is the current mode, untransformed, so a turned output's logical size
-  is not it, and size is not compared. Only the `xdg_output` case has run
-  (headless sway). Two outputs at one place (a mirror) name the first; a monitor
-  matching none still gets its dialog, unnamed. Switching to the connector is
-  `panels::screen` filling `Screen::connector` once released.
+- **The confirm dialogs and identify panels fall back to matching by logical
+  position** (`dsplr_core::dialog::match_screens`, within a pixel) where crcbl
+  reports no connector for a monitor (Win32, AppKit, the web, headless, its
+  made-up names) or one no output has (Xvfb's one RandR output, `screen`; RandR
+  1.0 emulation's `default`). Read in crcbl-shell's `wayland/mod.rs` (`info`): a
+  monitor's position is its `xdg_output` logical position times its scale where
+  the compositor has `xdg_output`, else `wl_output.geometry`'s logical position
+  as it is, without saying which, so `panels::screen` offers both (the first
+  divided by the scale), first first; its size is the current mode,
+  untransformed, so a turned output's logical size is not it, and size is not
+  compared. Two outputs at one place (a mirror) name the first; a monitor
+  matching none still gets its dialog, unnamed. That the connector wins over a
+  position naming another output, and that a connector naming an output the
+  layout turns off names none, is unit-tested (`match_screens`); which of the
+  two matches named each panel in the headless sway GUI e2e was not observed;
+  there both would name the same output.
 - **Key moves can leave negative positions**: `h j k l` and `H J K L` move one
   output and nothing else, so a nudge left of x 0 leaves it at -10, which
   wlroots and Hyprland take; only a drag's release lifts the layout off negative
@@ -735,18 +725,6 @@ milestone:
   without a hotplug the dialog takes the keys about 0.2 s after the apply shows.
   Enter and Esc still answer it in the main window. Whether a dialog opened at
   all, and on which output, was not looked into.
-- **Connector names from crcbl (C3 in `docs/plan/06-gui.md`)**: on crcbl's main
-  since 2026-11-10 (3b679fed), not in a release yet (the next one is the owner's
-  call; it is not in 0.18.0, which dsplr now builds on).
-  `MonitorInfo::connector: Option<String>` is `Some` from `wl_output.name`, else
-  (below `wl_output` v4) `zxdg_output_v1.name`, and on X11 the RandR output
-  name; `None` for crcbl's made-up names (`wl-output-N`, `output-N`, `CRTC-N`,
-  `screen` without RandR) and on Win32, AppKit, web and headless. A late
-  `wl_output.name` republishes with `MonitorsChanged`. Caveats for matching
-  against wlr-output-management's `head.name`: Xvfb's real RandR output is named
-  `screen`, and RandR 1.0 emulation reports `default`, which no head matches. It
-  is a new public field, so `MonitorInfo { .. }` literals need it. Needed for
-  the identify overlay and the per-output confirm dialogs.
 - **No Miri in dsplr's CI**: the `wlr` dispatcher's decoding
   (`wlr::connection::tests`, hand-built argument arrays decoded through
   `crcbl_wayland::ffi::with_dispatcher_args`) passed under Miri locally

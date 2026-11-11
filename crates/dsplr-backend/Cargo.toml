@@ -26,11 +26,11 @@ tempfile = "3.27.0"
 tokio = { version = "1.54.1", features = ["rt", "macros", "sync"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-crcbl-wayland = "0.18.0"
+crcbl-wayland = "0.19.1"
 zbus = { version = "6.2.1", default-features = false, features = ["tokio", "proxy"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "6.2.1", default-features = false, features = ["tokio", "proxy", "service"] }
 
 [build-dependencies]
-crcbl-wl-scanner = "0.18.0"
+crcbl-wl-scanner = "0.19.1"

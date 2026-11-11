@@ -309,18 +309,55 @@ impl Panels {
     }
 }
 
-/// `monitor` as dsplr matches it to an output, by its logical position.
-/// crcbl-shell 0.18.0 reports a Wayland monitor's position as its
-/// `xdg_output` logical position times its scale where the compositor has
-/// `xdg_output`, and as `wl_output.geometry`'s logical position as it is
-/// where not, without saying which; so both are offered, the first first. Its
-/// size is the untransformed mode, which a turned output's logical size is
-/// not, so it is not compared. No connector name yet (C3, on crcbl's main).
+/// `monitor` as dsplr matches it to an output: by the connector crcbl
+/// reports (`MonitorInfo::connector`: `wl_output.name`, else
+/// `zxdg_output_v1.name`, on Wayland; the RandR output's name on X11), and,
+/// where it reports none or one no output has (Xvfb's one RandR output is
+/// `screen`, RandR 1.0 emulation's `default`), by its logical position
+/// ([`match_screens`]). crcbl-shell reports a Wayland monitor's position as
+/// its `xdg_output` logical position times its scale where the compositor
+/// has `xdg_output`, and as `wl_output.geometry`'s logical position as it is
+/// where not, without saying which; so both are offered, the first first.
+/// Its size is the untransformed mode, which a turned output's logical size
+/// is not, so it is not compared.
 fn screen(monitor: &MonitorInfo) -> Screen {
     let scale = monitor.scale_factor as f32;
     let (x, y) = (monitor.bounds.x as f32, monitor.bounds.y as f32);
     Screen {
-        connector: None,
+        connector: monitor.connector.clone(),
         positions: vec![Point::new(x / scale, y / scale), Point::new(x, y)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crcbl_shell::{MonitorId, MonitorInfo, PhysicalRect};
+    use dsplr_core::Point;
+
+    use super::screen;
+
+    #[test]
+    fn a_monitor_is_offered_by_its_connector_and_its_positions() {
+        let monitor = MonitorInfo {
+            id: MonitorId(1),
+            name: "Dell U2723QE".into(),
+            connector: Some("DP-2".into()),
+            bounds: PhysicalRect::new(3840, 0, 3840, 2160),
+            work_area: PhysicalRect::new(3840, 0, 3840, 2160),
+            scale_factor: 2.0,
+            refresh_millihertz: 60_000,
+            is_primary: false,
+        };
+        let offered = screen(&monitor);
+        assert_eq!(offered.connector.as_deref(), Some("DP-2"));
+        assert_eq!(
+            offered.positions,
+            [Point::new(1920.0, 0.0), Point::new(3840.0, 0.0)]
+        );
+        let unnamed = screen(&MonitorInfo {
+            connector: None,
+            ..monitor
+        });
+        assert_eq!(unnamed.connector, None);
     }
 }

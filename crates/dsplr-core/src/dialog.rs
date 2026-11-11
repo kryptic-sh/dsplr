@@ -176,7 +176,7 @@ pub fn draw_identify(name: &str, description: Option<&str>, size: Size, theme: &
 #[derive(Debug, Clone, PartialEq)]
 pub struct Screen {
     /// The connector the window system names it by, when it says (crcbl's
-    /// `MonitorInfo::connector`, not released yet: always `None` today).
+    /// `MonitorInfo::connector`).
     pub connector: Option<String>,
     /// Where its top-left corner may be in the desktop's logical
     /// coordinates, most likely first: the window system may report it in
@@ -186,11 +186,15 @@ pub struct Screen {
 }
 
 /// The index in `layout` of the output each of `screens` shows, `None` where
-/// none matches: by connector where the screen has one, else an enabled
-/// output whose logical position is one of the screen's to within a pixel,
-/// its positions tried in order. A size is not compared: the window system
-/// may report a monitor's untransformed mode, which a turned output's
-/// logical size is not. Two outputs at one place (a mirror) name the first.
+/// none matches. By connector where the screen has one that names an output
+/// of `layout`, whatever its position, and then only when `layout` has that
+/// output on: the dialogs are about `layout`, so a screen whose output it
+/// turns off is named as none. Else (no connector, or one no output has,
+/// such as Xvfb's `screen` or RandR 1.0's `default`) an enabled output whose
+/// logical position is one of the screen's to within a pixel, its positions
+/// tried in order. A size is not compared: the window system may report a
+/// monitor's untransformed mode, which a turned output's logical size is
+/// not. Two outputs at one place (a mirror) name the first.
 pub fn match_screens(screens: &[Screen], layout: &Layout) -> Vec<Option<usize>> {
     screens
         .iter()
@@ -210,7 +214,10 @@ pub fn match_screens(screens: &[Screen], layout: &Layout) -> Vec<Option<usize>> 
                     })
                 })
             };
-            by_connector.or_else(by_place)
+            match by_connector {
+                Some(index) => on_canvas(&layout.entries[index].state).then_some(index),
+                None => by_place(),
+            }
         })
         .collect()
 }
@@ -305,15 +312,28 @@ mod tests {
             // The first guess wrong, the second right: a position reported
             // in another unit than the one tried first.
             screen(&[(3840.0, 0.0), (1920.0, 0.0)]),
+            // The connector wins over the position, which is DP-2's.
+            Screen {
+                connector: Some("DP-1".into()),
+                positions: vec![Point::new(1920.0, 0.0)],
+            },
+            // HDMI-A-1 is off in this layout: no name, though the position
+            // is DP-1's.
             Screen {
                 connector: Some("HDMI-A-1".into()),
-                positions: vec![Point::new(9999.0, 0.0)],
+                positions: vec![Point::new(0.0, 360.0)],
+            },
+            // A connector no output has (Xvfb's one RandR output): placed
+            // by its position instead.
+            Screen {
+                connector: Some("screen".into()),
+                positions: vec![Point::new(0.0, 360.0)],
             },
         ];
         assert_eq!(
             match_screens(&screens, &layout),
-            [Some(1), Some(0), None, Some(1), Some(2)],
-            "DP-2, DP-1, none, DP-2, HDMI-A-1"
+            [Some(1), Some(0), None, Some(1), Some(0), None, Some(0)],
+            "DP-2, DP-1, none, DP-2, DP-1 by connector, HDMI-A-1 off, DP-1"
         );
     }
 }

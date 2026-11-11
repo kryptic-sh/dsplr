@@ -45,8 +45,10 @@ later work is below.
 - The bar shows the backend thread's last message; the `messages` key shows the
   last `MESSAGE_HISTORY` lines (`dsplr_core::Messages`) over the canvas.
 - The confirm dialogs and the identify overlay are one per-monitor panel set
-  (`dsplr-gui`'s `panels.rs`), each panel naming the output at its monitor's
-  logical position until crcbl reports connectors (C3).
+  (`dsplr-gui`'s `panels.rs`), each panel naming the output on its monitor's
+  connector as crcbl reports it (C3), and, where crcbl reports none or one no
+  output has (Xvfb's `screen`, RandR 1.0's `default`), the output at its logical
+  position.
 
 ## Still to build in M3
 
@@ -81,7 +83,9 @@ another action has by default goes to the file's action, and the other keeps its
 other defaults (none left, it has no key), with a warning (`Keys::warnings`) the
 CLI prints and the GUI shows in its bar and message log. The keys of the
 dialogs, the quit prompt and the panel (Enter, `Esc`, `y`, `n`, the arrows, Tab)
-are not rebound.
+are not rebound. Keys are read without Caps Lock (crcbl's
+`ShellEvent::Key::shortcut_keysym`, xkb's Lock left out, Shift kept), so `h`
+nudges with Caps Lock on and `H` is still Shift+h.
 
 **In the panel** (after the `panel` key): focus lands on the selected output's
 first widget, or where it was last; `Tab` / `S-Tab` move through the widgets in
@@ -99,7 +103,7 @@ that GNOME places, and the revert watchdog covers the case where it lands on a
 screen that went dark ([02](02-architecture.md#apply-confirm-revert)). This is
 the panel set's own fallback (`dsplr-gui`'s `panels.rs`): crcbl-shell reports
 `ShellCaps::PANEL` only where the compositor offers `zwlr_layer_shell_v1`
-(crcbl-shell 0.18.0, `wayland/mod.rs`), and the confirm kind tries one toplevel
+(crcbl-shell 0.19.1, `wayland/mod.rs`), and the confirm kind tries one toplevel
 when no panel opens. Not run on GNOME. On Save, GNOME Shell shows its own
 confirm dialog instead of dsplr's ([05](05-persistence-and-profiles.md#gnome)).
 
@@ -121,18 +125,19 @@ declined (backlog).
 ## What crcbl must provide
 
 Checked against crcbl's tree on 2026-11-04 at a source level, and against crcbl
-0.18.0 by building on it where the "M3" column says so. Anything missing is
-raised in the crcbl repo rather than worked around in dsplr:
+0.19.1 (re-read in its sources, 2026-11-12) by building on it where the "M3"
+column says so. Anything missing is raised in the crcbl repo rather than worked
+around in dsplr:
 
-| #   | Need                                                         | Seen in crcbl                                                                                             | M3                                                                                                                                                                                                                                                                         |
-| --- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| C1  | Toplevel window on Wayland and X11                           | `WindowRole::Toplevel`; Wayland and X11 shells                                                            | Confirmed on Wayland: the main window runs in headless sway (2026-11-10). X11 not run                                                                                                                                                                                      |
-| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                  | Built on 0.18.0: the confirm dialogs and the identify overlay, a layer-shell overlay per monitor, run in headless sway; X11 not run                                                                                                                                        |
-| C3  | Monitor enumeration matching the backend's outputs by name   | `crcbl-shell` `MonitorInfo`; whether it carries the connector name is to check                            | Not built on yet; the `connector` field is requested of crcbl (backlog)                                                                                                                                                                                                    |
-| C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                  | Used: a relay thread wakes the window for each reply from the backend thread; without a waker the loop polls                                                                                                                                                               |
-| C5  | Widgets: button, select/list, number entry, toggle, tooltip  | `crcbl-ui` `widgets/` (`button`, `select`, `list`, `number_entry`), `tooltip`                             | Built on 0.17.2, still on 0.18.0: `select`, `checkbox`, `drag_value` (typing into it is the number entry), `text_input`, `tooltip`, and `Ui::enabled` for disabled fields; no plain list or toggle needed. Run in headless sway; never clicked there (no pointer injector) |
-| C6  | Free-form drag canvas: draw rects and text, raw pointer drag | `crcbl-ui` `DrawList`, `grid_drag`; whether `grid_drag` fits or the canvas is hand-built is decided at M3 | Hand-built, not `grid_drag`: dsplr-core draws the canvas, its hit regions and the drag (fit frozen, `Layout::snap`); crcbl gives only the raw pointer                                                                                                                      |
-| C7  | System font lookup                                           | `crcbl-ui` `system-fonts` feature (pikr precedent)                                                        | Used: the system's sans-serif and its fallbacks, `Font::sans` where there is none                                                                                                                                                                                          |
+| #   | Need                                                         | Seen in crcbl                                                                                                                 | M3                                                                                                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| C1  | Toplevel window on Wayland and X11                           | `WindowRole::Toplevel`; Wayland and X11 shells                                                                                | Confirmed on Wayland: the main window runs in headless sway (2026-11-10). X11 not run                                                                                                                                                                                           |
+| C2  | A panel on a chosen monitor, on Wayland (not GNOME) and X11  | `WindowRole::Panel` (`wayland/layer.rs`, `x11/panel.rs`)                                                                      | Built on 0.19.1 (as on 0.18.0): the confirm dialogs and the identify overlay, a layer-shell overlay per monitor, run in headless sway; X11 not run                                                                                                                              |
+| C3  | Monitor enumeration matching the backend's outputs by name   | `crcbl-shell` `MonitorInfo::connector` (0.19.1): `wl_output.name`, else `zxdg_output_v1.name`; the RandR output's name on X11 | Built on 0.19.1: each panel's output is the one on its monitor's connector, by logical position where crcbl reports none (Win32, AppKit, the web, headless, its made-up names) or one no output has (Xvfb's `screen`, RandR 1.0's `default`). Run in headless sway; X11 not run |
+| C4  | Cross-thread wakeup for the backend thread                   | `crcbl-shell` `waker.rs`                                                                                                      | Used: a relay thread wakes the window for each reply from the backend thread; without a waker the loop polls                                                                                                                                                                    |
+| C5  | Widgets: button, select/list, number entry, toggle, tooltip  | `crcbl-ui` `widgets/` (`button`, `select`, `list`, `number_entry`), `tooltip`                                                 | Built on 0.17.2, still on 0.19.1: `select`, `checkbox`, `drag_value` (typing into it is the number entry), `text_input`, `tooltip`, and `Ui::enabled` for disabled fields; no plain list or toggle needed. Run in headless sway; never clicked there (no pointer injector)      |
+| C6  | Free-form drag canvas: draw rects and text, raw pointer drag | `crcbl-ui` `DrawList`, `grid_drag`; whether `grid_drag` fits or the canvas is hand-built is decided at M3                     | Hand-built, not `grid_drag`: dsplr-core draws the canvas, its hit regions and the drag (fit frozen, `Layout::snap`); crcbl gives only the raw pointer                                                                                                                           |
+| C7  | System font lookup                                           | `crcbl-ui` `system-fonts` feature (pikr precedent)                                                                            | Used: the system's sans-serif and its fallbacks, `Font::sans` where there is none                                                                                                                                                                                               |
 
 ## Not in the GUI
 

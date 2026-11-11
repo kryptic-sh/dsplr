@@ -65,10 +65,10 @@ const PANEL_NOTICE: &str = "panel: Tab / S-Tab move, Enter or space work a widge
 fn dialog_answer(event: &ShellEvent, is_fallback: impl Fn(WindowId) -> bool) -> Option<bool> {
     match *event {
         ShellEvent::Key {
-            keysym,
+            shortcut_keysym,
             state: ButtonState::Pressed,
             ..
-        } => keys::answer(keysym),
+        } => keys::answer(shortcut_keysym),
         ShellEvent::CloseRequested { window } if is_fallback(window) => Some(false),
         _ => None,
     }
@@ -618,12 +618,15 @@ impl<'a> MainWindow<'a> {
                 }
                 self.quit()
             }
+            // Keys are commands here, not text (a field's text comes as
+            // `ShellEvent::TextCommit`), so they are read without Caps Lock: `h` with it
+            // on is still `h`, as crcbl's `shortcut_keysym` gives it.
             ShellEvent::Key {
-                keysym,
+                shortcut_keysym,
                 state: ButtonState::Pressed,
                 modifiers,
                 ..
-            } => self.key(keysym, modifiers, editing)?,
+            } => self.key(shortcut_keysym, modifiers, editing)?,
             ShellEvent::PointerMotion { abs: Some(at), .. }
             | ShellEvent::PointerFocus {
                 entered: true,
@@ -1060,7 +1063,7 @@ fn vec(point: Point) -> Vec2 {
 
 #[cfg(test)]
 mod tests {
-    use crcbl_shell::{HeadlessShell, KeyCode, Shell, ShellEvent, WindowDesc};
+    use crcbl_shell::{HeadlessShell, KeyCode, Keysym, Modifiers, Shell, ShellEvent, WindowDesc};
     use crcbl_ui::widget::PointerInput;
     use dsplr_core::{Editor, NUDGE_STEP, Snapshot};
     use dsplr_model::{Capabilities, Layout, Mode, OutputEntry, OutputId, OutputState};
@@ -1233,6 +1236,43 @@ mod tests {
             NUDGE_STEP,
             "l nudges again"
         );
+    }
+
+    /// Caps Lock on: the window system reports `L` for the key, and `l` as
+    /// its shortcut keysym (crcbl's `shortcut_keysym`, xkb's Lock left
+    /// out), so `l` still nudges rather than being `L`, touch_right.
+    #[test]
+    fn caps_lock_leaves_the_shortcuts_as_they_are() {
+        let mut shell = HeadlessShell::new();
+        let window = shell.create_window(&WindowDesc::default()).unwrap();
+        let (link, _sent, _reply) = link();
+        let mut main = MainWindow::new(
+            &mut shell,
+            window,
+            (editor(), Keymap::default()),
+            (1280, 800),
+            link,
+        );
+        for mut event in typed(&[KeyCode::KeyL]) {
+            if let ShellEvent::Key {
+                keysym,
+                shortcut_keysym,
+                modifiers,
+                ..
+            } = &mut event
+            {
+                assert_eq!(shortcut_keysym.to_char(), Some('l'));
+                *keysym = Keysym::from_char('L');
+                *modifiers |= Modifiers::CAPS_LOCK;
+            }
+            main.handle(event).unwrap();
+        }
+        assert_eq!(
+            main.editor.pending().entries[0].state.x,
+            NUDGE_STEP,
+            "l nudges with Caps Lock on"
+        );
+        assert_eq!(main.editor.selected(), Some(0), "and selects nothing else");
     }
 
     /// Focus dropped from the panel by anything but the panel's own keys (a
@@ -1420,6 +1460,27 @@ mod tests {
             .collect();
         // Press and release of each: only the presses answer, and L none.
         assert_eq!(answers, [Some(true), None, Some(false), None, None, None]);
+    }
+
+    /// Caps Lock on: the window system reports `Y` for the key and `y` as
+    /// its shortcut keysym, and the dialog takes it as `y`, Keep.
+    #[test]
+    fn caps_lock_leaves_a_dialog_s_y_a_yes() {
+        let mut answers = typed(&[KeyCode::KeyY]).into_iter().map(|mut event| {
+            if let ShellEvent::Key {
+                keysym,
+                shortcut_keysym,
+                modifiers,
+                ..
+            } = &mut event
+            {
+                assert_eq!(shortcut_keysym.to_char(), Some('y'));
+                *keysym = Keysym::from_char('Y');
+                *modifiers |= Modifiers::CAPS_LOCK;
+            }
+            super::dialog_answer(&event, |_| false)
+        });
+        assert_eq!(answers.next(), Some(Some(true)), "the press: yes");
     }
 
     /// The fallback toplevel, where there are no panels, can be closed as
