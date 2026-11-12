@@ -328,8 +328,8 @@ a profile, moving an output and restoring it, by name and picked.
   epoch) beside its fields, so `dsplr apply` reads a profile too. A layout file
   without it (`dsplr list --json > …/desk.json`, or one written by hand) is a
   profile saved at its file's modification time. JSON, not the TOML planned
-  first: no dependency dsplr has writes TOML (`hjkl-config` only reads it), and
-  adding `toml` is the owner's call (`docs/backlog.md`).
+  first (owner's call, 2026-11-13): one form for `dsplr list --json`,
+  `dsplr apply` and the store.
 - The outputs a profile applies to are its entries' `OutputId`s: saved from the
   displays, it names every connected output, on or off.
 - A profile saved on one desktop applies on another: a desktop-specific setting

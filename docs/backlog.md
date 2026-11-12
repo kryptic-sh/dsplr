@@ -186,17 +186,6 @@ milestone:
 
 - **The profile store, decided while building it (2026-11-10); confirm or
   change**:
-  - **JSON, not TOML** (`<name>.json`, plan 05 said `.toml`). No dependency
-    dsplr has writes TOML: `hjkl-config` 0.45 reads it (`load_from`, into any
-    `AppConfig`) and writes only one key at a time (`write_key_at`, taking
-    `toml_edit` values it does not re-export, under a lock file), so a whole
-    `Layout` cannot be written through it. Adding `toml` was left to the owner.
-    For TOML: hand-editable, and the format plan 05 and `dsplr apply`'s TOML
-    files (plan 07) name. For JSON: no new dependency, one format for
-    `dsplr list --json`, `dsplr apply` and the store (a profile file is a layout
-    file plus `saved_unix_ms`; `dsplr list --json > …/desk.json` is a profile),
-    and TOML has no `null`, so the `Option` fields would be written by leaving
-    them out. Switching later means reading both extensions for a while.
   - **Exit `7`** when `dsplr restore` without a name finds no profile for the
     connected outputs (nothing changed). The other choices were `0` (an
     autostart run away from the desk is not a failure, but a script cannot tell
@@ -936,20 +925,12 @@ milestone:
   only with `--force`, losing them and everything else in it (its catch-all and
   its rules for monitors not connected now); a lossless pass-through of unknown
   keys would fix the latter.
-- **`dsplr save`'s diff is hand-written**: `dsplr_persist::diff::line_diff`, a
-  textbook longest-common-subsequence table, tested against CLRS's example; it
-  shows every line, and past `MAX_CELLS` it shows the changed middle as removed
-  then added. The `similar` crate would replace it, but adding a dependency is
-  the owner's call.
 - **A change to a saved file in the instant before dsplr replaces it is lost**:
   `managed::write_if_unchanged` reads the file again once the new one is written
   and flushed, and refuses (`FileError::Changed`) if it no longer holds what the
   save read, so a change during the save's read, write and `fsync` is caught;
   one between that last read and the rename is not. No lock: nothing else that
   writes the file would honour one.
-- **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
-  layout files; the profile store went with JSON, and TOML for both waits on the
-  owner (the profile store's decisions above).
 - **Profile store gaps**: `dsplr restore` with a profile on Hyprland, and run
   from a real compositor's autostart (river, labwc, niri), have not been run;
   only headless sway has.
@@ -1149,6 +1130,17 @@ and the `monitors.lua` writer:
 - **wayr for the GUI.** Wayland-only by construction, so it cannot serve the X11
   window managers in the MVP. crcbl covers both (owner's call, 2026-11-04).
 - **Windows and macOS.** Their own display settings cover this.
+- **TOML layout and profile files** (owner's call, 2026-11-13): `dsplr apply`,
+  the profile store and `dsplr list --json` share one JSON form (a profile is a
+  layout file plus `saved_unix_ms`). TOML would be easier to edit by hand, but
+  needs a `toml` dependency (`hjkl-config` only reads TOML, one key at a time
+  for writes), a second form kept in step with the JSON one, and has no `null`
+  for the `Option` fields.
+- **The `similar` crate for `dsplr save`'s diff** (owner's call, 2026-11-13):
+  `dsplr_persist::diff::line_diff` stays, a textbook longest-common-subsequence
+  table tested against CLRS's example, with no new dependency. The files it
+  diffs are small; past `MAX_CELLS` it shows the changed middle as removed then
+  added, which `similar` would not.
 - **`dsplr set` moving the outputs beside the one it changes** (owner's call,
   2026-11-13): a new mode, scale or transform changes the output's size, and a
   neighbour it now overlaps or leaves a gap beside is refused or warned about by
