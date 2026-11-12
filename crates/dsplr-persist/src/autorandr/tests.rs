@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState, Transform};
+use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState, PnpNames, Transform};
 
 use super::profiles::{AutorandrOutput, AutorandrProfile, Read};
 use super::{Imported, Skipped, import, read, transform};
@@ -44,7 +44,11 @@ fn profile(dir: &Path, name: &str, config: &str, setup: &str) {
 }
 
 fn one(dir: &Path) -> (Vec<Imported>, Vec<Skipped>) {
-    import(&read(&[dir.to_owned()]).unwrap(), None)
+    import(
+        &read(&[dir.to_owned()]).unwrap(),
+        None,
+        &PnpNames::default(),
+    )
 }
 
 /// The only profile imported from `dir`.
@@ -79,6 +83,24 @@ fn dp1_id() -> OutputId {
         model: "0x12AB".into(),
         serial: "SER1".into(),
     }
+}
+
+#[test]
+fn the_make_is_the_pnp_code_s_company_name() {
+    let dir = tempfile::tempdir().unwrap();
+    dp1(dir.path(), "mode 640x480\npos 0x0\nrate 60.00\n");
+    let read = read(&[dir.path().to_owned()]).unwrap();
+    let names = PnpNames::parse("DEL\tDell Inc.\n");
+    let (imported, skipped) = import(&read, None, &names);
+    assert_eq!(skipped, [], "nothing skipped");
+    assert_eq!(
+        imported[0].layout.entries[0].id,
+        OutputId::Edid {
+            make: "Dell Inc.".into(),
+            model: "0x12AB".into(),
+            serial: "SER1".into(),
+        }
+    );
 }
 
 #[test]
@@ -361,7 +383,7 @@ fn a_mode_without_a_rate_takes_the_highest_the_output_lists() {
     let dir = tempfile::tempdir().unwrap();
     dp1(dir.path(), "mode 2560x1440\npos 0x0\n");
     let read = read(&[dir.path().to_owned()]).unwrap();
-    let (_, refused) = import(&read, None);
+    let (_, refused) = import(&read, None, &PnpNames::default());
     assert_eq!(
         refused[0].reason,
         "DP-1: no connected monitor is DEL 0x12AB SER1 now, so the rate autorandr leaves to it cannot be had; import again where it is connected under that name"
@@ -398,7 +420,7 @@ fn a_mode_without_a_rate_takes_the_highest_the_output_lists() {
         }],
         ..Layout::default()
     };
-    let (imported, _) = import(&read, Some(&live));
+    let (imported, _) = import(&read, Some(&live), &PnpNames::default());
     assert_eq!(
         imported[0].layout.entries[0].state.mode,
         Some(Mode::new(2560, 1440, 143_998))
@@ -496,7 +518,7 @@ fn an_output_list_built_by_hand_is_taken_as_read() {
         }],
         ..Read::default()
     };
-    let (imported, _) = import(&read, None);
+    let (imported, _) = import(&read, None, &PnpNames::default());
     let state = &imported[0].layout.entries[0].state;
     assert_eq!((state.x, state.y), (-800, 0));
     assert_eq!(state.mode, Some(Mode::new(800, 600, 75_000)));

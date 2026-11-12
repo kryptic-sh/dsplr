@@ -7,9 +7,9 @@ use crate::OutputEntry;
 /// Stable identity of a monitor, for matching it across reconnects, between
 /// backends and against saved layouts.
 ///
-/// `make` is kept as the backend reported it. The plan normalises it to the
-/// EDID's PNP vendor code before comparing, because backends disagree on the
-/// form; that normalisation is not implemented yet.
+/// `make` is the company name wlroots and Hyprland report; a backend that
+/// is given the EDID's PNP vendor code turns it into that name first
+/// ([`crate::PnpNames::make`]), so the forms agree.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputId {

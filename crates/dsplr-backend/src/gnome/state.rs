@@ -3,8 +3,8 @@
 //! monitor placed and the others mirroring it.
 
 use dsplr_model::{
-    Layout, LayoutMode, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState, RgbRange,
-    Transform, hz_to_mhz,
+    Layout, LayoutMode, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState, PnpNames,
+    RgbRange, Transform, hz_to_mhz,
 };
 use zbus::OwnedVariant;
 
@@ -44,8 +44,10 @@ pub struct State {
 #[derive(Debug, PartialEq)]
 pub struct Monitor {
     pub connector: String,
-    /// The EDID's PNP vendor code, empty when Mutter does not know it.
-    pub vendor: String,
+    /// The make as wlroots and Hyprland name the monitor: Mutter's vendor,
+    /// the EDID's PNP code, as a company name ([`PnpNames::make`]), so its
+    /// identity matches theirs. Empty when Mutter does not know it.
+    pub make: String,
     /// Empty when Mutter does not know it.
     pub product: String,
     /// Empty when Mutter does not know it.
@@ -114,9 +116,11 @@ pub enum SnapshotError {
 }
 
 impl State {
-    /// The state `GetCurrentState` replied.
+    /// The state `GetCurrentState` replied, each monitor's make its vendor
+    /// code as `names` gives it.
     pub fn from_wire(
         (serial, monitors, logical_monitors, properties): CurrentState,
+        names: &PnpNames,
     ) -> Result<Self, SnapshotError> {
         // An absent `layout-mode` means the logical one, by the interface's
         // documentation.
@@ -129,7 +133,7 @@ impl State {
             serial,
             monitors: monitors
                 .into_iter()
-                .map(monitor)
+                .map(|wire| monitor(wire, names))
                 .collect::<Result<_, _>>()?,
             logical_monitors: logical_monitors.into_iter().map(logical_monitor).collect(),
             layout_mode,
@@ -238,11 +242,11 @@ impl State {
             output: Some(Output {
                 connector: monitor.connector.clone(),
                 description: monitor.display_name.clone().unwrap_or_else(|| {
-                    format!("{} {}", monitor.vendor, monitor.product)
+                    format!("{} {}", monitor.make, monitor.product)
                         .trim()
                         .to_owned()
                 }),
-                make: monitor.vendor.clone(),
+                make: monitor.make.clone(),
                 model: monitor.product.clone(),
                 serial: monitor.serial.clone(),
                 physical_size_mm: monitor.physical_size_mm,
@@ -254,10 +258,10 @@ impl State {
 }
 
 impl Monitor {
-    /// Its identity, by the model's rule: vendor, product and serial when
+    /// Its identity, by the model's rule: make, product and serial when
     /// Mutter knows the serial, else the connector.
     pub fn id(&self) -> OutputId {
-        OutputId::new(&self.vendor, &self.product, &self.serial, &self.connector)
+        OutputId::new(&self.make, &self.product, &self.serial, &self.connector)
     }
 }
 
@@ -289,6 +293,7 @@ fn known(text: String) -> String {
 
 fn monitor(
     ((connector, vendor, product, serial), modes, properties): WireMonitor,
+    names: &PnpNames,
 ) -> Result<Monitor, SnapshotError> {
     let modes = modes
         .into_iter()
@@ -335,7 +340,7 @@ fn monitor(
         kept,
         modes,
         connector,
-        vendor: known(vendor),
+        make: names.make(&known(vendor)),
         product: known(product),
         serial: known(serial),
     })
@@ -395,7 +400,7 @@ where
 pub mod tests {
     use std::collections::HashMap;
 
-    use dsplr_model::{LayoutMode, Mode, OutputId, RgbRange, Transform};
+    use dsplr_model::{LayoutMode, Mode, OutputId, PnpNames, RgbRange, Transform};
     use zbus::OwnedVariant;
 
     use super::{SnapshotError, State};
@@ -516,8 +521,24 @@ pub mod tests {
     }
 
     #[test]
+    fn a_monitor_s_make_is_its_vendor_code_s_company_name() {
+        let names = PnpNames::parse("GSM\tGoldstar Company Ltd\n");
+        let state = State::from_wire(two_monitors(), &names).expect("reads");
+        assert_eq!(state.monitors[0].make, "Goldstar Company Ltd");
+        let layout = state.layout().expect("converts");
+        assert_eq!(
+            layout.entries[0].id,
+            OutputId::Edid {
+                make: "Goldstar Company Ltd".into(),
+                model: "LG ULTRAGEAR".into(),
+                serial: "SER1".into()
+            }
+        );
+    }
+
+    #[test]
     fn a_reply_becomes_one_entry_per_monitor() {
-        let state = State::from_wire(two_monitors()).expect("reads");
+        let state = State::from_wire(two_monitors(), &PnpNames::default()).expect("reads");
         assert_eq!(state.serial, 7);
         assert!(state.supports_changing_layout_mode);
         assert!(!state.global_scale_required);
@@ -572,10 +593,13 @@ pub mod tests {
     fn a_monitor_in_no_logical_monitor_is_off() {
         let (serial, monitors, mut logical, properties) = two_monitors();
         logical.truncate(1);
-        let layout = State::from_wire((serial, monitors, logical, properties))
-            .expect("reads")
-            .layout()
-            .expect("converts");
+        let layout = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads")
+        .layout()
+        .expect("converts");
         let hdmi = &layout.entries[1].state;
         assert!(!hdmi.enabled);
         assert_eq!(hdmi.mode, None);
@@ -585,10 +609,13 @@ pub mod tests {
     fn the_monitors_after_the_first_of_a_logical_monitor_mirror_it() {
         let (serial, monitors, _, properties) = two_monitors();
         let logical = vec![super::tests::logical(0, 1.0, 0, true, &["HDMI-1", "DP-1"])];
-        let layout = State::from_wire((serial, monitors, logical, properties))
-            .expect("reads")
-            .layout()
-            .expect("converts");
+        let layout = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads")
+        .layout()
+        .expect("converts");
         let [dp, hdmi] = [&layout.entries[0], &layout.entries[1]];
         assert_eq!(hdmi.state.mirror_of, None);
         assert!(hdmi.state.primary);
@@ -604,7 +631,11 @@ pub mod tests {
             ("layout-mode", OwnedVariant::from(2_u32)),
             ("global-scale-required", OwnedVariant::from(true)),
         ]);
-        let state = State::from_wire((serial, monitors, logical, properties)).expect("reads");
+        let state = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads");
         assert_eq!(state.layout_mode, LayoutMode::Physical);
         assert!(state.global_scale_required);
         assert!(!state.supports_changing_layout_mode, "absent means no");
@@ -615,7 +646,11 @@ pub mod tests {
 
         // Absent, the interface says the mode is the logical one.
         let (serial, monitors, logical, _) = two_monitors();
-        let state = State::from_wire((serial, monitors, logical, HashMap::new())).expect("reads");
+        let state = State::from_wire(
+            (serial, monitors, logical, HashMap::new()),
+            &PnpNames::default(),
+        )
+        .expect("reads");
         assert_eq!(state.layout_mode, LayoutMode::Logical);
     }
 
@@ -624,14 +659,14 @@ pub mod tests {
         let (serial, monitors, logical, _) = two_monitors();
         let odd = properties(&[("layout-mode", OwnedVariant::from(3_u32))]);
         assert_eq!(
-            State::from_wire((serial, monitors, logical, odd)),
+            State::from_wire((serial, monitors, logical, odd), &PnpNames::default()),
             Err(SnapshotError::LayoutMode(3))
         );
 
         let (serial, monitors, logical, _) = two_monitors();
         let mistyped = properties(&[("layout-mode", OwnedVariant::from(true))]);
         assert_eq!(
-            State::from_wire((serial, monitors, logical, mistyped)),
+            State::from_wire((serial, monitors, logical, mistyped), &PnpNames::default()),
             Err(SnapshotError::Property {
                 name: "layout-mode"
             })
@@ -639,12 +674,20 @@ pub mod tests {
 
         let (serial, monitors, mut logical, properties) = two_monitors();
         logical[1].3 = 8;
-        let state = State::from_wire((serial, monitors, logical, properties)).expect("reads");
+        let state = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads");
         assert_eq!(state.layout(), Err(SnapshotError::Transform(8)));
 
         let (serial, monitors, mut logical, properties) = two_monitors();
         logical[1].5[0].0 = "DP-9".into();
-        let state = State::from_wire((serial, monitors, logical, properties)).expect("reads");
+        let state = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads");
         assert_eq!(
             state.layout(),
             Err(SnapshotError::UnknownMonitor {
@@ -656,7 +699,11 @@ pub mod tests {
         for mode in &mut monitors[0].1 {
             mode.6.remove("is-current");
         }
-        let state = State::from_wire((serial, monitors, logical, properties)).expect("reads");
+        let state = State::from_wire(
+            (serial, monitors, logical, properties),
+            &PnpNames::default(),
+        )
+        .expect("reads");
         assert_eq!(
             state.layout(),
             Err(SnapshotError::NoCurrentMode {
@@ -667,7 +714,7 @@ pub mod tests {
         let (serial, mut monitors, logical, properties) = two_monitors();
         monitors[1].1[0].1 = -1;
         assert!(matches!(
-            State::from_wire((serial, monitors, logical, properties)),
+            State::from_wire((serial, monitors, logical, properties), &PnpNames::default()),
             Err(SnapshotError::Mode { connector, .. }) if connector == "HDMI-1"
         ));
     }

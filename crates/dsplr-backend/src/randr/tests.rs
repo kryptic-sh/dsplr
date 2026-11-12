@@ -12,7 +12,9 @@
 //! use and no clones (as Intel's driver reports), and an older card whose
 //! two outputs clone each other.
 
-use dsplr_model::{Layout, Mode, ModeHandle, OutputEntry, OutputId, OutputState, Transform};
+use dsplr_model::{
+    Layout, Mode, ModeHandle, OutputEntry, OutputId, OutputState, PnpNames, Transform,
+};
 
 use super::plan::{ModeRef, Note, Operation, PlanError, plan, rotation};
 use super::resources::{
@@ -1320,7 +1322,7 @@ fn edid(serial: Option<&str>) -> Vec<u8> {
 }
 
 fn read(snapshot: &Snapshot) -> Layout {
-    super::snapshot::layout(snapshot).expect("reads as a layout")
+    super::snapshot::layout(snapshot, &PnpNames::default()).expect("reads as a layout")
 }
 
 fn by_connector<'a>(layout: &'a Layout, connector: &str) -> &'a OutputEntry {
@@ -1350,6 +1352,26 @@ fn xvfb_reads_as_one_output_named_by_its_connector() {
             ..OutputState::default()
         }
     );
+}
+
+#[test]
+fn a_monitor_s_make_is_its_pnp_code_s_company_name() {
+    let mut snapshot = docked();
+    snapshot.outputs[0].edid = Some(edid(Some("SER1")));
+    let names = PnpNames::parse("DEL\tDell Inc.\n");
+    let layout = super::snapshot::layout(&snapshot, &names).expect("reads as a layout");
+    let edp = by_connector(&layout, "eDP-1");
+    assert_eq!(
+        edp.id,
+        OutputId::Edid {
+            make: "Dell Inc.".into(),
+            model: "0x12AB".into(),
+            serial: "SER1".into(),
+        }
+    );
+    let output = edp.output.as_ref().expect("hardware facts");
+    assert_eq!(output.make, "Dell Inc.");
+    assert_eq!(output.description, "Dell Inc. 0x12AB SER1");
 }
 
 #[test]
@@ -1434,7 +1456,7 @@ fn a_rotation_reads_back_as_the_transform_that_sets_it() {
         Transform::Flipped270
     );
     snapshot.crtcs[1].rotation = Rotation(0);
-    assert!(super::snapshot::layout(&snapshot).is_err());
+    assert!(super::snapshot::layout(&snapshot, &PnpNames::default()).is_err());
 }
 
 #[test]
@@ -1463,10 +1485,10 @@ fn clones_on_one_crtc_and_crtcs_at_one_place_read_as_mirrors() {
 fn replies_naming_what_they_do_not_describe_are_refused() {
     let mut snapshot = docked();
     snapshot.crtcs[1].mode = Some(ModeXid(0x99));
-    assert!(super::snapshot::layout(&snapshot).is_err());
+    assert!(super::snapshot::layout(&snapshot, &PnpNames::default()).is_err());
     let mut snapshot = docked();
     snapshot.outputs[1].crtc = Some(CrtcXid(0x99));
-    assert!(super::snapshot::layout(&snapshot).is_err());
+    assert!(super::snapshot::layout(&snapshot, &PnpNames::default()).is_err());
 }
 
 #[test]

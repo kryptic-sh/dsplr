@@ -351,7 +351,10 @@ async fn display_config(
 
 /// Mutter's current state.
 async fn read(proxy: &DisplayConfigProxy<'_>) -> Result<State, Error> {
-    Ok(State::from_wire(proxy.get_current_state().await?)?)
+    Ok(State::from_wire(
+        proxy.get_current_state().await?,
+        dsplr_persist::pnp::system_names(),
+    )?)
 }
 
 /// `operation` cut off at [`OPERATION_TIMEOUT`].

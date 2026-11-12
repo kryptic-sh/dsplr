@@ -85,20 +85,6 @@ milestone:
   the options and trade-off are in the kanshi entry under "Open work in the
   Linux-owned crates"). Blocks nothing.
 
-- **Where the monitor vendor names come from** (the "Make normalisation to the
-  PNP vendor code" entry below; needed for profiles to match across X11/GNOME
-  and Hyprland/wlroots). Hyprland and wlroots report the company name
-  libdisplay-info looks up in hwdata's `pnp.ids` (`/usr/share/hwdata/pnp.ids`,
-  hwdata 0.412, GPL-2.0-or-later); the EDID, RandR and Mutter give the
-  three-letter code. A code maps to one name, but a name can have several codes
-  (`DEL` and `DLL` are both Dell), so the match should turn codes into names,
-  not the other way round. Options: (a) read the system's `pnp.ids` at runtime,
-  which embeds nothing and falls back to the code when the file is missing, but
-  makes hwdata a soft runtime dependency for packagers; (b) embed a generated
-  table, which works everywhere but ships GPL-licensed data in an MIT crate; (c)
-  compare only model and serial when the makes differ in form. Default if not
-  answered: (a).
-
 - **`dsplr save`, decided while building it (2026-11-09); confirm or change**:
   - The seam is `Backend::persist(&self, layout, approved: Option<&str>)`, not
     the plan's `persist(layout)`: a file needing a yes comes back as
@@ -1000,19 +986,14 @@ milestone:
   backend's `cancelled` is tested in `sway_e2e`; provoking it through the CLI
   means winning a race inside one `dsplr apply`, and the transport failures need
   a compositor that stalls.
-- **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
-  not written; needs a vendor-name table with a source (the source is a decision
-  for the owner, under "Decisions waiting on the owner"). Mutter 51.1 reports
-  the PNP code (read in `set_output_details_from_edid`, not seen on a real
-  monitor), so it is wlroots' and Hyprland's resolved names that need mapping:
-  both get make, model and serial from libdisplay-info (wlroots 0.20 and
-  aquamarine 0.16 link it), whose make is a company name (`ASUSTek COMPUTER INC`
-  for `AUS`, `The Linux Foundation` for `LNX`, libdisplay-info 0.3.0 run here).
-  `dsplr_model::edid::Edid::identity` (for the coming `Randr` backend, and used
-  by the autorandr import) gives the model and serial as libdisplay-info does,
-  checked against it on built EDIDs and one real monitor, and the PNP code as
-  the make; until the table exists, a profile saved on Wayland names a monitor's
-  make differently from one an EDID read on X11 gives, so the two do not match.
+- **Make normalisation is checked against libdisplay-info's source, not a
+  desktop**: `PnpNames::make` follows libdisplay-info 0.3.0's `di_info_get_make`
+  and `tool/gen-search-table.py` (read 2026-11-13), and the system's
+  `/usr/share/hwdata/pnp.ids` is read at runtime (`dsplr_persist::pnp`). Not
+  checked: a profile saved on GNOME or X11 matching the same real monitor on
+  Hyprland or sway; and what KWin reports as make (`kde/devices.rs` takes it as
+  KWin gives it, unconverted), which may be either form. A system without hwdata
+  keeps codes, which then match only other codes.
 - **One unexplained failure of `hyprland_e2e`**: its first local run after the
   switch to `Backend::apply` (2026-11-04) failed, and its output was cut off
   before the panic message. The next 27 runs passed, including one that

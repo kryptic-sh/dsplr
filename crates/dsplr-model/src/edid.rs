@@ -6,7 +6,7 @@
 //! Only the 128-byte base block is read; extension blocks after it (CTA-861,
 //! DisplayID) are accepted and left alone.
 
-use crate::OutputId;
+use crate::{OutputId, PnpNames};
 
 /// The length of the base block, and of each extension block.
 const BLOCK: usize = 128;
@@ -95,8 +95,8 @@ pub struct Edid {
 /// dsplr drives name it from the same EDID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
-    /// The PNP vendor code. wlroots and Hyprland report a company name
-    /// resolved from it instead (`docs/backlog.md`, make normalisation).
+    /// The make: the PNP vendor code as a company name, as wlroots and
+    /// Hyprland report it ([`PnpNames::make`]).
     pub make: Option<String>,
     pub model: String,
     pub serial: Option<String>,
@@ -168,13 +168,13 @@ impl Edid {
 
     /// The make, model and serial libdisplay-info gives (0.3.0, run here
     /// against EDIDs built for it), which wlroots 0.20 and Hyprland's
-    /// aquamarine 0.16 link: the PNP code (libdisplay-info resolves it to a
-    /// company name, which dsplr does not have a table for); the product
-    /// name descriptor, else the product code as `0x%04X`; the serial
-    /// number descriptor, else the serial number as `0x%08X`, else none.
-    pub fn identity(&self) -> Identity {
+    /// aquamarine 0.16 link: the PNP code's company name from `names`
+    /// ([`PnpNames::make`]); the product name descriptor, else the product
+    /// code as `0x%04X`; the serial number descriptor, else the serial
+    /// number as `0x%08X`, else none.
+    pub fn identity(&self, names: &PnpNames) -> Identity {
         Identity {
-            make: self.vendor.clone(),
+            make: self.vendor.as_deref().map(|code| names.make(code)),
             model: self
                 .name
                 .clone()
@@ -188,8 +188,8 @@ impl Edid {
 
     /// The identity of the monitor on `connector`, by [`OutputId::new`]'s
     /// rule from [`Edid::identity`].
-    pub fn output_id(&self, connector: &str) -> OutputId {
-        let identity = self.identity();
+    pub fn output_id(&self, connector: &str, names: &PnpNames) -> OutputId {
+        let identity = self.identity(names);
         OutputId::new(
             identity.make.as_deref().unwrap_or_default(),
             &identity.model,
@@ -255,7 +255,7 @@ fn timing(d: &[u8]) -> Timing {
 #[cfg(test)]
 mod tests {
     use super::{Edid, EdidError, Identity, Made, Timing};
-    use crate::OutputId;
+    use crate::{OutputId, PnpNames};
 
     /// An EDID built byte by byte per the VESA E-EDID layout: vendor `DEL`,
     /// product 0x12AB, serial number 0x0000ABCD, week 12 of 2020, EDID 1.4,
@@ -404,9 +404,9 @@ mod tests {
             })
         );
         // As libdisplay-info 0.3.0 gives it (`di_info_get_model`,
-        // `di_info_get_serial`), but for its company name.
+        // `di_info_get_serial`); with no names table the make is the code.
         assert_eq!(
-            edid.identity(),
+            edid.identity(&PnpNames::default()),
             Identity {
                 make: Some("DEL".into()),
                 model: "Test XGA".into(),
@@ -414,9 +414,20 @@ mod tests {
             }
         );
         assert_eq!(
-            edid.output_id("DP-1"),
+            edid.output_id("DP-1", &PnpNames::default()),
             OutputId::Edid {
                 make: "DEL".into(),
+                model: "Test XGA".into(),
+                serial: "TEST0001".into(),
+            }
+        );
+        // With hwdata's names, the company name, as libdisplay-info gives it.
+        let names = PnpNames::parse("DEL\tDell Inc.\n");
+        assert_eq!(edid.identity(&names).make.as_deref(), Some("Dell Inc."));
+        assert_eq!(
+            edid.output_id("DP-1", &names),
+            OutputId::Edid {
+                make: "Dell Inc.".into(),
                 model: "Test XGA".into(),
                 serial: "TEST0001".into(),
             }
@@ -430,7 +441,11 @@ mod tests {
         for revision in [0, 1, 2, 3, 4, 5, 255] {
             let edid = Edid::parse(&built(|b| b[19] = revision)).unwrap();
             assert_eq!(edid.version, (1, revision));
-            assert_eq!(edid.identity().model, "0x12AB", "1.{revision}");
+            assert_eq!(
+                edid.identity(&PnpNames::default()).model,
+                "0x12AB",
+                "1.{revision}"
+            );
         }
         for version in [0, 2] {
             assert_eq!(
@@ -510,14 +525,16 @@ mod tests {
     fn without_descriptors_the_codes_name_it_as_libdisplay_info_does() {
         // libdisplay-info 0.3.0 gave model 0x12AB and serial 0x0000ABCD for
         // an EDID like this, and no serial when the number is 0.
-        let identity = Edid::parse(&built(|_| {})).unwrap().identity();
+        let identity = Edid::parse(&built(|_| {}))
+            .unwrap()
+            .identity(&PnpNames::default());
         assert_eq!(identity.model, "0x12AB");
         assert_eq!(identity.serial.as_deref(), Some("0x0000ABCD"));
         let none = Edid::parse(&built(|b| b[12..16].fill(0))).unwrap();
         assert_eq!(none.serial_number, None);
-        assert_eq!(none.identity().serial, None);
+        assert_eq!(none.identity(&PnpNames::default()).serial, None);
         assert_eq!(
-            none.output_id("DP-1"),
+            none.output_id("DP-1", &PnpNames::default()),
             OutputId::Connector("DP-1".into()),
             "no serial: the connector"
         );
@@ -538,7 +555,7 @@ mod tests {
         assert_eq!(edid.texts, ["ABCDEFGHIJ   "]);
         // The descriptors win over the codes, the serial over its number.
         assert_eq!(
-            edid.identity(),
+            edid.identity(&PnpNames::default()),
             Identity {
                 make: Some("DEL".into()),
                 model: "Q27G4".into(),

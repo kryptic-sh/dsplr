@@ -7,7 +7,7 @@
 //! write every saved file goes through, a line diff to show what a save
 //! would change, the revert point, the profile store, saving on X11 to that
 //! store with a restore at login, and kanshi's and autorandr's profiles
-//! read for importing into it.
+//! read for importing into it, and the system's PNP vendor names.
 //! The other desktops are not written yet; Hyprland's legacy hyprlang
 //! `monitors.conf` is not written at all.
 
@@ -21,6 +21,7 @@ mod layout_json;
 pub mod login;
 pub mod managed;
 pub mod niri;
+pub mod pnp;
 pub mod profile;
 pub mod revert;
 pub mod sway;

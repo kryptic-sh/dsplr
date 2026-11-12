@@ -39,13 +39,18 @@ capability is present and the conversions for other desktops ignore it.
 - **`OutputId`** — stable identity for matching across reconnects and between
   backends: `(make, model, serial)` when the serial is non-empty, else the
   connector name (`HDMI-A-1`). Hyprland, wlroots, KDE and GNOME all report make,
-  model and serial; XRandR gets them by parsing the EDID property. Make is
-  **normalised to the EDID's PNP vendor code** before comparing: the backends do
-  not agree on it (wlroots and Hyprland report a resolved name such as "AOC";
-  Mutter 51.1 reports the three-letter code, read in its
-  `set_output_details_from_edid`, not seen on a real monitor), so a raw `make`
-  would make profiles fail to match across desktops. KDE exposes the EDID and
-  EISA id directly; RandR has the EDID property.
+  model and serial; XRandR gets them by parsing the EDID property. The backends
+  do not agree on make (wlroots and Hyprland report the company name
+  libdisplay-info looks up in hwdata's `pnp.ids`, such as "Dell Inc."; Mutter
+  51.1 reports the three-letter code, read in its
+  `set_output_details_from_edid`, not seen on a real monitor; the EDID itself
+  holds the code), so a raw `make` would make profiles fail to match across
+  desktops. A code is therefore **turned into that company name** where it comes
+  in (`PnpNames::make`, the system's `pnp.ids` read at runtime by
+  `dsplr_persist::pnp`, owner's call 2026-11-13): codes map to names, not back,
+  since one name can have several codes (`DEL` and `DLL` are both Dell). Without
+  the file a code stays a code. KDE exposes the EDID and EISA id directly; RandR
+  has the EDID property.
 - **`Layout`** — the one struct. A list of **`OutputEntry`**s, each holding the
   hardware facts (`Output`) and the settings (`OutputState`) for one monitor,
   plus layout-wide settings: GNOME's `layout_mode` (`Layout::layout_mode`, built

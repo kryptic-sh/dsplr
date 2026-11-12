@@ -10,6 +10,13 @@ and this project adheres to
 
 ### Changed
 
+- A monitor's make is named the same on every desktop: where dsplr is given the
+  EDID's three-letter PNP code (GNOME, X11, an autorandr import), it now uses
+  the company name from the system's `/usr/share/hwdata/pnp.ids`, as wlroots
+  compositors and Hyprland do through libdisplay-info (`PNP(XYZ)` for a code the
+  file lacks), so a profile saved on one desktop matches the monitor on another.
+  Without the file the code is kept.
+
 - On GNOME and X11, where a mirror has no source of its own, the check after an
   apply compares which outputs mirror each other, not which of them is named the
   source, so a mirror the desktop reads back the other way round is no longer

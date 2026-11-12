@@ -397,7 +397,7 @@ mod tests {
     use crate::gnome::state::tests::{properties, two_monitors};
 
     fn state() -> State {
-        State::from_wire(two_monitors()).expect("reads")
+        State::from_wire(two_monitors(), &dsplr_model::PnpNames::default()).expect("reads")
     }
 
     fn planned(layout: &Layout) -> Result<super::Config, PlanError> {

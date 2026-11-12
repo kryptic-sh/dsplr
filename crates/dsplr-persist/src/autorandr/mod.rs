@@ -19,7 +19,9 @@
 pub mod profiles;
 
 use dsplr_model::edid::Edid;
-use dsplr_model::{Layout, Mode, OutputEntry, OutputId, OutputState, Transform, hz_text_to_mhz};
+use dsplr_model::{
+    Layout, Mode, OutputEntry, OutputId, OutputState, PnpNames, Transform, hz_text_to_mhz,
+};
 
 pub use crate::import::{Imported, Skipped};
 pub use profiles::{
@@ -55,8 +57,14 @@ const DEFAULTS: [(&str, &str); 2] = [("panning", "0x0"), ("gamma", "1.0:1.0:1.0"
 /// Each profile of `read` as a dsplr profile, in the order read, or why it
 /// was skipped. `live` is the desktop's outputs now, when they could be
 /// read: a mode autorandr gives no rate for takes the highest the output
-/// lists at that size.
-pub fn import(read: &Read, live: Option<&Layout>) -> (Vec<Imported>, Vec<Skipped>) {
+/// lists at that size. A monitor's make is its EDID's PNP code as `names`
+/// gives it ([`dsplr_persist::pnp::system_names`](crate::pnp::system_names)
+/// on a running system), so it matches the make the desktop reports.
+pub fn import(
+    read: &Read,
+    live: Option<&Layout>,
+    names: &PnpNames,
+) -> (Vec<Imported>, Vec<Skipped>) {
     let mut imported: Vec<Imported> = Vec::new();
     let mut skipped = read.unreadable.clone();
     for profile in &read.profiles {
@@ -76,7 +84,7 @@ pub fn import(read: &Read, live: Option<&Layout>) -> (Vec<Imported>, Vec<Skipped
             });
             continue;
         }
-        match layout(profile, live, &mut notes) {
+        match layout(profile, live, names, &mut notes) {
             Ok(layout) => {
                 for output in &profile.dropped {
                     notes.push(format!(
@@ -106,12 +114,13 @@ pub fn import(read: &Read, live: Option<&Layout>) -> (Vec<Imported>, Vec<Skipped
 fn layout(
     profile: &AutorandrProfile,
     live: Option<&Layout>,
+    names: &PnpNames,
     notes: &mut Vec<String>,
 ) -> Result<Layout, String> {
     let mut entries: Vec<OutputEntry> = Vec::new();
     let mut same_as: Vec<usize> = Vec::new();
     for output in &profile.outputs {
-        let id = identity(output, notes);
+        let id = identity(output, names, notes);
         let now = live.and_then(|live| live.entries.iter().find(|entry| id.matches(entry)));
         if output.option("same-as").is_some() {
             same_as.push(entries.len());
@@ -220,7 +229,7 @@ fn same_as_source(
 /// from its EDID, when that has a serial; else its connector, which is
 /// said, as when there is no EDID to read (none, an older autorandr's MD5
 /// of it, or a pattern).
-fn identity(output: &AutorandrOutput, notes: &mut Vec<String>) -> OutputId {
+fn identity(output: &AutorandrOutput, names: &PnpNames, notes: &mut Vec<String>) -> OutputId {
     let name = &output.name;
     let edid = output.edid.as_str();
     let connector = OutputId::Connector(name.clone());
@@ -233,7 +242,7 @@ fn identity(output: &AutorandrOutput, notes: &mut Vec<String>) -> OutputId {
     } else {
         match hex(edid).map(|bytes| Edid::parse(&bytes).map_err(|error| error.to_string())) {
             Ok(Ok(parsed)) => {
-                let id = parsed.output_id(name);
+                let id = parsed.output_id(name, names);
                 if id != connector {
                     return id;
                 }

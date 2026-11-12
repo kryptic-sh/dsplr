@@ -159,7 +159,8 @@ pub async fn import_autorandr(path: Option<PathBuf>, force: bool) -> Exit {
         Ok(dir) => dir,
         Err(exit) => return exit,
     };
-    let (imported, skipped) = autorandr::import(&read, live.as_ref());
+    let (imported, skipped) =
+        autorandr::import(&read, live.as_ref(), dsplr_persist::pnp::system_names());
     if imported.is_empty() && skipped.is_empty() {
         let dirs: Vec<String> = dirs.iter().map(|dir| dir.display().to_string()).collect();
         eprintln!("dsplr: no autorandr profiles in {}", dirs.join(", "));

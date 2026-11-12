@@ -17,6 +17,7 @@ mod layout;
 mod mode;
 mod modes;
 mod name;
+mod pnp;
 mod rect;
 mod transform;
 mod validate;
@@ -38,6 +39,7 @@ pub use mode::{
 };
 pub use modes::{default_mode, pick_mode};
 pub use name::ParseNameError;
+pub use pnp::PnpNames;
 pub use rect::Rect;
 pub use transform::Transform;
 pub use validate::{Field, Problem, ProblemKind, Severity};

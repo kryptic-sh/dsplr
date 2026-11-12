@@ -28,7 +28,7 @@
 //! the planner refuses to plan over one ([`super::PlanError::Transformed`]).
 
 use dsplr_model::edid::Edid;
-use dsplr_model::{Layout, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState};
+use dsplr_model::{Layout, Mode, ModeHandle, Output, OutputEntry, OutputId, OutputState, PnpNames};
 
 use super::plan::transform;
 use super::resources::{Connection, CrtcInfo, ModeInfo, ModeXid, OutputInfo, Snapshot};
@@ -44,13 +44,14 @@ pub enum SnapshotError {
     Rotation { output: String, bits: u16 },
 }
 
-/// `snapshot` as a layout.
+/// `snapshot` as a layout, each monitor's make its EDID's PNP code as
+/// `names` gives it, as wlroots and Hyprland name it.
 ///
 /// # Errors
 ///
 /// When the snapshot names a CRTC or mode it does not describe, or a CRTC's
 /// rotation is none of the four.
-pub fn layout(snapshot: &Snapshot) -> Result<Layout, SnapshotError> {
+pub fn layout(snapshot: &Snapshot, names: &PnpNames) -> Result<Layout, SnapshotError> {
     let mut entries: Vec<OutputEntry> = Vec::new();
     // Each entry's CRTC, where it has one with a mode.
     let mut on: Vec<Option<&CrtcInfo>> = Vec::new();
@@ -69,7 +70,7 @@ pub fn layout(snapshot: &Snapshot) -> Result<Layout, SnapshotError> {
         if output.connection == Connection::Disconnected && crtc.is_none() {
             continue;
         }
-        entries.push(entry(snapshot, output, crtc)?);
+        entries.push(entry(snapshot, output, crtc, names)?);
         on.push(crtc);
     }
 
@@ -103,6 +104,7 @@ fn entry(
     snapshot: &Snapshot,
     output: &OutputInfo,
     crtc: Option<&CrtcInfo>,
+    names: &PnpNames,
 ) -> Result<OutputEntry, SnapshotError> {
     let mode_info = |xid: ModeXid| {
         snapshot
@@ -154,9 +156,9 @@ fn entry(
         .and_then(|bytes| Edid::parse(bytes).ok());
     let (id, make, model, serial) = match &edid {
         Some(edid) => {
-            let identity = edid.identity();
+            let identity = edid.identity(names);
             (
-                edid.output_id(&output.name),
+                edid.output_id(&output.name, names),
                 identity.make.unwrap_or_default(),
                 identity.model,
                 identity.serial.unwrap_or_default(),

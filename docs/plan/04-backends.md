@@ -330,8 +330,9 @@ Mutter 51.1's source (Arch's package on 2026-11-10;
   meaning logical; `supports-changing-layout-mode`; `global-scale-required`).
   There is no `supports-mirroring` property in 51.1.
 - The vendor is the EDID's PNP code (`set_output_details_from_edid` in
-  `src/backends/meta-output.c`), and Mutter sends `unknown` for a vendor,
-  product or serial it does not know (`meta_monitor_generate_spec`).
+  `src/backends/meta-output.c`), which dsplr turns into its company name for the
+  make (`PnpNames::make`), and Mutter sends `unknown` for a vendor, product or
+  serial it does not know (`meta_monitor_generate_spec`).
 - `ApplyMonitorsConfig(serial, method, logical_monitors, properties)`: method
   `0` verify, `1` temporary, `2` persistent. A wrong serial is `AccessDenied`
   "The requested configuration is based on stale information", and D-Bus

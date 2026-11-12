@@ -549,10 +549,9 @@ imports the rest, deliberately.
   The connector names it too when there is no EDID to read (autorandr's
   `--CONNECTED-BUT-EDID-UNAVAILABLE--OUTPUT`, an EDID pattern with a `*`, an
   older autorandr's MD5 of the EDID, bytes that are not one); each such is said.
-  The make is the EDID's PNP code, so until make normalisation lands
-  (`docs/backlog.md`) such a profile does not match the monitor on wlroots
-  compositors or Hyprland, which report a company name; it matches where the
-  make is the PNP code (Mutter, and the coming `Randr` backend).
+  The make is the EDID's PNP code as a company name from the system's `pnp.ids`
+  (`PnpNames::make`), as wlroots compositors, Hyprland, Mutter and `Randr` in
+  dsplr name it, so such a profile matches the monitor on each.
 - An output named by its connector carries the X driver's name for it (`HDMI-1`
   from modesetting, `HDMI1` from intel, `HDMI-A-0` from amdgpu), which need not
   be the name a Wayland desktop gives the same port (`HDMI-A-1`), so such a

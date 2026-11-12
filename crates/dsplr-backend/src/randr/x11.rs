@@ -301,7 +301,10 @@ impl Randr {
     ///
     /// As [`Randr::read`], or when the state cannot be read as a layout.
     pub async fn snapshot(&self) -> Result<Layout, Error> {
-        Ok(layout(&self.read().await?)?)
+        Ok(layout(
+            &self.read().await?,
+            dsplr_persist::pnp::system_names(),
+        )?)
     }
 
     /// Plans `layout` on the server's state now, sending nothing: whether
