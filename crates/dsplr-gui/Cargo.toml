@@ -11,11 +11,11 @@ authors.workspace = true
 readme.workspace = true
 
 [dependencies]
-crcbl-app = "0.19.1"
-crcbl-frame = "0.19.1"
-crcbl-hal = "0.19.1"
-crcbl-shell = "0.19.1"
-crcbl-ui = { version = "0.19.1", features = ["parsed-font", "system-fonts"] }
+crcbl-app = "0.20.0"
+crcbl-frame = "0.20.0"
+crcbl-hal = "0.20.0"
+crcbl-shell = "0.20.0"
+crcbl-ui = { version = "0.20.0", features = ["parsed-font", "system-fonts"] }
 dsplr-config.workspace = true
 dsplr-core.workspace = true
 dsplr-model.workspace = true

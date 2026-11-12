@@ -769,10 +769,6 @@ milestone:
   packages into a scratch directory (`DSPLR_E2E_XORG`,
   `DSPLR_E2E_XORG_MODULES`), not installed; the CI entry installs them in the VM
   and had not run when this was written.
-- **Xwayland is found by its output names**: an apply refuses a server whose
-  outputs are all `XWAYLAND<n>` (`randr::x11::xwayland_outputs`), on top of
-  `WAYLAND_DISPLAY` being set. crcbl-x11 0.19.1 offers no `QueryExtension` to
-  ask for the `XWAYLAND` extension; see the crcbl-x11 upgrade entry.
 - **X11 saving: choices made without the owner** (`dsplr_persist::login`, plan
   05's X11 section). Each is a call to confirm or change:
   - **Profile named by its outputs.** `dsplr save` on X11 names the profile from
@@ -857,22 +853,6 @@ milestone:
   form, so the snapshot gives `None` and the planner refuses any value. Showing
   `vrr_capable` needs a place in the model for a read-only fact (the owner's
   call); not read.
-- **crcbl-x11 upgrade: what to adopt from crcbl main** (none released yet;
-  0.19.1 is what dsplr builds against):
-  - **`Connection::geometry`** (crcbl `bfc0f5be`): 0.19.1's `Connection::screen`
-    is the setup's copy, and a later size arrives only in a
-    `ScreenChangeNotify`. So each RandR read connects afresh to have the size
-    the screen has now (`randr::x11`), and `randr::Watch` ignores the event's
-    own size. With `geometry`, a read could reuse a connection.
-  - **`set_reply_timeout`** (crcbl `2ef22c54`): a server that never answers is
-    bounded today by `randr::x11`'s detached thread and `OPERATION_TIMEOUT` /
-    `APPLY_TIMEOUT`, leaking the thread on timeout. A reply timeout in libxcb's
-    wait would end it instead.
-  - **`Connection::query_extension`**: check for the `XWAYLAND` extension first
-    and refuse when present. When it is absent, keep the `XWAYLAND<n>`
-    output-name check (`randr::x11::xwayland_outputs`) as the fallback: an
-    absent extension proves nothing, as Xwayland before 23.1 lacks it, it is an
-    optional build feature, and `-extension XWAYLAND` turns it off.
 - **What the RandR apply planner's tests do not reach** (`randr::plan`): Xorg's
   dummy driver runs two outputs arranged side by side, swapped, made primary,
   mirrored and turned off (`xorg_e2e.rs`); the other multi-CRTC cases (a CRTC

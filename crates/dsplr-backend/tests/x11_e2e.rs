@@ -219,3 +219,62 @@ async fn the_watch_wakes_for_a_change_xrandr_makes() {
         Some((1920, 1080))
     );
 }
+
+/// Sends `signal` to the harness's Xvfb.
+fn signal_server(signal: &str) {
+    let pid = std::env::var("DSPLR_E2E_X11_SERVER_PID").expect("set by the harness");
+    let status = std::process::Command::new("kill")
+        .args([signal, &pid])
+        .status()
+        .expect("kill runs");
+    assert!(status.success(), "kill {signal} {pid}");
+}
+
+/// A server that stops answering after the connection is made ends the
+/// read at its reply limit, with crcbl-x11's timeout naming the request,
+/// well before the read's own limit; and the worker, ended, lets the next
+/// read of the server go once the server answers again.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "needs the Xvfb harness: tests/e2e/headless-x11.sh"]
+async fn a_server_that_stops_answering_ends_the_read_at_the_reply_limit() {
+    use std::time::{Duration, Instant};
+
+    harness_runtime();
+    let backend = dsplr_backend::detect().await.backend.expect("found");
+    let Backend::Randr(randr) = &backend else {
+        panic!("not randr: {}", backend.name());
+    };
+    // Continued however the test ends.
+    struct Continue;
+    impl Drop for Continue {
+        fn drop(&mut self) {
+            signal_server("-CONT");
+        }
+    }
+    let started = Instant::now();
+    let result = {
+        let _continue = Continue;
+        randr
+            .read_once_connected(Duration::from_millis(500), || signal_server("-STOP"))
+            .await
+    };
+    let took = started.elapsed();
+    assert!(
+        matches!(
+            result,
+            Err(dsplr_backend::randr::Error::X {
+                error: crcbl_x11::Error::Timeout { .. },
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert!(took < Duration::from_secs(3), "took {took:?}");
+    let again = Instant::now();
+    backend.snapshot().await.expect("read again");
+    assert!(
+        again.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        again.elapsed()
+    );
+}

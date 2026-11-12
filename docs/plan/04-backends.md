@@ -444,15 +444,26 @@ RandR 1.3 or later on the X server ([detection](#detection)), for i3, bspwm,
 awesome, Openbox, Xfce, and Plasma on X11, which detection finds as `Randr`;
 GNOME on X11 only when chosen with `--backend randr`, as Mutter is found first.
 
-- **Read (built, M7):** through crcbl-x11 0.19.1 (`randr::x11`, a connection of
-  its own per read, its libxcb calls on a detached thread of their own, given up
-  on after `OPERATION_TIMEOUT` and left behind, since libxcb waits for a reply
-  with no deadline): screen resources the size range, the primary output, each
-  output and its `EDID` property, each CRTC with its panning and its transform,
-  the screen's size in pixels and millimetres (from the connection's setup,
-  which is why each read connects afresh). `randr::snapshot` reads that as a
-  layout: connected outputs and any a CRTC still drives; the identity from the
-  EDID (`Edid::output_id` with the RandR output name as connector), else the
+- **Read (built, M7):** through crcbl-x11 0.20.0 (`randr::x11`): screen
+  resources, the size range, the primary output, each output and its `EDID`
+  property, each CRTC with its panning and its transform, the screen's size in
+  pixels (`GetGeometry` on the root) and millimetres (from the connection's
+  setup, a copy from connect time). Each read and apply has a connection of its
+  own: the size in millimetres is only in the setup, a connection a timeout
+  abandoned is never used again, and one connection's life is what the
+  per-server lock covers. Each connection waits for a reply at most the
+  operation's limit (`OPERATION_TIMEOUT`, `APPLY_TIMEOUT`; crcbl-x11's
+  `set_reply_timeout`): a server that stops answering ends the work with
+  crcbl-x11's `Error::Timeout`, naming the request, and the worker thread ends,
+  releasing the lock (seen on Xvfb stopped with `SIGSTOP`, `x11_e2e.rs`). The
+  work still runs on a detached thread whose result is waited for at most that
+  limit too: crcbl-x11 has no deadline in connecting (its setup and RandR's
+  version), in a flush the server reads nothing of, or for the rest of a reply
+  cut short; a deadline per reply does not bound a whole apply, whose limit the
+  revert watchdog's delay counts on; and a tokio blocking task stuck in one of
+  those waits would hold up the runtime's shutdown. `randr::snapshot` reads that
+  as a layout: connected outputs and any a CRTC still drives; the identity from
+  the EDID (`Edid::output_id` with the RandR output name as connector), else the
   connector; each mode's refresh as xrandr's `mode_refresh` gives it; a CRTC's
   rotation and reflection as the transform the planner sets them back with;
   outputs sharing a CRTC, or CRTCs at one place, as mirrors of the first; the
@@ -485,16 +496,18 @@ GNOME on X11 only when chosen with `--backend randr`, as Mutter is found first.
   modes stay on their output for the server's life, as with xrandr, and a later
   apply reuses one by name and timings. Under `--backend randr` with
   `WAYLAND_DISPLAY` set (Xwayland) applying is `Error::Unsupported`, and a
-  server whose outputs are all `XWAYLAND<n>` is refused before sending
-  (crcbl-x11 0.19.1 offers no `QueryExtension` to find the `XWAYLAND` extension
-  instead). A mode named without a handle takes the progressive one before an
-  interlaced one at the same refresh (`Mode` has no interlace flag). Reverting
-  is the apply flow's as on every backend: a change kept, declined, and reverted
-  by its watchdog run against Xvfb (`apps/dsplr/tests/x11_e2e.rs`). Two outputs
-  arranged, made primary, mirrored and turned off, and `dsplr watch` restoring a
-  profile when a monitor is plugged in, run against Xorg's dummy driver
-  (`xorg_e2e.rs`). X keeps no mirror direction (outputs share a CRTC, or CRTCs
-  sit at one place), so the read-back names the first output the source and
+  server with the `XWAYLAND` extension (`QueryExtension`), or else whose outputs
+  are all `XWAYLAND<n>`, is refused before sending. An absent extension proves
+  nothing (Xwayland before 23.1 has none, it is a build option, and
+  `-extension XWAYLAND` turns it off), so the names stay as the fallback. A mode
+  named without a handle takes the progressive one before an interlaced one at
+  the same refresh (`Mode` has no interlace flag). Reverting is the apply flow's
+  as on every backend: a change kept, declined, and reverted by its watchdog run
+  against Xvfb (`apps/dsplr/tests/x11_e2e.rs`). Two outputs arranged, made
+  primary, mirrored and turned off, and `dsplr watch` restoring a profile when a
+  monitor is plugged in, run against Xorg's dummy driver (`xorg_e2e.rs`). X
+  keeps no mirror direction (outputs share a CRTC, or CRTCs sit at one place),
+  so the read-back names the first output the source and
   `Capabilities::mirror_direction` is off: the comparison takes mirrors as
   groups.
 - **Change stream (built, M7):** `randr::Watch`, one long-lived connection of
@@ -504,16 +517,15 @@ GNOME on X11 only when chosen with `--backend randr`, as Mutter is found first.
   CRTC or output change, or an output property change to the `EDID` atom
   (interned at setup; a backlight stepping is not a change), and takes the rest
   of the events already queued with it, so one change is one wake; the caller
-  reads again, on a fresh connection, which has the screen's size as it is now
-  (crcbl-x11 0.19.1 has no `GetGeometry`), so a `ScreenChangeNotify`'s own size
-  is not used. `poll_event` reads only what the socket holds and never waits for
-  the server, and nothing else uses the connection, so it runs on the runtime's
-  thread; connecting and selecting run on a detached thread under
-  `OPERATION_TIMEOUT`. A server gone ends the watch with an error, and
-  `dsplr watch` and the GUI connect again with their backoff. Run against Xvfb:
-  the watch wakes once for each mode xrandr sets, and `dsplr watch` restores a
-  profile when it starts, then reads again after an xrandr change and says the
-  same outputs are connected.
+  reads again, the screen's size included (`GetGeometry`, on the read's own
+  connection), so a `ScreenChangeNotify`'s own size is not used. `poll_event`
+  reads only what the socket holds and never waits for the server, and nothing
+  else uses the connection, so it runs on the runtime's thread; connecting and
+  selecting run on a detached thread under `OPERATION_TIMEOUT`. A server gone
+  ends the watch with an error, and `dsplr watch` and the GUI connect again with
+  their backoff. Run against Xvfb: the watch wakes once for each mode xrandr
+  sets, and `dsplr watch` restores a profile when it starts, then reads again
+  after an xrandr change and says the same outputs are connected.
 - **Apply:** compute CRTC assignments, grab the server, disable CRTCs that
   shrink or move, `SetScreenSize` to the new bounding box, set each CRTC's mode,
   position and rotation, ungrab. This is xrandr's own algorithm; it is

@@ -6,12 +6,24 @@
 //! Linux and FreeBSD only, so this module is too (the `x11` cfg,
 //! `build.rs`). Only Linux is built and run here; FreeBSD is not compiled.
 //!
-//! Each read opens a connection of its own: the connection setup is where
-//! crcbl-x11 has the root window's size in pixels and millimetres
-//! ([`crcbl_x11::Screen`]), and it is a copy from connect time, so a new
-//! connection reads the size the screen has now. libxcb's calls block with
-//! no deadline, so they run on a detached thread of their own, given up on
-//! at [`OPERATION_TIMEOUT`] (`blocking_for`).
+//! Each read and apply opens a connection of its own ([`on_server`]). The
+//! screen's size in pixels is asked for (`GetGeometry` on the root), but its
+//! size in millimetres is only in the connection's setup
+//! ([`crcbl_x11::Screen`], a copy from connect time), so a new connection
+//! is what has it as it is now; and a connection a timeout abandoned is
+//! never used again, nor one an apply left grabbed.
+//!
+//! Each connection waits for a reply at most its operation's limit
+//! ([`OPERATION_TIMEOUT`], [`APPLY_TIMEOUT`]; crcbl-x11's
+//! `set_reply_timeout`), so a server that stops answering ends the work
+//! with crcbl-x11's `Error::Timeout`, naming the request, and the thread
+//! doing it ends too, releasing the server's lock. crcbl-x11 still waits
+//! without a deadline in connecting (the setup, and RandR's version), in a
+//! flush the server reads nothing of, and for the rest of a reply cut short;
+//! and a limit per reply does not bound the operation, whose limit the
+//! revert watchdog's delay counts on. So the work runs on a detached thread
+//! of its own, whose result is waited for at most that limit too
+//! (`blocking_for`).
 //!
 //! The reads are `GetScreenResourcesCurrent`'s, which asks the driver
 //! nothing: a monitor plugged in on a driver without hotplug detection shows
@@ -71,10 +83,11 @@ pub enum Error {
     Plan(#[from] super::PlanError),
     #[error("the X server did not answer {what} within {seconds} s")]
     Timeout { what: &'static str, seconds: u64 },
-    /// The server is a Wayland compositor's Xwayland: its outputs are named
-    /// `XWAYLAND0` and on. Its RandR does not set the compositor's outputs.
+    /// The server is a Wayland compositor's Xwayland: it has the `XWAYLAND`
+    /// extension, or its outputs are named `XWAYLAND0` and on, each said in
+    /// the string. Its RandR does not set the compositor's outputs.
     #[error(
-        "this X server is a Wayland compositor's Xwayland (its outputs are {0}), whose RandR does not set the compositor's outputs; use the compositor's own backend"
+        "this X server is a Wayland compositor's Xwayland ({0}), whose RandR does not set the compositor's outputs; use the compositor's own backend"
     )]
     Xwayland(String),
     #[error("the thread reading the X server ended: {0}")]
@@ -123,7 +136,10 @@ impl Randr {
             return Ok(None);
         };
         let name = display.clone();
-        let version = blocking("RandR's version", move || on_server(&name, version)).await?;
+        let version = blocking("RandR's version", move || {
+            on_server(&name, OPERATION_TIMEOUT, version)
+        })
+        .await?;
         let xwayland = var("WAYLAND_DISPLAY").is_some_and(|wayland| !wayland.is_empty());
         Ok(Some(Self {
             display,
@@ -160,11 +176,18 @@ impl Randr {
         let name = self.display.clone();
         let layout = layout.clone();
         blocking_for(APPLY_TIMEOUT, "applying the layout", move || {
-            on_server(&name, |connection| {
+            on_server(&name, APPLY_TIMEOUT, |connection| {
                 version(connection)?;
+                let extension =
+                    connection
+                        .query_extension("XWAYLAND")
+                        .map_err(|error| Error::X {
+                            what: "QueryExtension XWAYLAND",
+                            error,
+                        })?;
                 let snapshot = read(connection)?;
-                if let Some(names) = xwayland_outputs(&snapshot) {
-                    return Err(Error::Xwayland(names));
+                if let Some(why) = xwayland(extension.is_some(), &snapshot) {
+                    return Err(Error::Xwayland(why));
                 }
                 let plan = super::plan(&snapshot, &layout)?;
                 send(connection, &snapshot, &plan)?;
@@ -195,7 +218,7 @@ impl Randr {
     pub async fn read(&self) -> Result<Snapshot, Error> {
         let name = self.display.clone();
         blocking("the outputs", move || {
-            on_server(&name, |connection| {
+            on_server(&name, OPERATION_TIMEOUT, |connection| {
                 version(connection)?;
                 read(connection)
             })
@@ -216,7 +239,7 @@ impl Randr {
     ) -> Result<(Result<(), Error>, Result<Snapshot, Error>), Error> {
         let name = self.display.clone();
         blocking_for(APPLY_TIMEOUT, "the test's plan", move || {
-            on_server(&name, |connection| {
+            on_server(&name, APPLY_TIMEOUT, |connection| {
                 version(connection)?;
                 let snapshot = read(connection)?;
                 let sent = send(connection, &snapshot, &plan);
@@ -236,6 +259,27 @@ impl Randr {
                     seconds: limit.as_secs(),
                 }));
                 Ok((sent, read))
+            })
+        })
+        .await
+    }
+
+    /// [`Randr::read`] with replies waited for at most `reply_limit`,
+    /// `stopped` run once connected and before the first request: for the
+    /// e2e test showing that a server that stops answering ends the read
+    /// at the reply limit, before the read's own [`OPERATION_TIMEOUT`],
+    /// and that the worker then lets the next read of the server go.
+    #[doc(hidden)]
+    pub async fn read_once_connected(
+        &self,
+        reply_limit: Duration,
+        stopped: impl FnOnce() + Send + 'static,
+    ) -> Result<Snapshot, Error> {
+        let name = self.display.clone();
+        blocking("the outputs", move || {
+            on_server(&name, reply_limit, |connection| {
+                stopped();
+                read(connection)
             })
         })
         .await
@@ -275,7 +319,8 @@ pub(super) async fn connect_and<T: Send + 'static>(
 ) -> Result<(Connection, T), Error> {
     let name = display.to_owned();
     blocking(what, move || {
-        let connection = Connection::connect(Some(&name))?;
+        let mut connection = Connection::connect(Some(&name))?;
+        connection.set_reply_timeout(Some(OPERATION_TIMEOUT));
         version(&connection)?;
         let set_up = setup(&connection)?;
         Ok((connection, set_up))
@@ -283,10 +328,21 @@ pub(super) async fn connect_and<T: Send + 'static>(
     .await
 }
 
+/// Why the server is a Wayland compositor's Xwayland, when it is: it has
+/// the `XWAYLAND` extension (`extension`), or else its outputs are all named
+/// as Xwayland names them ([`xwayland_outputs`]). An absent extension proves
+/// nothing: Xwayland before 23.1 has none, it is an option of the build,
+/// and `-extension XWAYLAND` turns it off.
+fn xwayland(extension: bool, snapshot: &Snapshot) -> Option<String> {
+    if extension {
+        return Some("it has the XWAYLAND extension".to_owned());
+    }
+    xwayland_outputs(snapshot).map(|names| format!("its outputs are {names}"))
+}
+
 /// The names of `snapshot`'s outputs when they are a Wayland compositor's
 /// Xwayland's (`XWAYLAND` and a number, as Xwayland names each output after
-/// the compositor's), `None` when any is not. crcbl-x11 0.19.1 offers no
-/// `QueryExtension`, which would find the `XWAYLAND` extension instead.
+/// the compositor's), `None` when any is not.
 fn xwayland_outputs(snapshot: &Snapshot) -> Option<String> {
     let xwayland = |name: &str| {
         name.strip_prefix("XWAYLAND")
@@ -323,8 +379,13 @@ fn server_lock(display: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// times out and is left behind, the read that follows waits for it rather
 /// than racing it, and sees what it did. Taken on the worker thread, so the
 /// wait counts in the caller's limit.
+///
+/// The connection waits for each reply at most `limit`, the operation's
+/// own: once a reply is late, crcbl-x11 abandons the connection and the
+/// work ends with its `Error::Timeout`.
 fn on_server<T>(
     display: &str,
+    limit: Duration,
     work: impl FnOnce(&Connection) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let lock = server_lock(display);
@@ -333,7 +394,8 @@ fn on_server<T>(
     let _held = lock
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let connection = Connection::connect(Some(display))?;
+    let mut connection = Connection::connect(Some(display))?;
+    connection.set_reply_timeout(Some(limit));
     work(&connection)
 }
 
@@ -348,12 +410,13 @@ async fn blocking<T: Send + 'static>(
 /// Runs `work` on a detached thread, its result sent back over a channel,
 /// waiting at most `limit` for it.
 ///
-/// libxcb waits for a reply with no deadline, so a server that stops
-/// answering leaves the thread blocked in it. A tokio blocking task would
-/// hold up the runtime's shutdown until it returned, which may be never; a
-/// detached thread holds up nothing. On a timeout the thread and its
-/// connection are left behind, to end when the server answers or closes,
-/// or with the process.
+/// A late reply ends the work by itself ([`on_server`]), but connecting, a
+/// blocked flush and a reply cut short have no deadline in crcbl-x11, and
+/// a limit per reply does not bound a whole operation. A tokio blocking task
+/// would hold up the runtime's shutdown until such a wait returned, which may
+/// be never; a detached thread holds up nothing. On a timeout here the
+/// thread and its connection are left behind, to end at their next late
+/// reply, when the server answers or closes, or with the process.
 async fn blocking_for<T: Send + 'static>(
     limit: Duration,
     what: &'static str,
@@ -593,6 +656,9 @@ fn read(connection: &Connection) -> Result<Snapshot, Error> {
     let randr = connection;
     let screen = connection.screen();
     let root = screen.root;
+    // The size now; the setup's (`screen`) is from connect time, which on
+    // this connection is just now too, but the request says so.
+    let geometry = connection.geometry(root).map_err(x("GetGeometry"))?;
     let resources = randr
         .screen_resources_current(root)
         .map_err(x("GetScreenResourcesCurrent"))?;
@@ -740,8 +806,8 @@ fn read(connection: &Connection) -> Result<Snapshot, Error> {
             max_height: range.max_height,
         },
         screen: ScreenSize {
-            width: screen.width,
-            height: screen.height,
+            width: geometry.width,
+            height: geometry.height,
             mm_width: u32::from(screen.width_mm),
             mm_height: u32::from(screen.height_mm),
         },
@@ -756,7 +822,7 @@ mod tests {
 
     use crcbl_x11::Connection;
 
-    use super::{Error, blocking_for, on_server, server_lock, status, xwayland_outputs};
+    use super::{Error, blocking_for, on_server, server_lock, status, xwayland, xwayland_outputs};
     use crate::randr::resources::{OutputInfo, Snapshot};
 
     /// A server that takes the connection and never answers: libxcb waits
@@ -866,6 +932,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_xwayland_extension_says_xwayland_and_its_absence_falls_back_to_names() {
+        let named = |names: &[&str]| Snapshot {
+            outputs: names
+                .iter()
+                .map(|name| OutputInfo {
+                    name: (*name).to_owned(),
+                    ..OutputInfo::default()
+                })
+                .collect(),
+            ..Snapshot::default()
+        };
+        // The extension is enough, whatever the outputs are called.
+        assert_eq!(
+            xwayland(true, &named(&["DP-1"])),
+            Some("it has the XWAYLAND extension".to_owned())
+        );
+        // Without it (an older Xwayland, a build or `-extension` without
+        // it), the names still say so.
+        assert_eq!(
+            xwayland(false, &named(&["XWAYLAND0"])),
+            Some("its outputs are XWAYLAND0".to_owned())
+        );
+        assert_eq!(xwayland(false, &named(&["DP-1"])), None);
+    }
+
     /// A server's work waits for the work on it before, held by a worker
     /// left running (an apply that timed out, say), and runs once it ends;
     /// another server's does not wait.
@@ -879,7 +971,7 @@ mod tests {
             // Fails to connect once it has the lock (libxcb cannot parse
             // the name, so no server is reached): the order is what this
             // test reads.
-            let _ = on_server(display, |_| Ok(()));
+            let _ = on_server(display, Duration::from_secs(1), |_| Ok(()));
             let _ = ran.send(Instant::now());
         });
         assert!(

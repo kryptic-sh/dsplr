@@ -8,10 +8,9 @@
 //! with it are taken too. An output property counts only when it is the
 //! `EDID`: a backlight or another driver property set many times a second
 //! would otherwise have the GUI read the server again each time. The caller
-//! reads the server again, and every
-//! read is made on a fresh connection, which has the screen's size as it is
-//! now (crcbl-x11 0.19.1 offers no `GetGeometry`); so a
-//! `ScreenChangeNotify`'s own size is not used.
+//! reads the server again, the screen's size included (`GetGeometry`, on a
+//! connection of the read's own), so a `ScreenChangeNotify`'s own size is
+//! not used, and this connection reads nothing.
 //!
 //! `poll_event` (`xcb_poll_for_event`) never waits for the server: it reads
 //! what the socket holds, without blocking, and returns `None` when that is

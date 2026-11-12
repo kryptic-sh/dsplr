@@ -237,6 +237,8 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 # server when started some other way.
 export DSPLR_E2E_X11="$runtime" DSPLR_E2E_X11_DISPLAY="$DISPLAY"
 export DSPLR_E2E_X11_SERVER="$server"
+# The server's own process, for a test that stops it answering a while.
+export DSPLR_E2E_X11_SERVER_PID="$xvfb_pid"
 # An X11 desktop: no Wayland compositor and no session bus to find.
 unset WAYLAND_DISPLAY SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE NIRI_SOCKET \
   DBUS_SESSION_BUS_ADDRESS XAUTHORITY
