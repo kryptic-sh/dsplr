@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState};
@@ -303,8 +302,11 @@ fn a_kept_profile_is_replaced_for_its_own_outputs_and_not_for_others() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_profile_that_cannot_be_written_leaves_no_entry() {
+    use std::os::unix::fs::PermissionsExt;
+
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config");
     // A store that cannot be written into.

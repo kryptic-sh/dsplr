@@ -410,6 +410,7 @@ fn a_mode_without_a_rate_takes_the_highest_the_output_lists() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn names_scripts_and_dropped_outputs_are_said() {
     let dir = tempfile::tempdir().unwrap();

@@ -882,6 +882,9 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         );
     }
 
+    // POSIX paths (`/etc/...` absolute, `/` the separator), which the
+    // Linux-only code is written for.
+    #[cfg(unix)]
     #[test]
     fn hyprland_config_names_the_file_by_its_extension() {
         let explicit = |path: &Path| {

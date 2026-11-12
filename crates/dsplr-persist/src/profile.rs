@@ -406,7 +406,6 @@ mod tests {
         Fit, NameError, Profile, ProfileError, ProfileName, list, load, path, pick, remove, save,
         summaries_json,
     };
-    use crate::managed::FileError;
 
     fn name(text: &str) -> ProfileName {
         text.parse().unwrap()
@@ -604,8 +603,11 @@ mod tests {
         assert!(!remove(dir.path(), &desk.name).unwrap());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_in_the_store_is_read_but_never_replaced() {
+        use crate::managed::FileError;
+
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("source.json");
         let desk = profile("desk", &[("DP-1", "")], 1);

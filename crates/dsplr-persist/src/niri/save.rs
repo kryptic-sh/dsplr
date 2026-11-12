@@ -346,7 +346,7 @@ mod tests {
 
     use dsplr_model::{AdaptiveSync, Layout, OutputId, Transform};
 
-    use super::{INCLUDE_LINE, SaveError, TopNode, find_config, includes, save, top_level};
+    use super::{SaveError, TopNode, find_config, save, top_level};
     use crate::managed::{Comment, Conflict, FileError, Ownership, Saved, ownership, with_header};
     use crate::niri::read_outputs;
     use crate::niri::write::tests::{OWNERS_NODES, owners_layout};
@@ -640,8 +640,13 @@ mod tests {
         assert!(message.contains("/etc/niri/config.kdl"), "{message}");
     }
 
+    // POSIX paths (`/etc/...` absolute, `/` the separator), which the
+    // Linux-only code is written for.
+    #[cfg(unix)]
     #[test]
     fn an_include_is_found_in_the_forms_niri_reads() {
+        use super::{INCLUDE_LINE, includes};
+
         let main_config = Path::new("/h/.config/niri/config.kdl");
         let outputs = Path::new("/h/.config/niri/outputs.kdl");
         let env = [("HOME", Path::new("/h"))];
@@ -736,6 +741,9 @@ mod tests {
     /// written, a node of the main config after the include for a connected
     /// output stops applying, so one setting what dsplr does not write asks
     /// first, even with no file there yet.
+    // POSIX paths (`/etc/...` absolute, `/` the separator), which the
+    // Linux-only code is written for.
+    #[cfg(unix)]
     #[test]
     fn main_config_nodes_the_saved_file_would_hide_are_asked_about() {
         let main = "include \"outputs.kdl\"\noutput \"eDP-1\" {\n    focus-at-startup\n    scale 2\n}\noutput \"hdmi-a-1\" { backdrop-color \"#000\"; variable-refresh-rate on-demand=true; }\noutput \"DP-9\" { focus-at-startup; }\n";

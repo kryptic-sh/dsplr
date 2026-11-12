@@ -754,6 +754,9 @@ mod tests {
         assert!(read(&main, &vars(&[])).is_err());
     }
 
+    // POSIX paths (`/etc/...` absolute, `/` the separator), which the
+    // Linux-only code is written for.
+    #[cfg(unix)]
     #[test]
     fn variables_take_braces_and_a_pattern_matching_nothing_stays() {
         let set = vars(&[("A", "/x")]);

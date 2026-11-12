@@ -499,10 +499,9 @@ fn option(line: &str) -> Option<(String, Option<String>)> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    use super::{Block, default_dirs, legacy_name, parse_config, parse_setup, read, read_profile};
+    use super::{Block, legacy_name, parse_config, parse_setup, read, read_profile};
 
     fn write(dir: &Path, file: &str, text: &str) {
         std::fs::create_dir_all(dir).unwrap();
@@ -510,6 +509,7 @@ mod tests {
     }
 
     /// An executable script `file` in `dir`.
+    #[cfg(unix)]
     fn script(dir: &Path, file: &str) {
         use std::os::unix::fs::PermissionsExt;
         write(dir, file, "#!/bin/sh\n");
@@ -665,6 +665,7 @@ mod tests {
         assert_eq!(read.notes, Vec::<String>::new());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_naming_a_profile_is_a_name_for_it_and_any_other_a_profile() {
         let dir = tempfile::tempdir().unwrap();
@@ -695,6 +696,7 @@ mod tests {
         assert!(read.notes[0].starts_with("autorandr's \"default\" is a link to \"docked\""));
     }
 
+    #[cfg(unix)]
     #[test]
     fn executable_hook_scripts_are_found_in_profiles_and_autorandr_s_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -729,8 +731,16 @@ mod tests {
         assert!(read(&[dir.path().join("missing")]).is_err());
     }
 
+    // POSIX paths (`/etc/...` absolute, `/` the separator), which the
+    // Linux-only code is written for.
+    #[cfg(unix)]
     #[test]
     fn the_directories_are_autorandr_s() {
+        use std::ffi::OsString;
+        use std::path::PathBuf;
+
+        use super::default_dirs;
+
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().to_owned();
         let vars = |config_dirs: Option<&str>, config_home: Option<&str>| {
