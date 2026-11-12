@@ -226,8 +226,7 @@ pub fn read(dirs: &[PathBuf]) -> Result<Read, ReadError> {
 /// The name of the file at `path`.
 fn file_name(path: &Path) -> String {
     path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|name| name.to_string_lossy().into_owned())
 }
 
 /// How a profile is named to the user: its name and where it is.
@@ -303,21 +302,20 @@ pub(super) fn said_scripts(scripts: &[String]) -> String {
 /// `os.access` grants `X_OK` to any file, so every file counts. Verified on
 /// Linux only.
 fn executable(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && execute_bit(&meta))
+}
+
+/// Whether `meta` has an execute bit set.
+#[cfg(unix)]
+fn execute_bit(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+/// No execute bit exists here, so every file counts ([`executable`]).
+#[cfg(not(unix))]
+const fn execute_bit(_: &std::fs::Metadata) -> bool {
+    true
 }
 
 /// The profile in `dir`, which holds `config` and `setup`.

@@ -130,7 +130,7 @@ pub fn panel(editor: &Editor, index: usize) -> Option<Panel> {
             locked(no_modes),
         ),
         custom_mode: field(
-            state.mode.as_ref().map(spec_text).unwrap_or_default(),
+            state.mode.as_ref().map_or_default(spec_text),
             state.mode != live.mode,
             locked(
                 (!capabilities.custom_modes).then(|| format!("{backend} takes no custom modes")),

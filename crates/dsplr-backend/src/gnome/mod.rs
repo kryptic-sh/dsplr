@@ -52,7 +52,7 @@ pub enum Error {
         "no D-Bus session bus here: neither DBUS_SESSION_BUS_ADDRESS nor XDG_RUNTIME_DIR is set"
     )]
     NoBus,
-    #[error("DBUS_SESSION_BUS_ADDRESS {text:?} is not a D-Bus address dsplr can use{}", error.as_ref().map(|error| format!(": {error}")).unwrap_or_default())]
+    #[error("DBUS_SESSION_BUS_ADDRESS {text:?} is not a D-Bus address dsplr can use{}", error.as_ref().map_or_default(|error| format!(": {error}")))]
     Address {
         text: String,
         /// zbus's reason, for an address that is text.

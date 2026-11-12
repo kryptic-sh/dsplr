@@ -79,9 +79,7 @@ impl Drafts {
     pub fn reset(&mut self, output: Option<usize>, panel: Option<&Panel>) {
         *self = Self {
             output,
-            custom_mode: panel
-                .map(|p| p.custom_mode.value.clone())
-                .unwrap_or_default(),
+            custom_mode: panel.map_or_default(|p| p.custom_mode.value.clone()),
             custom_active: false,
             scale: panel.map_or(1.0, |p| p.scale.value.1),
             scale_active: false,

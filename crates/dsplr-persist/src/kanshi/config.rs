@@ -518,7 +518,7 @@ fn expand(
     let Some(file) = path.file_name().map(|f| f.to_string_lossy().into_owned()) else {
         return Ok(vec![path]);
     };
-    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent = path.parent().map_or_default(Path::to_path_buf);
     if parent.to_string_lossy().contains(['*', '?']) {
         return Err(fail(
             "dsplr expands '*' and '?' only in the last component".into(),
@@ -527,17 +527,15 @@ fn expand(
     if !file.contains(['*', '?']) {
         return Ok(vec![path]);
     }
-    let mut matches: Vec<PathBuf> = std::fs::read_dir(&parent)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    glob_matches(&file, &name).then(|| parent.join(name))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut matches: Vec<PathBuf> = std::fs::read_dir(&parent).map_or_default(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                glob_matches(&file, &name).then(|| parent.join(name))
+            })
+            .collect()
+    });
     if matches.is_empty() {
         return Ok(vec![path]);
     }

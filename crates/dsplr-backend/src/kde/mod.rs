@@ -68,7 +68,7 @@ pub enum Error {
         cause: Box<Self>,
         connectors: Vec<String>,
     },
-    #[error("KWin refused the configuration{}", reason.as_ref().map(|reason| format!(": {reason}")).unwrap_or_default())]
+    #[error("KWin refused the configuration{}", reason.as_ref().map_or_default(|reason| format!(": {reason}")))]
     Failed {
         /// Why, when KWin said (its `failure_reason`, since version 12).
         reason: Option<String>,
