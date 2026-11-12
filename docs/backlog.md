@@ -938,10 +938,6 @@ milestone:
   (`Layout::place_beside_others`); the Hyprland e2e's `--no-mirror` step still
   passes `--pos`, and Hyprland putting a mirror on its source
   (`CMonitor::setMirror`, v0.57.1 source) was not observed.
-- **`dsplr set` moves nothing else**: a new mode, scale or transform changes the
-  output's size, and a neighbour it now overlaps or leaves a gap beside is
-  refused or warned about by validation, not shifted. `Layout::normalise` and
-  `snap` exist for the GUI; whether `set` should use them is open.
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.
@@ -1004,9 +1000,6 @@ milestone:
   backend's `cancelled` is tested in `sway_e2e`; provoking it through the CLI
   means winning a race inside one `dsplr apply`, and the transport failures need
   a compositor that stalls.
-- **The watchdog's output goes nowhere**: its stdin, stdout and stderr are
-  closed, since the terminal may be gone when it fires, so a watchdog that fails
-  to revert says so to no one. A log file in the state directory would fix that.
 - **Make normalisation to the PNP vendor code** (`OutputId`, `docs/plan/03`):
   not written; needs a vendor-name table with a source (the source is a decision
   for the owner, under "Decisions waiting on the owner"). Mutter 51.1 reports
@@ -1200,6 +1193,11 @@ and the `monitors.lua` writer:
 - **wayr for the GUI.** Wayland-only by construction, so it cannot serve the X11
   window managers in the MVP. crcbl covers both (owner's call, 2026-11-04).
 - **Windows and macOS.** Their own display settings cover this.
+- **`dsplr set` moving the outputs beside the one it changes** (owner's call,
+  2026-11-13): a new mode, scale or transform changes the output's size, and a
+  neighbour it now overlaps or leaves a gap beside is refused or warned about by
+  validation, not shifted. `set` changes only the output it names, which is what
+  a script or keybind expects; `Layout::normalise` and `snap` stay the GUI's.
 - **Identify on GNOME by taking a name GNOME Shell trusts** (M6): Shell answers
   `ShowMonitorLabels` only for callers owning `org.gnome.Settings` and two other
   names (`DBusSenderChecker`, GNOME Shell 51.1). dsplr owning one of them would
