@@ -117,6 +117,14 @@ pub enum FileError {
     Io { path: PathBuf, source: io::Error },
     #[error(transparent)]
     Conflict(Box<Conflict>),
+    /// The file changed after it was read and checked, before the new one
+    /// replaced it, so nothing was written: another tool, or the user,
+    /// changed it meanwhile.
+    #[error(
+        "{} changed while dsplr was saving it, so nothing was written; save again to see what is there now",
+        path.display()
+    )]
+    Changed { path: PathBuf },
 }
 
 impl FileError {
@@ -173,9 +181,12 @@ pub fn refuse_symlink(path: &Path) -> Result<(), FileError> {
 ///   `approved` is exactly `existing` (empty when there is no file), which
 ///   is how the user's answer to that conflict comes back.
 ///
+/// The file is replaced only if it still holds `existing` once the new one
+/// is ready ([`write_if_unchanged`]).
+///
 /// # Errors
 ///
-/// A conflict, or the write failing.
+/// A conflict, the file changing meanwhile, or the write failing.
 pub fn replace(
     path: &Path,
     existing: Option<&str>,
@@ -187,7 +198,41 @@ pub fn replace(
 ) -> Result<(), FileError> {
     let text = new.clone();
     check(path, existing, unreadable, new, approved, comment, shadowed)?;
-    write_atomic(path, &text).map_err(FileError::io(path))
+    write_if_unchanged(path, &text, existing)
+}
+
+/// [`write_atomic`], but the file at `path` is read again once the new
+/// contents are on disk, just before they replace it, and is left alone if
+/// it no longer holds `expected` (`None`: there was no file). A change made
+/// while the new file was written and flushed is then caught; one made
+/// between that read and the rename is not, as nothing that writes these
+/// files would honour a lock.
+///
+/// # Errors
+///
+/// [`FileError::Changed`] when the file changed, or the write failing.
+pub fn write_if_unchanged(
+    path: &Path,
+    contents: &str,
+    expected: Option<&str>,
+) -> Result<(), FileError> {
+    let unchanged = || {
+        if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Ok(false);
+        }
+        match fs::read_to_string(path) {
+            Ok(now) => Ok(Some(now.as_str()) == expected),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(expected.is_none()),
+            Err(error) => Err(error),
+        }
+    };
+    match write_atomic_checked(path, contents, unchanged) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(FileError::Changed {
+            path: path.to_owned(),
+        }),
+        Err(error) => Err(FileError::io(path)(error)),
+    }
 }
 
 /// Whether [`replace`] may write `new` over the file at `path`, without
@@ -341,6 +386,17 @@ pub(crate) fn sha256_hex(text: &str) -> String {
 ///
 /// When `path` has no parent directory or file name, or any step fails.
 pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
+    write_atomic_checked(path, contents, || Ok(true)).map(drop)
+}
+
+/// [`write_atomic`], asking `still_wanted` once the new file is on disk,
+/// just before the rename: when it says no, the new file is removed,
+/// nothing is replaced, and `false` is returned.
+fn write_atomic_checked(
+    path: &Path,
+    contents: &str,
+    still_wanted: impl FnOnce() -> io::Result<bool>,
+) -> io::Result<bool> {
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -358,7 +414,12 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
             .open(&temporary)?;
         file.write_all(contents.as_bytes())?;
         file.sync_all()?;
-        fs::rename(&temporary, path)
+        if !still_wanted()? {
+            fs::remove_file(&temporary)?;
+            return Ok(false);
+        }
+        fs::rename(&temporary, path)?;
+        Ok(true)
     })();
     if let Err(error) = written {
         // The write already failed; a temporary file that cannot be removed
@@ -375,14 +436,17 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
             ),
         });
     }
-    Ok(())
+    written
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{Comment, Ownership, ownership, sha256_hex, with_header, write_atomic};
+    use super::{
+        Comment, FileError, Ownership, ownership, sha256_hex, with_header, write_atomic,
+        write_if_unchanged,
+    };
 
     #[test]
     fn sha256_matches_the_standards_test_vectors() {
@@ -443,6 +507,40 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["monitors.lua"]);
+    }
+
+    /// What the file held when the save read it is checked again at the
+    /// write: a change since then (here, made before the call) leaves both
+    /// it and the directory as they were.
+    #[test]
+    fn a_file_changed_since_it_was_read_is_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("monitors.lua");
+        fs::write(&path, "edited meanwhile\n").unwrap();
+        for expected in [Some("as read\n"), None] {
+            let result = write_if_unchanged(&path, "new\n", expected);
+            assert!(
+                matches!(&result, Err(FileError::Changed { path: changed }) if *changed == path),
+                "{expected:?}: {result:?}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), "edited meanwhile\n");
+        }
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["monitors.lua"], "no temporary left");
+
+        write_if_unchanged(&path, "new\n", Some("edited meanwhile\n")).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        let created = dir.path().join("outputs");
+        assert!(matches!(
+            write_if_unchanged(&created, "x\n", Some("gone\n")),
+            Err(FileError::Changed { .. })
+        ));
+        assert!(!created.exists());
+        write_if_unchanged(&created, "x\n", None).unwrap();
+        assert_eq!(fs::read_to_string(&created).unwrap(), "x\n");
     }
 
     #[test]

@@ -560,7 +560,7 @@ impl<'a> MainWindow<'a> {
             }
             Command::SaveProfile(name) => self.request(Request::SaveProfile {
                 name,
-                replace: false,
+                approved: None,
             }),
             Command::Restore(name) => self.request(Request::Restore(name)),
             Command::Identify => {

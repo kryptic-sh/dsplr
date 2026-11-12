@@ -25,9 +25,14 @@ pub enum Request {
     /// `dsplr save` does. `approved` is the text of the file the user agreed
     /// to replace, from a [`Question`].
     Save { approved: Option<String> },
-    /// Save the displays as they are now as the profile `name`, replacing
-    /// one of that name only when `replace`, as `dsplr save --profile` does.
-    SaveProfile { name: String, replace: bool },
+    /// Save the displays as they are now as the profile `name`, as
+    /// `dsplr save --profile` does. `approved` is the text of the profile of
+    /// that name the user agreed to replace, from a [`Question`]; one that
+    /// holds anything else is asked about.
+    SaveProfile {
+        name: String,
+        approved: Option<String>,
+    },
     /// Apply the profile `name` through the confirm flow, as
     /// `dsplr restore NAME` does.
     Restore(String),

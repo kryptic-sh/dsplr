@@ -352,9 +352,10 @@ and this project adheres to
   profile output that is not connected is refused (exit `3`). With no profile to
   pick, nothing changes and it exits `7`. From an autostart, where there is no
   terminal, run `dsplr restore --yes`. Replacing a profile shows what changes
-  and takes `--yes`, `--force` or a yes on the terminal. `dsplr profile list`
-  (with `--json`), `dsplr profile show NAME` (as `dsplr list` prints a layout,
-  or `--json`) and `dsplr profile rm NAME` manage the store. A name is ASCII
+  and takes `--yes`, `--force` or a yes on the terminal; one that changed while
+  the question waited is shown and asked about again. `dsplr profile list` (with
+  `--json`), `dsplr profile show NAME` (as `dsplr list` prints a layout, or
+  `--json`) and `dsplr profile rm NAME` manage the store. A name is ASCII
   letters and digits, spaces, `-`, `_` and `.`; anything else, `..`, a leading
   `.` or `-` or a trailing `.` or space is a usage error (exit `2`). `--revert`
   now cannot be combined with a profile name or the confirm flow's flags.
@@ -402,7 +403,10 @@ and this project adheres to
   another's (`AOC Q27G4 SER1`, `AOC Q27G4 SER12`) before it, kept before saved
   otherwise, and a saved rule naming a port after any description rule Hyprland
   would apply to that monitor. A `monitors.lua` that is a symbolic link is
-  refused, naming its target, rather than replaced with a file.
+  refused, naming its target, rather than replaced with a file. A saved file
+  (`monitors.lua`, sway's `outputs`, niri's `outputs.kdl`, the X11 autostart
+  entry) that changed while dsplr was writing its replacement is left alone, and
+  the save says so.
 - Reading a `monitors.lua` refuses `vrr = 3` and any setting beside
   `disabled = true` instead of reading them as `vrr = 2` and dropping the
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under

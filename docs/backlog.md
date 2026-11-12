@@ -941,23 +941,18 @@ milestone:
   shows every line, and past `MAX_CELLS` it shows the changed middle as removed
   then added. The `similar` crate would replace it, but adding a dependency is
   the owner's call.
-- **A change to the saved file (`monitors.lua`, `outputs`) made while
-  `dsplr save` runs is lost**: it reads and classifies the file, then renames
-  the new one over whatever is there then, without looking again. A file
-  created, edited by hand or replaced by another tool in that window is
-  overwritten without the check or the question it would otherwise get. When it
-  asks, the second call re-reads and compares the text the user approved, so a
-  change while the question waits is caught; one made during a call's own
-  read-to-rename (a read, a write and an `fsync`) is not. No lock: nothing else
-  that writes the file would honour one.
+- **A change to a saved file in the instant before dsplr replaces it is lost**:
+  `managed::write_if_unchanged` reads the file again once the new one is written
+  and flushed, and refuses (`FileError::Changed`) if it no longer holds what the
+  save read, so a change during the save's read, write and `fsync` is caught;
+  one between that last read and the rename is not. No lock: nothing else that
+  writes the file would honour one.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files; the profile store went with JSON, and TOML for both waits on the
   owner (the profile store's decisions above).
 - **Profile store gaps**: `dsplr restore` with a profile on Hyprland, and run
   from a real compositor's autostart (river, labwc, niri), have not been run;
-  only headless sway has. A profile file changed between the read and the rename
-  of `dsplr save --profile` is overwritten without the question, as for
-  `dsplr save`.
+  only headless sway has.
 - **Some error paths of `dsplr apply` have no test**: a test or apply the
   desktop dropped because the displays changed (`Error::is_stale`; dsplr shows
   the current state, and after an apply removes the revert point instead of

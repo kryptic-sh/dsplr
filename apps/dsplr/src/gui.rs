@@ -27,7 +27,7 @@ use dsplr_persist::profile::{self as store, ProfileName};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::apply::{self, Confirm};
-use crate::profile::{self, Blocked};
+use crate::profile::{self, Blocked, Replace};
 use crate::watch::Backoff;
 use crate::{Exit, config, find_backend, restore, runtime, save};
 
@@ -334,8 +334,8 @@ impl BackendThread<'_> {
                 self.save(approved).await;
                 None
             }
-            Request::SaveProfile { name, replace } => {
-                self.save_profile(&name, replace).await;
+            Request::SaveProfile { name, approved } => {
+                self.save_profile(&name, approved).await;
                 self.profiles();
                 None
             }
@@ -494,8 +494,9 @@ impl BackendThread<'_> {
     }
 
     /// `dsplr save --profile NAME`: a profile of that name is replaced only
-    /// once the user has seen what changes.
-    async fn save_profile(&self, name: &str, replace: bool) {
+    /// once the user has seen what changes, and only while it still holds
+    /// `approved`, the text the user agreed to replace.
+    async fn save_profile(&self, name: &str, approved: Option<String>) {
         let Some(name) = self.profile_name(name) else {
             return;
         };
@@ -514,11 +515,12 @@ impl BackendThread<'_> {
             Err(error) => return self.say(error),
         };
         let what = format!("profile \"{name}\"");
-        let approve = Request::SaveProfile {
+        let approve = |seen: String| Request::SaveProfile {
             name: name.as_str().to_owned(),
-            replace: true,
+            approved: Some(seen),
         };
-        let question = match profile::store_layout(&dir, &name, layout, replace) {
+        let replace = approved.map_or(Replace::Nothing, Replace::Seen);
+        let question = match profile::store_layout(&dir, &name, layout, &replace) {
             Ok(messages) => {
                 for message in messages {
                     self.say(message);
@@ -526,17 +528,17 @@ impl BackendThread<'_> {
                 return;
             }
             Err(Blocked::Failed(message)) => return self.say(message),
-            Err(Blocked::Exists { diff }) => Question {
+            Err(Blocked::Exists { diff, seen }) => Question {
                 what,
                 notes: vec![format!("there is a profile named \"{name}\" already")],
                 diff,
-                approve,
+                approve: approve(seen),
             },
-            Err(Blocked::Unreadable(error)) => Question {
+            Err(Blocked::Unreadable { why, seen }) => Question {
                 what,
-                notes: vec![format!("{error}; replacing it loses it")],
+                notes: vec![format!("{why}; replacing it loses it")],
                 diff: String::new(),
-                approve,
+                approve: approve(seen),
             },
         };
         self.tell(Reply::Ask(question));

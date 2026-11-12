@@ -220,7 +220,7 @@ pub fn save(
             created: existing.is_none(),
             unknown_desktop: var("XDG_CURRENT_DESKTOP").is_none_or(|v| v.is_empty()),
         };
-        (login, Some((path, text)))
+        (login, Some((path, text, existing)))
     };
     let (name, taken) = free_name(dir, layout)?;
     let profile = profile::save_for_outputs(
@@ -231,11 +231,11 @@ pub fn save(
             saved_unix_ms: unix_ms(SystemTime::now()),
         },
     )?;
-    if let Some((path, text)) = write {
+    if let Some((path, text, existing)) = write {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(FileError::io(parent))?;
         }
-        managed::write_atomic(&path, &text).map_err(FileError::io(&path))?;
+        managed::write_if_unchanged(&path, &text, existing.as_deref())?;
     }
     Ok(Saved {
         name,

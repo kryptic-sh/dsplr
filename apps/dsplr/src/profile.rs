@@ -10,7 +10,7 @@ use dsplr_backend::{Backend, Named};
 use dsplr_model::Layout;
 use dsplr_persist::diff::line_diff;
 use dsplr_persist::login;
-use dsplr_persist::managed::refuse_symlink;
+use dsplr_persist::managed::{FileError, refuse_symlink};
 use dsplr_persist::profile::{self, Fit, Profile, ProfileError, ProfileName, unix_ms};
 
 use crate::{Exit, apply, find_backend, print, save};
@@ -29,41 +29,74 @@ pub fn store_dir() -> Result<PathBuf, String> {
     profile::default_dir().map_err(|error| error.to_string())
 }
 
+/// What [`store_layout`] may replace in the store.
+pub enum Replace {
+    /// Nothing: a profile of that name blocks the save.
+    Nothing,
+    /// The profile of that name as it was when the user agreed to replace
+    /// it: its file's text, from [`Blocked`]. A profile changed since then
+    /// is asked about again.
+    Seen(String),
+    /// Whatever is there (`--force`).
+    Anything,
+}
+
 /// Why [`store_layout`] saved nothing.
 pub enum Blocked {
-    /// A profile of that name exists: what saving changes in it.
-    Exists { diff: String },
-    /// A profile of that name exists and cannot be read: why.
-    Unreadable(String),
+    /// A profile of that name exists: what saving changes in it, and its
+    /// file's text, which [`Replace::Seen`] gives back once the user agrees.
+    Exists { diff: String, seen: String },
+    /// A profile of that name exists and cannot be read: why, and its
+    /// file's text, as for [`Blocked::Exists`].
+    Unreadable { why: String, seen: String },
     /// Saving failed, said as a whole message.
     Failed(String),
 }
 
-/// Saves `layout` as the profile `name` in the store at `dir`. Unless
-/// `approved`, a profile of that name already there blocks it, so the user
-/// can be asked first. Returns what to tell the user, one message each.
+/// Saves `layout` as the profile `name` in the store at `dir`. A profile of
+/// that name already there blocks it unless `replace` covers it, so the
+/// user can be asked first, and it is replaced only if it still holds what
+/// it held then ([`profile::save_replacing`]). Returns what to tell the
+/// user, one message each.
 pub fn store_layout(
     dir: &std::path::Path,
     name: &ProfileName,
     layout: Layout,
-    approved: bool,
+    replace: &Replace,
 ) -> Result<Vec<String>, Blocked> {
+    let failed = |error: ProfileError| Blocked::Failed(format!("cannot save the profile: {error}"));
     // A link is refused however the question would be answered, so before
     // it is asked.
-    refuse_symlink(&profile::path(dir, name))
-        .map_err(|error| Blocked::Failed(format!("cannot save the profile: {error}")))?;
-    if !approved {
-        match profile::load(dir, name) {
-            Ok(None) => {}
-            Ok(Some(old)) => {
-                return Err(Blocked::Exists {
+    refuse_symlink(&profile::path(dir, name)).map_err(|error| failed(error.into()))?;
+    let existing = profile::read_text(dir, name).map_err(failed)?;
+    if let Some(text) = &existing {
+        let agreed = match replace {
+            Replace::Nothing => false,
+            Replace::Seen(seen) => seen == text,
+            Replace::Anything => true,
+        };
+        if !agreed {
+            let seen = text.clone();
+            return Err(match profile::load(dir, name) {
+                Ok(Some(old)) => Blocked::Exists {
                     diff: line_diff(
                         &crate::list::describe(&old.layout),
                         &crate::list::describe(&layout),
                     ),
-                });
-            }
-            Err(error) => return Err(Blocked::Unreadable(error.to_string())),
+                    seen,
+                },
+                // Removed since it was read: said as the change it is.
+                Ok(None) => failed(
+                    FileError::Changed {
+                        path: profile::path(dir, name),
+                    }
+                    .into(),
+                ),
+                Err(error) => Blocked::Unreadable {
+                    why: error.to_string(),
+                    seen,
+                },
+            });
         }
     }
     let profile = Profile {
@@ -71,7 +104,7 @@ pub fn store_layout(
         layout,
         saved_unix_ms: unix_ms(SystemTime::now()),
     };
-    match profile::save(dir, &profile) {
+    match profile::save_replacing(dir, &profile, existing.as_deref()) {
         Ok(path) => Ok(vec![
             format!("saved profile \"{name}\" to {}", path.display()),
             format!(
@@ -211,7 +244,12 @@ fn store_imported(
         }
         // Said, since a name made from the tool's can be one the store had.
         let replacing = force && profile::path(dir, &profile.name).exists();
-        match store_layout(dir, &profile.name, profile.layout, force) {
+        let replace = if force {
+            Replace::Anything
+        } else {
+            Replace::Nothing
+        };
+        match store_layout(dir, &profile.name, profile.layout, &replace) {
             Ok(messages) => {
                 if replacing {
                     eprintln!(
@@ -230,7 +268,7 @@ fn store_imported(
                 );
                 exit = Exit::Failure;
             }
-            Err(Blocked::Unreadable(why)) => {
+            Err(Blocked::Unreadable { why, .. }) => {
                 eprintln!(
                     "dsplr:   not imported: the store's profile \"{}\" cannot be read ({why}); --force replaces it",
                     profile.name
@@ -289,30 +327,32 @@ pub async fn save(backend: &Backend, name: &ProfileName, options: &save::Options
         Ok(dir) => dir,
         Err(exit) => return exit,
     };
-    let replace = options.yes || options.force;
-    let mut approved = false;
+    let allowed = options.yes || options.force;
+    let mut replace = Replace::Nothing;
     loop {
-        match store_layout(&dir, name, layout.clone(), approved) {
+        match store_layout(&dir, name, layout.clone(), &replace) {
             Ok(messages) => {
                 for message in messages {
                     eprintln!("dsplr: {message}");
                 }
                 return Exit::Success;
             }
-            Err(Blocked::Exists { diff }) => {
+            Err(Blocked::Exists { diff, seen }) => {
                 eprintln!(
                     "dsplr: there is a profile named \"{name}\" already; this is what saving changes in it:"
                 );
                 eprint!("{diff}");
-                if !save::replace_allowed(&format!("profile \"{name}\""), replace) {
+                if !save::replace_allowed(&format!("profile \"{name}\""), allowed) {
                     return Exit::Failure;
                 }
+                replace = Replace::Seen(seen);
             }
-            Err(Blocked::Unreadable(error)) if options.force => {
-                eprintln!("dsplr: {error}; replacing it, as --force says");
+            Err(Blocked::Unreadable { why, seen }) if options.force => {
+                eprintln!("dsplr: {why}; replacing it, as --force says");
+                replace = Replace::Seen(seen);
             }
-            Err(Blocked::Unreadable(error)) => {
-                eprintln!("dsplr: {error}; nothing was saved, and --force replaces it");
+            Err(Blocked::Unreadable { why, .. }) => {
+                eprintln!("dsplr: {why}; nothing was saved, and --force replaces it");
                 return Exit::Failure;
             }
             Err(Blocked::Failed(message)) => {
@@ -320,7 +360,6 @@ pub async fn save(backend: &Backend, name: &ProfileName, options: &save::Options
                 return Exit::Failure;
             }
         }
-        approved = true;
     }
 }
 
@@ -594,9 +633,9 @@ pub fn remove(name: &ProfileName) -> Exit {
 #[cfg(test)]
 mod tests {
     use dsplr_model::{Layout, OutputEntry, OutputId, OutputState};
-    use dsplr_persist::profile::Profile;
+    use dsplr_persist::profile::{Profile, ProfileName};
 
-    use super::{age, describe};
+    use super::{Blocked, Replace, age, describe, store_layout};
 
     #[test]
     fn an_age_is_its_largest_whole_unit() {
@@ -613,6 +652,49 @@ mod tests {
         assert_eq!(ago(86_400), "1 day ago");
         assert_eq!(ago(30 * 86_400), "30 days ago");
         assert_eq!(age(now, now + 5_000), "just now", "a clock set back");
+    }
+
+    /// A profile of that name blocks the save and is replaced once the user
+    /// agrees to what was shown; changed meanwhile, it is asked about again.
+    #[test]
+    fn a_profile_is_replaced_only_as_the_user_saw_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let name: ProfileName = "desk".parse().unwrap();
+        let layout = |connector: &str| Layout {
+            entries: vec![OutputEntry {
+                id: OutputId::Connector(connector.into()),
+                output: None,
+                state: OutputState::default(),
+            }],
+            ..Default::default()
+        };
+        assert!(store_layout(dir.path(), &name, layout("DP-1"), &Replace::Nothing).is_ok());
+        let Err(Blocked::Exists { seen, .. }) =
+            store_layout(dir.path(), &name, layout("DP-2"), &Replace::Nothing)
+        else {
+            panic!("a profile of that name blocks the save");
+        };
+
+        // Changed while the question waited: asked again, nothing written.
+        assert!(store_layout(dir.path(), &name, layout("HDMI-A-1"), &Replace::Anything).is_ok());
+        let Err(Blocked::Exists { seen: now, .. }) = store_layout(
+            dir.path(),
+            &name,
+            layout("DP-2"),
+            &Replace::Seen(seen.clone()),
+        ) else {
+            panic!("a changed profile is asked about again");
+        };
+        assert_ne!(now, seen);
+        let held = |connector: &str| {
+            dsplr_persist::profile::load(dir.path(), &name)
+                .unwrap()
+                .is_some_and(|profile| profile.layout == layout(connector))
+        };
+        assert!(held("HDMI-A-1"));
+
+        assert!(store_layout(dir.path(), &name, layout("DP-2"), &Replace::Seen(now)).is_ok());
+        assert!(held("DP-2"));
     }
 
     #[test]

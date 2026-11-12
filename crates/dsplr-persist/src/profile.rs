@@ -20,7 +20,7 @@ use dsplr_model::{Layout, OutputId, assign};
 use serde_json::{Value, json};
 
 use crate::layout_json;
-use crate::managed::{FileError, refuse_symlink, write_atomic};
+use crate::managed::{FileError, read_existing, refuse_symlink, write_atomic, write_if_unchanged};
 
 /// The extension of a profile file.
 const EXTENSION: &str = "json";
@@ -330,6 +330,36 @@ pub fn save(dir: &Path, profile: &Profile) -> Result<PathBuf, ProfileError> {
     write(dir, profile, &[(SAVED_KEY, profile.saved_unix_ms.into())])
 }
 
+/// The text of the profile `name`'s file in the store at `dir`, or `None`
+/// when there is none: what [`save_replacing`] is given back once the user
+/// has agreed to replace it.
+///
+/// # Errors
+///
+/// When the file is a symbolic link ([`FileError::Symlink`]) or cannot be
+/// read.
+pub fn read_text(dir: &Path, name: &ProfileName) -> Result<Option<String>, ProfileError> {
+    Ok(read_existing(&path(dir, name))?)
+}
+
+/// [`save`], writing only if the profile's file still holds `expected`
+/// (`None`: no file) once the new one is ready, so a profile changed since
+/// the user agreed to replace it is left alone
+/// ([`FileError::Changed`]).
+///
+/// # Errors
+///
+/// As [`save`], and when the file changed.
+pub fn save_replacing(
+    dir: &Path,
+    profile: &Profile,
+    expected: Option<&str>,
+) -> Result<PathBuf, ProfileError> {
+    let (path, text) = prepare(dir, profile, &[(SAVED_KEY, profile.saved_unix_ms.into())])?;
+    write_if_unchanged(&path, &text, expected)?;
+    Ok(path)
+}
+
 /// [`save`], marked as the profile a plain `dsplr save` on X11 keeps for its
 /// outputs ([`load_marked`]).
 ///
@@ -349,6 +379,18 @@ pub fn save_for_outputs(dir: &Path, profile: &Profile) -> Result<PathBuf, Profil
 
 /// Writes `profile` with `extra`'s fields beside its layout.
 fn write(dir: &Path, profile: &Profile, extra: &[(&str, Value)]) -> Result<PathBuf, ProfileError> {
+    let (path, text) = prepare(dir, profile, extra)?;
+    write_atomic(&path, &text).map_err(ProfileError::io(&path))?;
+    Ok(path)
+}
+
+/// Where `profile` goes and its text with `extra`'s fields, the store's
+/// directory made: everything but the write.
+fn prepare(
+    dir: &Path,
+    profile: &Profile,
+    extra: &[(&str, Value)],
+) -> Result<(PathBuf, String), ProfileError> {
     let path = path(dir, &profile.name);
     refuse_symlink(&path)?;
     let text =
@@ -357,8 +399,7 @@ fn write(dir: &Path, profile: &Profile, extra: &[(&str, Value)]) -> Result<PathB
             reason,
         })?;
     fs::create_dir_all(dir).map_err(ProfileError::io(dir))?;
-    write_atomic(&path, &text).map_err(ProfileError::io(&path))?;
-    Ok(path)
+    Ok((path, text))
 }
 
 /// Removes the profile `name` from the store at `dir`. Returns whether there
@@ -403,8 +444,8 @@ mod tests {
     use dsplr_model::{Layout, Mode, Output, OutputEntry, OutputId, OutputState};
 
     use super::{
-        Fit, NameError, Profile, ProfileError, ProfileName, list, load, path, pick, remove, save,
-        summaries_json,
+        Fit, NameError, Profile, ProfileError, ProfileName, list, load, path, pick, read_text,
+        remove, save, save_replacing, summaries_json,
     };
 
     fn name(text: &str) -> ProfileName {
@@ -480,6 +521,32 @@ mod tests {
         assert_eq!(refused("a..b"), NameError::DotDot);
         assert_eq!(refused(&"a".repeat(201)), NameError::TooLong);
         assert_eq!(name(&"a".repeat(200)).as_str().len(), 200);
+    }
+
+    #[test]
+    fn a_profile_is_replaced_only_while_it_holds_what_was_agreed_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let desk = profile("desk", &[("DP-1", "")], 1);
+        assert_eq!(read_text(dir.path(), &desk.name).unwrap(), None);
+        save_replacing(dir.path(), &desk, None).unwrap();
+        let agreed = read_text(dir.path(), &desk.name).unwrap();
+        assert!(agreed.is_some());
+
+        // Changed after the user agreed: left alone.
+        let other = profile("desk", &[("HDMI-A-1", "")], 2);
+        save(dir.path(), &other).unwrap();
+        let later = profile("desk", &[("DP-2", "")], 3);
+        assert!(matches!(
+            save_replacing(dir.path(), &later, agreed.as_deref()),
+            Err(ProfileError::File(
+                crate::managed::FileError::Changed { .. }
+            ))
+        ));
+        assert_eq!(load(dir.path(), &desk.name).unwrap(), Some(other));
+
+        let now = read_text(dir.path(), &desk.name).unwrap();
+        save_replacing(dir.path(), &later, now.as_deref()).unwrap();
+        assert_eq!(load(dir.path(), &desk.name).unwrap(), Some(later));
     }
 
     #[test]
