@@ -208,7 +208,8 @@ fn without_defaults(mut entry: OutputEntry, ruled: &[Option<OutputId>]) -> Outpu
 fn with_nothing_kept(layout: &Layout, ruled: &[Option<OutputId>]) -> MonitorsLua {
     MonitorsLua {
         layout: Layout {
-            entries: in_hyprland_order(
+            entries: rule_order(
+                Vec::new(),
                 layout
                     .entries
                     .iter()
@@ -253,12 +254,7 @@ fn in_hyprland_order(entries: Vec<OutputEntry>) -> Vec<OutputEntry> {
 }
 
 /// `layout`, with what `old` says that `layout` does not, and the entries of
-/// `old` it kept for outputs `layout` does not have.
-///
-/// The kept entries come first: Hyprland uses the last rule that matches a
-/// monitor, so an old rule naming a port (`DP-1`) must not come after the
-/// new rule for the monitor that is next plugged into it. Within each group
-/// the rules are [`in_hyprland_order`].
+/// `old` it kept for outputs `layout` does not have, in [`rule_order`].
 fn merged(
     layout: &Layout,
     old: &MonitorsLua,
@@ -298,10 +294,7 @@ fn merged(
         .filter(|before| !layout.entries.iter().any(|live| before.id.matches(live)))
         .cloned()
         .collect();
-    let entries = in_hyprland_order(kept.clone())
-        .into_iter()
-        .chain(in_hyprland_order(live))
-        .collect();
+    let entries = rule_order(kept.clone(), live);
     let file = MonitorsLua {
         layout: Layout {
             entries,
@@ -310,6 +303,56 @@ fn merged(
         catch_alls: old.catch_alls.clone(),
     };
     (file, kept)
+}
+
+/// The rules for `kept` (monitors not connected now) and `live` ones, in an
+/// order where Hyprland, which uses the last rule that matches a monitor,
+/// gives each live monitor its own rule now and each kept one its own when
+/// it is next plugged in:
+///
+/// - kept rules naming a port (`DP-1`) first, so the new rule for the
+///   monitor plugged into it comes after them;
+/// - then every `desc:` rule, kept and live, [`in_hyprland_order`] (one that
+///   starts another's before it), kept before live otherwise, so a live
+///   `desc:AOC Q27G4 SER1` goes before a kept `desc:AOC Q27G4 SER12`;
+/// - each live rule naming a port just after the last `desc:` rule Hyprland
+///   would match to its monitor (one cut mid-word, `desc:BOE 0x0A`, matches
+///   `BOE 0x0AFC`), else before them all.
+///
+/// A live port rule is written for a monitor without a serial, so it cannot
+/// also be placed after a kept `desc:` rule whose monitor may later be
+/// plugged into that port: Hyprland would use the port rule for it. That
+/// conflict needs a `desc:` rule cut mid-word, which neither dsplr nor
+/// nwg-displays writes; the monitor connected now wins it.
+fn rule_order(kept: Vec<OutputEntry>, live: Vec<OutputEntry>) -> Vec<OutputEntry> {
+    let desc = |entry: &OutputEntry| {
+        output_name(entry, NAMING).and_then(|name| name.strip_prefix("desc:").map(str::to_owned))
+    };
+    let (kept_descs, kept_ports): (Vec<_>, Vec<_>) =
+        kept.into_iter().partition(|entry| desc(entry).is_some());
+    let (live_descs, live_ports): (Vec<_>, Vec<_>) =
+        live.into_iter().partition(|entry| desc(entry).is_some());
+    let descs = in_hyprland_order(kept_descs.into_iter().chain(live_descs).collect());
+    // Each live port rule's place: after the desc rule at that index, or
+    // before them all.
+    let mut after: Vec<Vec<OutputEntry>> = vec![Vec::new(); descs.len()];
+    let mut first = Vec::new();
+    for port in live_ports {
+        let last = descs.iter().rposition(|rule| {
+            desc(rule).is_some_and(|desc| OutputId::Description(desc).matches_as_hyprland(&port))
+        });
+        match last {
+            Some(at) => after[at].push(port),
+            None => first.push(port),
+        }
+    }
+    let mut ordered = kept_ports;
+    ordered.extend(first);
+    for (rule, ports) in descs.into_iter().zip(after) {
+        ordered.push(rule);
+        ordered.extend(ports);
+    }
+    ordered
 }
 
 /// The config Hyprland reads, by the language it is in.
@@ -1062,6 +1105,66 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
                 "kept before live: {text}"
             );
         }
+    }
+
+    /// The backlog's case: SER12 unplugged (its rule kept) and SER1
+    /// connected. SER1's rule must come first, else Hyprland, matching
+    /// `desc:` by prefix, gives it to the SER12 when that is plugged in.
+    #[test]
+    fn a_live_rule_whose_desc_starts_a_kept_one_s_is_written_first() {
+        let config = Config::new("");
+        let [ser1, ser12]: [OutputEntry; 2] = ser1_and_ser12().try_into().unwrap();
+        let old = with_header(
+            &monitor_calls(
+                &MonitorsLua {
+                    layout: Layout {
+                        entries: vec![ser12],
+                        ..Default::default()
+                    },
+                    catch_alls: Vec::new(),
+                },
+                MonitorNaming::Description,
+            )
+            .unwrap(),
+            Comment::Lua,
+        );
+        fs::write(config.monitors(), &old).unwrap();
+        let mut layout = live();
+        layout.entries.push(ser1);
+        let saved = config.save(&layout, Some(&old)).unwrap();
+        assert_eq!(saved.kept.len(), 1);
+        assert!(ser1_first(&config.read()), "{}", config.read());
+    }
+
+    /// A kept rule cut mid-word that Hyprland matches to the live eDP-1's
+    /// description (`BOE 0x0AFC`): eDP-1's own rule must come after it, so
+    /// eDP-1 keeps its own now. A kept rule by port still comes first.
+    #[test]
+    fn a_live_port_rule_comes_after_a_desc_rule_hyprland_matches_to_it() {
+        let config = Config::new("");
+        let old = concat!(
+            r#"hl.monitor({ output = "desc:BOE 0x0A", mode = "1920x1080@60", position = "0x0", scale = 1 })"#,
+            "\n",
+            r#"hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "0x0", scale = 1 })"#,
+        );
+        fs::write(config.monitors(), old).unwrap();
+        let saved = config.save(&live(), Some(old)).unwrap();
+        assert_eq!(saved.kept.len(), 2);
+        let text = config.read();
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {text}"))
+        };
+        assert!(at(r#""DP-9""#) < at(r#""desc:BOE 0x0A""#), "{text}");
+        assert!(at(r#""desc:BOE 0x0A""#) < at(r#""eDP-1""#), "{text}");
+        // A live port rule no desc rule matches stays before the desc rules.
+        let saved = Config::new("");
+        saved.save(&live(), None).unwrap();
+        let text = saved.read();
+        assert!(
+            text.find(r#""eDP-1""#) < text.find(r#""desc:AOC Q27G4 SERIAL0000001""#),
+            "{text}"
+        );
     }
 
     #[test]

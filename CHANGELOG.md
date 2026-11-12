@@ -395,12 +395,14 @@ and this project adheres to
   (every one, in order, since Hyprland merges them; dsplr says it kept them and
   never writes one of its own), its rules for monitors not connected now, and
   its adaptive sync, bit depth and colour preset (which Hyprland does not
-  report) are carried into the new file; the kept rules go before the saved
-  ones, so they never win over them, and within each a rule whose description
-  starts another's (`AOC Q27G4 SER1`, `AOC Q27G4 SER12`) goes first, since
-  Hyprland uses the last rule matching a monitor and matches a description by
-  its start. A `monitors.lua` that is a symbolic link is refused, naming its
-  target, rather than replaced with a file.
+  report) are carried into the new file. Since Hyprland uses the last rule
+  matching a monitor and matches a description by its start, the rules are
+  ordered so each monitor gets its own, now or when next plugged in: kept rules
+  naming a port first, then every description rule with one that starts
+  another's (`AOC Q27G4 SER1`, `AOC Q27G4 SER12`) before it, kept before saved
+  otherwise, and a saved rule naming a port after any description rule Hyprland
+  would apply to that monitor. A `monitors.lua` that is a symbolic link is
+  refused, naming its target, rather than replaced with a file.
 - Reading a `monitors.lua` refuses `vrr = 3` and any setting beside
   `disabled = true` instead of reading them as `vrr = 2` and dropping the
   setting, and a `mirror = "desc:…"` rule is written back as it was read. Under

@@ -950,26 +950,6 @@ milestone:
   change while the question waits is caught; one made during a call's own
   read-to-rename (a read, a write and an `fsync`) is not. No lock: nothing else
   that writes the file would honour one.
-- **A saved rule can still win over a longer description's, across the kept and
-  live groups**: `save`'s `merged` writes the kept rules (monitors not
-  connected) before the live ones, and orders each group with
-  `in_hyprland_order` so a `desc:` that starts another comes first. Between the
-  groups only kept-before-live holds, so with `AOC Q27G4 SER12` unplugged (kept)
-  and `AOC Q27G4 SER1` connected (live), SER1's rule is written last and
-  Hyprland, matching `desc:` by prefix, applies it to the SER12 when it is next
-  plugged in. Analysed 2026-11-09: a single order over both groups works for
-  `desc:` rules (kept connector rules first, then all `desc:` rules in prefix
-  order, kept before live otherwise), but a live monitor without a serial is
-  written by connector (`eDP-1`) while Hyprland can still match its description
-  with a `desc:` rule cut mid-word (`desc:BOE 0x0A`), so its rule has no safe
-  fixed place: first lets a later mid-word rule beat it now, last lets it beat a
-  monitor later plugged into that port. Proposed, not built: kept connector
-  rules first; then `desc:` rules in prefix order; each live connector rule just
-  after the last `desc:` rule that prefixes its monitor's description (with
-  none, at the front as today). In general, every live monitor's own rule comes
-  after every other rule Hyprland would match to it; whether that order can ever
-  contradict itself is unchecked. Needs a rule cut mid-word or a mid-word prefix
-  between monitors; dsplr and nwg-displays write full descriptions.
 - **`dsplr apply` reads JSON only**: `docs/plan/07-cli.md` also names TOML
   layout files; the profile store went with JSON, and TOML for both waits on the
   owner (the profile store's decisions above).
