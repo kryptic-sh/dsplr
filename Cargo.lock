@@ -578,6 +578,7 @@ dependencies = [
  "dsplr-model",
  "dsplr-persist",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

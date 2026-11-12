@@ -2,10 +2,11 @@
 //! the watchdog a change starts (`docs/plan/02-architecture.md`, step 5).
 
 use std::env;
+use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dsplr_backend::{Backend, Named};
 use dsplr_persist::revert::{self, RevertPoint};
@@ -19,6 +20,13 @@ use crate::{Exit, find_backend};
 /// can take to settle and ask, so that dsplr's own revert or keep comes
 /// first.
 const WATCHDOG_GRACE: Duration = Duration::from_secs(5);
+
+/// The watchdog's log, beside the revert point.
+const LOG_FILE: &str = "watchdog.log";
+
+/// A log larger than this is started afresh when the next watchdog starts,
+/// so it never grows without bound.
+const LOG_LIMIT: u64 = 64 * 1024;
 
 /// How long the watchdog for a change confirmed within `confirm_timeout`
 /// waits before it reverts, on a backend whose requests take at most
@@ -37,23 +45,48 @@ pub fn change_limit(request_timeout: Duration) -> Duration {
     request_timeout + settle_limit(request_timeout)
 }
 
+/// The watchdog's log for the revert point at `revert_path`: the file in
+/// the same directory its messages go to.
+pub fn log_path(revert_path: &Path) -> PathBuf {
+    revert_path.with_file_name(LOG_FILE)
+}
+
+/// Opens the log at `path` to append to, or afresh once it is past
+/// [`LOG_LIMIT`].
+fn open_log(path: &Path) -> io::Result<File> {
+    let full = fs::metadata(path).is_ok_and(|metadata| metadata.len() > LOG_LIMIT);
+    let mut options = OpenOptions::new();
+    options.create(true);
+    if full {
+        options.write(true).truncate(true);
+    } else {
+        options.append(true);
+    }
+    options.open(path)
+}
+
 /// Starts the watchdog for the change `token` names: a detached
 /// `dsplr restore --revert --after <secs> --token <token>`, with the
 /// `--backend` this one was given. It inherits the environment, which is how
-/// it reaches the desktop. The process is returned so that a change which
-/// sent nothing can end it at once rather than leave it waiting.
+/// it reaches the desktop. Its messages go to the log at `log`
+/// ([`log_path`]), since the terminal may be gone when it fires. The process
+/// is returned so that a change which sent nothing can end it at once rather
+/// than leave it waiting.
 ///
 /// # Errors
 ///
-/// When dsplr's own executable cannot be found or started.
-pub fn spawn_watchdog(token: &str, after: Duration) -> io::Result<std::process::Child> {
+/// When the log cannot be opened, or dsplr's own executable cannot be found
+/// or started.
+pub fn spawn_watchdog(token: &str, after: Duration, log: &Path) -> io::Result<std::process::Child> {
+    let log = open_log(log)?;
     let mut command = Command::new(env::current_exe()?);
     command
         .args(watchdog_args(token, after, crate::forced()))
-        // Nothing to talk to: the terminal may close while it waits.
+        // Nothing to read from or print to: the terminal may close while it
+        // waits.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(log);
     // A process group of its own, so the hangup sent to the terminal's
     // foreground group when the terminal closes does not end it too. Every
     // backend is Linux-only, so no change reaches this off Unix.
@@ -127,7 +160,12 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
     if let Some(after) = after {
         tokio::time::sleep(after).await;
     }
-    let say = &mut |line: String| eprintln!("dsplr: {line}");
+    let say = &mut |line: String| match token {
+        // The watchdog's stderr is its log: each line says when, and which
+        // change it was guarding.
+        Some(token) => eprintln!("{}", log_line(SystemTime::now(), token, &line)),
+        None => eprintln!("dsplr: {line}"),
+    };
     let (path, point) = match load(token.is_none(), say) {
         Ok(Some(found)) => found,
         Ok(None) => return Exit::Success,
@@ -140,7 +178,20 @@ pub async fn run(after: Option<Duration>, token: Option<&str>) -> Exit {
         Ok(backend) => backend,
         Err(exit) => return exit,
     };
-    go_back(&backend, &path, &point, say).await
+    let exit = go_back(&backend, &path, &point, say).await;
+    if token.is_some() && exit == Exit::Success {
+        say("the change was not kept in time: went back to the revert point".to_owned());
+    }
+    exit
+}
+
+/// One line of the watchdog's log: the time in unix seconds, the token of
+/// the change, and what happened.
+fn log_line(at: SystemTime, token: &str, line: &str) -> String {
+    let secs = at
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    format!("{secs} dsplr watchdog {token}: {line}")
 }
 
 /// Goes back to the revert point on `backend` by hand, as
@@ -179,12 +230,59 @@ fn load(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use dsplr_backend::Named;
 
-    use super::{settle_limit, watchdog_args, watchdog_delay};
+    use super::{
+        LOG_LIMIT, log_line, log_path, open_log, settle_limit, watchdog_args, watchdog_delay,
+    };
     use crate::apply::SETTLE;
+
+    #[test]
+    fn the_log_sits_beside_the_revert_point() {
+        assert_eq!(
+            log_path(Path::new("/state/dsplr/revert.json")),
+            Path::new("/state/dsplr/watchdog.log")
+        );
+    }
+
+    #[test]
+    fn the_log_is_appended_to_until_it_is_full() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("watchdog.log");
+        writeln!(open_log(&path).unwrap(), "first").unwrap();
+        writeln!(open_log(&path).unwrap(), "second").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "first
+second
+"
+        );
+
+        let full = "x".repeat(usize::try_from(LOG_LIMIT).unwrap() + 1);
+        fs::write(&path, full).unwrap();
+        writeln!(open_log(&path).unwrap(), "afresh").unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "afresh
+"
+        );
+    }
+
+    #[test]
+    fn a_log_line_says_when_and_for_which_change() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_763_000_000);
+        assert_eq!(
+            log_line(at, "42-7", "cannot go back"),
+            "1763000000 dsplr watchdog 42-7: cannot go back"
+        );
+        assert!(log_line(SystemTime::now(), "t", "x").ends_with(" dsplr watchdog t: x"));
+    }
 
     #[test]
     fn the_watchdog_is_given_the_backend_this_dsplr_was() {

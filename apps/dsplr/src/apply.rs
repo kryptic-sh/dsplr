@@ -273,7 +273,7 @@ fn prepare(
     let started = Instant::now();
     let point = RevertPoint::guarding(current.clone(), unix_ms(SystemTime::now() + delay));
     revert::save(&path, &point).map_err(cannot_keep)?;
-    let process = match restore::spawn_watchdog(&point.token, delay) {
+    let process = match restore::spawn_watchdog(&point.token, delay, &restore::log_path(&path)) {
         Ok(process) => process,
         Err(error) => {
             let mut why = vec![format!("cannot start the revert watchdog: {error}")];

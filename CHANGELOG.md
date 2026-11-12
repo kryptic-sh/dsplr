@@ -330,9 +330,10 @@ and this project adheres to
   on. A change that can hide or move a screen asks to be kept and reverts after
   `confirm.timeout_secs` without a yes; a detached watchdog reverts it even if
   dsplr dies first, waiting long enough for dsplr's own apply and revert to run
-  to the backend's request timeouts first. `--yes` keeps it without asking, and
-  `--dry-run` checks without applying. Whatever the desktop did not take as
-  asked is listed after the apply.
+  to the backend's request timeouts first; what the watchdog does is written to
+  `$XDG_STATE_HOME/dsplr/watchdog.log`, since its terminal may be gone. `--yes`
+  keeps it without asking, and `--dry-run` checks without applying. Whatever the
+  desktop did not take as asked is listed after the apply.
 - `dsplr restore --revert` goes back to the layout from before the last change.
 - Profiles: `dsplr save --profile NAME` saves the current layout as a named
   profile in `$XDG_CONFIG_HOME/dsplr/profiles/NAME.json` on any desktop (the
