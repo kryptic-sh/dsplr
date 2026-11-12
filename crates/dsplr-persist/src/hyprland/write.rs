@@ -50,11 +50,23 @@ pub fn monitor_call(
     entry: &OutputEntry,
     naming: MonitorNaming,
 ) -> Result<String, WriteError> {
+    monitor_call_with(layout, entry, naming, &[])
+}
+
+/// [`monitor_call`], with `extra` fields (Lua `key = value`) after the ones
+/// dsplr writes.
+fn monitor_call_with(
+    layout: &Layout,
+    entry: &OutputEntry,
+    naming: MonitorNaming,
+    extra: &[String],
+) -> Result<String, WriteError> {
     let name = output_name(entry, naming).ok_or_else(|| WriteError::NoName(entry.id.clone()))?;
     let state = &entry.state;
     let mut fields = vec![format!("output = {}", lua_string(&name))];
     if !state.enabled {
         fields.push("disabled = true".to_owned());
+        fields.extend_from_slice(extra);
         return Ok(call(&fields));
     }
     let mode = state
@@ -98,13 +110,15 @@ pub fn monitor_call(
     if let Some(preset) = &state.colour_preset {
         fields.push(format!("cm = {}", lua_string(preset)));
     }
+    fields.extend_from_slice(extra);
     Ok(call(&fields))
 }
 
 /// Every call for `file`, in the order Hyprland should read them: the
 /// catch-alls first, in their order (they only apply to monitors no other
 /// rule names, so their place among the others does not matter), then each
-/// entry in layout order.
+/// entry in layout order: its [`MonitorsLua::verbatim`] text when it has
+/// one, else its call with its [`MonitorsLua::extras`].
 ///
 /// # Errors
 ///
@@ -114,7 +128,14 @@ pub fn monitor_calls(file: &MonitorsLua, naming: MonitorNaming) -> Result<String
         .layout
         .entries
         .iter()
-        .map(|entry| monitor_call(&file.layout, entry, naming))
+        .map(|entry| {
+            let name = output_name(entry, naming);
+            if let Some(text) = by_name(&file.verbatim, name.as_deref()) {
+                return Ok(format!("{}\n", text.trim_end()));
+            }
+            let extra = by_name(&file.extras, name.as_deref()).map_or(&[][..], Vec::as_slice);
+            monitor_call_with(&file.layout, entry, naming, extra)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(file
         .catch_alls
@@ -123,6 +144,14 @@ pub fn monitor_calls(file: &MonitorsLua, naming: MonitorNaming) -> Result<String
         .chain(calls)
         .collect::<Vec<_>>()
         .join("\n"))
+}
+
+/// The value `list` holds for the `output` name `name`.
+fn by_name<'a, T>(list: &'a [(String, T)], name: Option<&str>) -> Option<&'a T> {
+    let name = name?;
+    list.iter()
+        .find(|(other, _)| other == name)
+        .map(|(_, value)| value)
 }
 
 /// How a `mirror` field names `source`: the connector of the entry of
@@ -167,7 +196,7 @@ fn call(fields: &[String]) -> String {
 }
 
 /// `text` as a double-quoted Lua string literal.
-fn lua_string(text: &str) -> String {
+pub(super) fn lua_string(text: &str) -> String {
     let body: String = text
         .chars()
         .map(|c| match c {
@@ -241,6 +270,7 @@ mod tests {
         let file = MonitorsLua {
             layout: owners_layout(),
             catch_alls: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(
             monitor_calls(&file, MonitorNaming::default()).unwrap(),
@@ -270,6 +300,7 @@ hl.monitor({
                 r#"hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })"#
                     .into(),
             ],
+            ..Default::default()
         };
         let text = monitor_calls(&file, MonitorNaming::Connector).unwrap();
         assert!(

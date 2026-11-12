@@ -4,8 +4,10 @@
 //!
 //! A setting dsplr has no place for (Hyprland's SDR and luminance keys,
 //! `reserved`, an `auto` position or a `preferred` mode, `vrr = 3`, or any
-//! setting beside `disabled = true`) is an error naming it, never dropped: a
-//! file read without it would be saved back without it.
+//! setting beside `disabled = true`) is never dropped. [`read_monitors_lua`]
+//! refuses the file, naming it; [`read_rules`], which a save reads with,
+//! keeps each output's rule apart, so one dsplr cannot hold is carried over
+//! as its text and a key dsplr does not write as Lua.
 
 use dsplr_model::{
     AdaptiveSync, Mode, ModeSpec, OutputEntry, OutputId, OutputState, Transform, is_valid_scale,
@@ -13,6 +15,7 @@ use dsplr_model::{
 
 use super::MonitorsLua;
 use super::lua::{self, Value};
+use super::write::lua_string;
 
 /// Why a `monitors.lua` could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -57,6 +60,55 @@ struct Rule {
     cm: Option<Located>,
 }
 
+/// The keys a save carries from a rule it cannot read onto the new rule for
+/// the same monitor, where the layout leaves them unknown: Hyprland reports
+/// none of them as rules.
+const CARRIED: [&str; 3] = ["vrr", "bitdepth", "cm"];
+
+/// One output's rule in a `monitors.lua`: every call naming it, merged.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReadRule {
+    /// Its `output` value, as the file writes it.
+    pub name: String,
+    /// It as a layout entry, or why it cannot be one. Keys dsplr does not
+    /// know are left to [`ReadRule::unknown`], not counted against it.
+    pub entry: Result<OutputEntry, ReadError>,
+    /// Each key dsplr does not know, the last value of each.
+    pub unknown: Vec<Unknown>,
+    /// Its [`CARRIED`] keys as Lua `key = value` fields.
+    pub carried: Vec<(&'static str, String)>,
+    /// Its calls, each as the file writes it, one per line.
+    pub text: String,
+}
+
+/// A key dsplr does not know, in a rule.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Unknown {
+    pub key: String,
+    /// It as a Lua `key = value` field, with its last value.
+    pub lua: String,
+    /// The line it is first set on.
+    pub line: usize,
+}
+
+/// One output's calls as they are read, before they become a [`ReadRule`].
+struct Gathered {
+    name: String,
+    /// The line of its first call.
+    line: usize,
+    rule: Rule,
+    unknown: Vec<Unknown>,
+    texts: Vec<String>,
+}
+
+/// A `monitors.lua` read rule by rule ([`read_rules`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ReadFile {
+    pub rules: Vec<ReadRule>,
+    /// As [`MonitorsLua::catch_alls`].
+    pub catch_alls: Vec<String>,
+}
+
 /// Reads a `monitors.lua`.
 ///
 /// Adaptive sync reads back as not set when the file leaves `vrr` out or
@@ -69,12 +121,42 @@ struct Rule {
 /// On Lua outside `hl.monitor` calls, and on any setting or value the layout
 /// cannot hold; the error names the line.
 pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
+    let file = read_rules(source)?;
+    let mut entries = Vec::new();
+    for rule in file.rules {
+        if let Some(unknown) = rule.unknown.into_iter().min_by_key(|unknown| unknown.line) {
+            return Err(ReadError {
+                line: unknown.line,
+                kind: ReadErrorKind::UnsupportedField(unknown.key),
+            });
+        }
+        entries.push(rule.entry?);
+    }
+    Ok(MonitorsLua {
+        layout: dsplr_model::Layout {
+            entries,
+            ..Default::default()
+        },
+        catch_alls: file.catch_alls,
+        ..Default::default()
+    })
+}
+
+/// Reads a `monitors.lua` rule by rule: a rule dsplr cannot hold, or a key
+/// it does not know, is kept in its [`ReadRule`] rather than refusing the
+/// file.
+///
+/// # Errors
+///
+/// Only on what spoils the file as a whole: Lua outside `hl.monitor` calls,
+/// and a call naming no `output`, or naming it with something not a string.
+pub(super) fn read_rules(source: &str) -> Result<ReadFile, ReadError> {
     let calls = lua::parse(source).map_err(|error| ReadError {
         line: error.line,
         kind: ReadErrorKind::Syntax(error.message),
     })?;
     let mut catch_alls = Vec::new();
-    let mut rules: Vec<(String, usize, Rule)> = Vec::new();
+    let mut rules: Vec<Gathered> = Vec::new();
     for call in calls {
         let Some((output, line)) = call
             .fields
@@ -95,14 +177,26 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
             catch_alls.push(call.text);
             continue;
         }
-        let index = match rules.iter().position(|(name, ..)| *name == output) {
+        let index = match rules.iter().position(|gathered| gathered.name == output) {
             Some(index) => index,
             None => {
-                rules.push((output, line, Rule::default()));
+                rules.push(Gathered {
+                    name: output,
+                    line,
+                    rule: Rule::default(),
+                    unknown: Vec::new(),
+                    texts: Vec::new(),
+                });
                 rules.len() - 1
             }
         };
-        let rule = &mut rules[index].2;
+        let Gathered {
+            rule,
+            unknown,
+            texts,
+            ..
+        } = &mut rules[index];
+        texts.push(call.text);
         for field in call.fields {
             let slot = match field.key.as_str() {
                 "output" => continue,
@@ -116,26 +210,62 @@ pub fn read_monitors_lua(source: &str) -> Result<MonitorsLua, ReadError> {
                 "bitdepth" => &mut rule.bitdepth,
                 "cm" => &mut rule.cm,
                 _ => {
-                    return Err(ReadError {
-                        line: field.line,
-                        kind: ReadErrorKind::UnsupportedField(field.key),
-                    });
+                    let lua = format!("{} = {}", field.key, lua_value(&field.value));
+                    match unknown.iter_mut().find(|known| known.key == field.key) {
+                        // A later value wins, as Hyprland merges it.
+                        Some(known) => known.lua = lua,
+                        None => unknown.push(Unknown {
+                            key: field.key,
+                            lua,
+                            line: field.line,
+                        }),
+                    }
+                    continue;
                 }
             };
             *slot = Some((field.value, field.line));
         }
     }
-    let entries = rules
+    let rules = rules
         .into_iter()
-        .map(|(name, line, rule)| entry(&name, line, rule))
-        .collect::<Result<_, _>>()?;
-    Ok(MonitorsLua {
-        layout: dsplr_model::Layout {
-            entries,
-            ..Default::default()
-        },
-        catch_alls,
-    })
+        .map(|gathered| {
+            let Gathered {
+                name,
+                line,
+                rule,
+                unknown,
+                texts,
+            } = gathered;
+            let carried = CARRIED
+                .into_iter()
+                .filter_map(|key| {
+                    let value = match key {
+                        "vrr" => rule.vrr.as_ref(),
+                        "bitdepth" => rule.bitdepth.as_ref(),
+                        _ => rule.cm.as_ref(),
+                    }?;
+                    Some((key, format!("{key} = {}", lua_value(&value.0))))
+                })
+                .collect();
+            ReadRule {
+                entry: entry(&name, line, rule),
+                name,
+                unknown,
+                carried,
+                text: texts.join("\n"),
+            }
+        })
+        .collect();
+    Ok(ReadFile { rules, catch_alls })
+}
+
+/// `value` as Lua source.
+fn lua_value(value: &Value) -> String {
+    match value {
+        Value::Str(text) => lua_string(text),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+    }
 }
 
 fn entry(name: &str, line: usize, rule: Rule) -> Result<OutputEntry, ReadError> {
@@ -342,7 +472,7 @@ fn unsupported(field: &str, value: &str, line: usize) -> ReadError {
 mod tests {
     use dsplr_model::{AdaptiveSync, Layout, Mode, OutputEntry, OutputId, OutputState, Transform};
 
-    use super::{ReadError, ReadErrorKind, read_monitors_lua};
+    use super::{ReadError, ReadErrorKind, read_monitors_lua, read_rules};
     use crate::hyprland::{MonitorNaming, MonitorsLua, monitor_calls};
 
     /// The owner's `monitors.lua` as nwg-displays generated it, serial
@@ -377,6 +507,7 @@ mod tests {
                     ..Default::default()
                 },
                 catch_alls: Vec::new(),
+                ..Default::default()
             }
         );
     }
@@ -427,6 +558,7 @@ mod tests {
                     .into(),
                 r#"hl.monitor({ output = "", position = "auto-right" })"#.into(),
             ],
+            ..Default::default()
         };
         let text = monitor_calls(&file, MonitorNaming::Description).unwrap();
         assert_eq!(read_monitors_lua(&text).unwrap(), file);
@@ -547,6 +679,49 @@ hl.monitor({ output = "", mode = "highres" })
                 "{mode}"
             );
         }
+    }
+
+    /// Read rule by rule, what the strict reader refuses is kept: an unknown
+    /// key as Lua, a rule a layout cannot hold as its error and its text.
+    #[test]
+    fn read_rule_by_rule_nothing_is_refused_or_lost() {
+        let source = "hl.monitor({ output = \"DP-1\", mode = \"1920x1080@60\", position = \"0x0\", scale = 1, icc = \"/a.icc\" })\nhl.monitor({ output = \"DP-1\", icc = \"/b.icc\" })\nhl.monitor({ output = \"DP-2\", mode = \"preferred\", position = \"auto\", scale = 1, vrr = 3, cm = \"hdr\" })\n";
+        let file = read_rules(source).unwrap();
+        assert_eq!(file.rules.len(), 2);
+
+        let dp1 = &file.rules[0];
+        assert!(dp1.entry.is_ok());
+        let unknown: Vec<_> = dp1
+            .unknown
+            .iter()
+            .map(|u| (u.key.as_str(), u.lua.as_str(), u.line))
+            .collect();
+        assert_eq!(
+            unknown,
+            [("icc", "icc = \"/b.icc\"", 1)],
+            "the later value, the first line"
+        );
+        assert_eq!(dp1.text.lines().count(), 2, "both calls");
+
+        let dp2 = &file.rules[1];
+        assert!(matches!(
+            &dp2.entry,
+            Err(ReadError { kind: ReadErrorKind::UnsupportedValue { field, .. }, .. }) if field == "mode"
+        ));
+        assert_eq!(
+            dp2.carried,
+            [
+                ("vrr", "vrr = 3".to_owned()),
+                ("cm", "cm = \"hdr\"".to_owned())
+            ]
+        );
+        assert_eq!(dp2.text, source.lines().nth(2).unwrap());
+
+        // The strict reader refuses the same file.
+        assert!(matches!(
+            error(source).kind,
+            ReadErrorKind::UnsupportedField(ref key) if key == "icc"
+        ));
     }
 
     #[test]

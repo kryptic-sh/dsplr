@@ -57,13 +57,23 @@ that happens differs by desktop, and the GUI and CLI say which way it happened
   its order, since Hyprland merges same-name rules field by field and an earlier
   call's fields count where a later one leaves them out. They go first in the
   saved file. dsplr never writes one of its own, and says when it kept one
-  (`Saved::kept_catch_all`). A file dsplr cannot read carries nothing over,
-  catch-alls included, after `--force`. nwg-displays' `monitors.lua` (the
-  fixture in `dsplr-persist`) has none. This is the fallback rule plan 03 keeps
-  out of `Layout` ([12](12-open-questions.md), question 11).
+  (`Saved::kept_catch_all`). A file that is not Lua dsplr can read carries
+  nothing over, catch-alls included, after `--force`. nwg-displays'
+  `monitors.lua` (the fixture in `dsplr-persist`) has none. This is the fallback
+  rule plan 03 keeps out of `Layout` ([12](12-open-questions.md), question 11).
 - Importing: an existing nwg-displays-generated `monitors.lua` is read as a
   starting point and replaced with a dsplr-managed one on first save, after a
   confirm.
+- Nothing a layout cannot hold is lost (`hyprland::read::read_rules`): a rule
+  for a monitor not connected now that uses a form a layout cannot hold
+  (`preferred`, `auto`, `vrr = 3`, a setting beside `disabled = true`) is
+  written back as its text; a key dsplr does not write (`icc`, the SDR and
+  luminance keys, `reserved`) is carried onto the new rule for its monitor; and
+  from a connected monitor's rule dsplr cannot read, its `vrr`, `bitdepth` and
+  `cm` are carried where the snapshot leaves them unknown. Its other settings
+  are the snapshot's, which is what saving the layout on screen means. A rule
+  whose `desc:` is blank, which Hyprland matches to every monitor, is kept with
+  the catch-alls.
 
 ## wlroots compositors
 

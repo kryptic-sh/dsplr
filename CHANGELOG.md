@@ -388,11 +388,14 @@ and this project adheres to
   needs, to go after its own `hl.monitor` calls, when it does not seem to have
   it, or warns when `hl.monitor` calls after it override the saved file; dsplr
   never edits `hyprland.lua`. A `monitors.lua` edited by hand since dsplr wrote
-  it, or holding settings dsplr cannot keep (including `vrr = 3` and any setting
-  beside `disabled = true`), is not overwritten without `--force`; one another
-  tool wrote (nwg-displays') is replaced after a yes on the terminal or `--yes`,
-  and with no terminal and no `--yes` nothing is saved. Each refusal shows the
-  diff of what saving would change. The old file's catch-all `output = ""` calls
+  it, or that is not Lua dsplr can read, is not overwritten without `--force`;
+  one another tool wrote (nwg-displays') is replaced after a yes on the terminal
+  or `--yes`. Nothing a layout cannot hold is lost: a rule for a monitor not
+  connected now using `preferred`, `auto`, `vrr = 3` or a setting beside
+  `disabled = true` is written back as it was, and keys dsplr does not write
+  (`icc`, the SDR and luminance keys) are carried onto the monitor's new rule.
+  With no terminal and no `--yes` nothing is saved. Each refusal shows the diff
+  of what saving would change. The old file's catch-all `output = ""` calls
   (every one, in order, since Hyprland merges them; dsplr says it kept them and
   never writes one of its own), its rules for monitors not connected now, and
   its adaptive sync, bit depth and colour preset (which Hyprland does not

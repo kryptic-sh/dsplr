@@ -8,10 +8,8 @@ use std::path::{Path, PathBuf};
 
 use dsplr_model::{Layout, NEUTRAL_BIT_DEPTH, NEUTRAL_COLOUR_PRESET, OutputEntry, OutputId};
 
-use super::read::output_id;
-use super::{
-    MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name, read_monitors_lua,
-};
+use super::read::{ReadFile, ReadRule, output_id, read_rules};
+use super::{MonitorNaming, MonitorsLua, WriteError, monitor_calls, output_name};
 use crate::managed::{
     Comment, FileError, NO_CONFIG_DIR, Saved, paths, read_existing, replace, with_header,
 };
@@ -63,17 +61,19 @@ pub enum SaveError {
 /// What is already in `monitors.lua` decides what happens:
 /// - nothing: the file is created;
 /// - a file dsplr wrote and nobody changed: it is overwritten;
-/// - anything else (edited by hand, someone else's, or holding settings
-///   dsplr cannot read): [`FileError::Conflict`], and nothing is written,
-///   unless `approved` is exactly the text the file holds now, which is how
-///   the user's answer to that conflict comes back.
+/// - anything else (edited by hand, someone else's, or not Lua dsplr can
+///   read at all): [`FileError::Conflict`], and nothing is written, unless
+///   `approved` is exactly the text the file holds now, which is how the
+///   user's answer to that conflict comes back.
 ///
 /// What the old file says is carried over where the layout has nothing to
-/// say instead: its catch-all `output = ""` rule, its adaptive sync, bit
-/// depth and colour preset for an output the layout leaves them unknown on
-/// (Hyprland reports none of them as rules), and its rules for outputs the
-/// layout does not have, such as a monitor not connected now. A file dsplr
-/// cannot read carries nothing over.
+/// say instead ([`merged`]): its catch-all `output = ""` rule, its rules for
+/// outputs the layout does not have (a monitor not connected now), as their
+/// text where a layout cannot hold them, and for a connected output its
+/// adaptive sync, bit depth and colour preset where the layout leaves them
+/// unknown (Hyprland reports none of them as rules) and the keys dsplr does
+/// not write (`icc`, the SDR keys). A file that is not Lua dsplr can read,
+/// or that has a call naming no output, carries nothing over.
 ///
 /// Outputs are named by description where they have a serial
 /// ([`MonitorNaming::Description`]).
@@ -95,7 +95,7 @@ pub fn save(
     let ruled = main_rules(&main);
     let path = main_config.with_file_name(MONITORS_FILE);
     let existing = read_existing(&path)?;
-    let (file, kept, unreadable) = match existing.as_deref().map(read_monitors_lua) {
+    let (file, kept, unreadable) = match existing.as_deref().map(read_rules) {
         None => (with_nothing_kept(layout, &ruled), Vec::new(), None),
         Some(Ok(old)) => {
             let (file, kept) = merged(layout, &old, &ruled);
@@ -219,7 +219,7 @@ fn with_nothing_kept(layout: &Layout, ruled: &[Option<OutputId>]) -> MonitorsLua
             ),
             ..Default::default()
         },
-        catch_alls: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -253,54 +253,114 @@ fn in_hyprland_order(entries: Vec<OutputEntry>) -> Vec<OutputEntry> {
     ordered.into_iter().map(|(_, entry)| entry).collect()
 }
 
-/// `layout`, with what `old` says that `layout` does not, and the entries of
-/// `old` it kept for outputs `layout` does not have, in [`rule_order`].
+/// `layout`, with what `old` says that `layout` does not, and an entry for
+/// each rule of `old` it kept for outputs `layout` does not have, in
+/// [`rule_order`].
+///
+/// For each output of `layout`, the old rule Hyprland would use (the last
+/// that matches, by its own `desc:` prefix rule) gives what the layout
+/// leaves unknown: its adaptive sync, bit depth and colour preset, read
+/// from it or, from a rule dsplr cannot read, carried as its text
+/// ([`ReadRule::carried`]); and its keys dsplr does not write.
+///
+/// A kept rule dsplr cannot read is written back as its text
+/// ([`MonitorsLua::verbatim`]), its entry there only giving its place. A
+/// rule with a blank `desc:` names no monitor dsplr can place it by, and
+/// Hyprland matches it to every monitor, so it is kept with the catch-alls,
+/// before every rule naming one.
 fn merged(
     layout: &Layout,
-    old: &MonitorsLua,
+    old: &ReadFile,
     ruled: &[Option<OutputId>],
 ) -> (MonitorsLua, Vec<OutputEntry>) {
-    let live: Vec<OutputEntry> = layout
-        .entries
-        .iter()
-        .map(|entry| {
-            let mut entry = entry.clone();
-            // The rule Hyprland would use: the last one that matches, by
-            // Hyprland's own `desc:` prefix rule.
-            if let Some(before) = old
-                .layout
-                .entries
-                .iter()
-                .rev()
-                .find(|e| e.id.matches_as_hyprland(&entry))
-            {
-                let (state, before) = (&mut entry.state, &before.state);
-                state.adaptive_sync = state.adaptive_sync.or(before.adaptive_sync);
-                state.bit_depth = state.bit_depth.or(before.bit_depth);
-                if state.colour_preset.is_none() {
-                    state.colour_preset.clone_from(&before.colour_preset);
+    let rule_id = |rule: &ReadRule| output_id(&rule.name);
+    let mut extras: Vec<(String, Vec<String>)> = Vec::new();
+    let mut keep_extra = |entry: &OutputEntry, extra: Vec<String>| {
+        if let Some(name) = output_name(entry, NAMING).filter(|_| !extra.is_empty()) {
+            extras.push((name, extra));
+        }
+    };
+    let mut live: Vec<OutputEntry> = Vec::new();
+    for entry in &layout.entries {
+        let mut entry = entry.clone();
+        let mut extra = Vec::new();
+        let before = old
+            .rules
+            .iter()
+            .rev()
+            .find(|rule| rule_id(rule).is_some_and(|id| id.matches_as_hyprland(&entry)));
+        if let Some(before) = before {
+            let state = &mut entry.state;
+            match &before.entry {
+                Ok(before) => {
+                    let before = &before.state;
+                    state.adaptive_sync = state.adaptive_sync.or(before.adaptive_sync);
+                    state.bit_depth = state.bit_depth.or(before.bit_depth);
+                    if state.colour_preset.is_none() {
+                        state.colour_preset.clone_from(&before.colour_preset);
+                    }
+                }
+                Err(_) => {
+                    for (key, lua) in &before.carried {
+                        let unknown = match *key {
+                            "vrr" => state.adaptive_sync.is_none(),
+                            "bitdepth" => state.bit_depth.is_none(),
+                            _ => state.colour_preset.is_none(),
+                        };
+                        if unknown {
+                            extra.push(lua.clone());
+                        }
+                    }
                 }
             }
-            without_defaults(entry, ruled)
-        })
-        .collect();
+            extra.extend(before.unknown.iter().map(|unknown| unknown.lua.clone()));
+        }
+        let entry = without_defaults(entry, ruled);
+        keep_extra(&entry, extra);
+        live.push(entry);
+    }
     // Which monitor a rule is for is dsplr's question, so by whole words: a
     // rule for `… SER1` is kept while only `… SER12` is connected. It goes
     // before the rule saved for `… SER12`, which Hyprland then uses for it.
-    let kept: Vec<OutputEntry> = old
-        .layout
-        .entries
-        .iter()
-        .filter(|before| !layout.entries.iter().any(|live| before.id.matches(live)))
-        .cloned()
-        .collect();
+    let mut verbatim = Vec::new();
+    let mut catch_alls = old.catch_alls.clone();
+    let mut kept: Vec<OutputEntry> = Vec::new();
+    for rule in &old.rules {
+        let Some(id) = rule_id(rule) else {
+            catch_alls.push(rule.text.clone());
+            continue;
+        };
+        if layout.entries.iter().any(|live| id.matches(live)) {
+            continue;
+        }
+        let entry = match &rule.entry {
+            Ok(entry) => {
+                keep_extra(entry, rule.unknown.iter().map(|u| u.lua.clone()).collect());
+                entry.clone()
+            }
+            Err(_) => {
+                let placeholder = OutputEntry {
+                    id,
+                    output: None,
+                    state: dsplr_model::OutputState::default(),
+                };
+                if let Some(name) = output_name(&placeholder, NAMING) {
+                    verbatim.push((name, rule.text.clone()));
+                }
+                placeholder
+            }
+        };
+        kept.push(entry);
+    }
     let entries = rule_order(kept.clone(), live);
     let file = MonitorsLua {
         layout: Layout {
             entries,
             ..Default::default()
         },
-        catch_alls: old.catch_alls.clone(),
+        catch_alls,
+        verbatim,
+        extras,
     };
     (file, kept)
 }
@@ -709,36 +769,44 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         );
     }
 
+    /// A key dsplr does not write is carried onto the new rule for its
+    /// monitor, with the catch-all, so a yes is enough; a file that is not
+    /// Lua dsplr can read still takes `--force`, and carries nothing over.
     #[test]
-    fn a_file_dsplr_cannot_read_takes_force_and_carries_nothing_over() {
+    fn a_key_dsplr_does_not_write_is_carried_over() {
         let config = Config::new("");
         let old = "hl.monitor({ output = \"\", mode = \"preferred\" })\nhl.monitor({ output = \"HDMI-A-1\", mode = \"1920x1080@60\", position = \"0x0\", scale = 1,\n  sdrbrightness = 1.2 })\n";
         fs::write(config.monitors(), old).unwrap();
         let conflict = conflict_of(config.save(&live(), None));
         assert_eq!(conflict.ownership, Ownership::Foreign);
-        assert!(conflict.needs_force(), "a yes would lose sdrbrightness");
-        let reason = conflict.unreadable.as_deref().unwrap();
-        assert!(
-            reason.contains("line 3") && reason.contains("sdrbrightness"),
-            "{reason}"
-        );
-        assert!(conflict.to_string().contains("sdrbrightness"), "{conflict}");
-
-        // Approved, the whole file is replaced: the catch-all goes too.
+        assert_eq!(conflict.unreadable, None);
+        assert!(!conflict.needs_force(), "a yes loses nothing");
         config.save(&live(), Some(old)).unwrap();
-        assert_eq!(config.read(), with_header(LIVE_BODY, Comment::Lua));
-
-        // A file dsplr wrote that was then given such a setting by hand is
-        // both edited and unreadable.
-        let edited = config.read().replace(
-            "    scale = 1,\n",
-            "    scale = 1,\n    sdrbrightness = 1.2,\n",
+        let text = config.read();
+        assert!(text.contains("    sdrbrightness = 1.2,\n"), "{text}");
+        assert!(
+            text.contains(r#"hl.monitor({ output = "", mode = "preferred" })"#),
+            "{text}"
         );
+
+        // Edited by hand to change it: a hand edit takes `--force`, as
+        // always, and the edited value is what is carried.
+        let edited = text.replace("    sdrbrightness = 1.2,\n", "    sdrbrightness = 1.5,\n");
         fs::write(config.monitors(), &edited).unwrap();
         let conflict = conflict_of(config.save(&live(), None));
         assert_eq!(conflict.ownership, Ownership::EditedByHand);
-        assert!(conflict.unreadable.is_some());
+        assert_eq!(conflict.unreadable, None);
+        config.save(&live(), Some(&edited)).unwrap();
+        assert!(config.read().contains("    sdrbrightness = 1.5,\n"));
+
+        let not_lua = "print(1)\n";
+        fs::write(config.monitors(), not_lua).unwrap();
+        let conflict = conflict_of(config.save(&live(), None));
+        let reason = conflict.unreadable.as_deref().unwrap();
+        assert!(reason.contains("line 1"), "{reason}");
         assert!(conflict.needs_force());
+        config.save(&live(), Some(not_lua)).unwrap();
+        assert_eq!(config.read(), with_header(LIVE_BODY, Comment::Lua));
     }
 
     #[test]
@@ -751,6 +819,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         let first = MonitorsLua {
             layout: live(),
             catch_alls: catch_alls.map(str::to_owned).into(),
+            ..Default::default()
         };
         let text = with_header(
             &monitor_calls(&first, MonitorNaming::Description).unwrap(),
@@ -1088,6 +1157,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
                     &MonitorsLua {
                         layout: old,
                         catch_alls: Vec::new(),
+                        ..Default::default()
                     },
                     MonitorNaming::Description,
                 )
@@ -1122,6 +1192,7 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
                         ..Default::default()
                     },
                     catch_alls: Vec::new(),
+                    ..Default::default()
                 },
                 MonitorNaming::Description,
             )
@@ -1234,20 +1305,35 @@ hl.monitor({ output = "DP-9", mode = "1920x1080@60", position = "2560x0", scale 
         );
     }
 
-    /// Read leniently, each would be saved back changed: `vrr = 3` as 2,
-    /// and a disabled output without its other settings.
+    /// Rules a layout cannot hold lose nothing: a kept one is written back
+    /// as it was, and the connected monitor's new rule carries the `vrr`
+    /// its old one set, which the snapshot does not know. A yes is enough,
+    /// and saving again changes nothing.
     #[test]
-    fn a_file_dsplr_would_save_back_changed_takes_force() {
-        for old in [
-            r#"hl.monitor({ output = "HDMI-A-1", mode = "1920x1080@60", position = "0x0", scale = 1, vrr = 3 })"#,
-            r#"hl.monitor({ output = "DP-9", disabled = true, mode = "1920x1080@60" })"#,
-        ] {
-            let config = Config::new("");
-            fs::write(config.monitors(), old).unwrap();
-            let conflict = conflict_of(config.save(&live(), None));
-            assert_eq!(conflict.ownership, Ownership::Foreign, "{old}");
-            assert!(conflict.unreadable.is_some(), "{old}");
-            assert!(conflict.needs_force(), "{old}");
-        }
+    fn rules_dsplr_cannot_hold_are_kept_or_carried_over() {
+        let config = Config::new("");
+        let kept = r#"hl.monitor({ output = "DP-9", disabled = true, mode = "1920x1080@60" })"#;
+        let old = format!(
+            "{kept}\nhl.monitor({{ output = \"HDMI-A-1\", mode = \"1920x1080@60\", position = \"0x0\", scale = 1, vrr = 3 }})\n"
+        );
+        fs::write(config.monitors(), &old).unwrap();
+        let conflict = conflict_of(config.save(&live(), None));
+        assert_eq!(conflict.ownership, Ownership::Foreign);
+        assert_eq!(conflict.unreadable, None);
+        assert!(!conflict.needs_force(), "a yes loses nothing");
+
+        let saved = config.save(&live(), Some(&old)).unwrap();
+        assert_eq!(saved.kept, [OutputId::Connector("DP-9".into())]);
+        let text = config.read();
+        assert!(text.contains(&format!("{kept}\n")), "{text}");
+        assert!(text.contains("    vrr = 3,\n"), "{text}");
+        assert_eq!(
+            text.matches("1920x1080@60").count(),
+            1,
+            "the live mode wins: {text}"
+        );
+
+        config.save(&live(), None).unwrap();
+        assert_eq!(config.read(), text, "saved again, the same");
     }
 }

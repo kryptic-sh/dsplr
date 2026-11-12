@@ -40,6 +40,14 @@ pub struct MonitorsLua {
     /// before it of the same name, field by field, so an earlier call's
     /// fields still count where a later one leaves them out.
     pub catch_alls: Vec<String>,
+    /// Rules a layout cannot hold, written as their text in place of the
+    /// layout entry with that `output` name, which only gives their place:
+    /// a save keeps a monitor's rule this way while it is not connected.
+    pub verbatim: Vec<(String, String)>,
+    /// Fields dsplr does not write, each as Lua `key = value`, added to the
+    /// call for the layout entry with that `output` name: what a save
+    /// carries over from the old rule.
+    pub extras: Vec<(String, Vec<String>)>,
 }
 
 /// The description to name an entry's monitor by: only when it has a

@@ -916,15 +916,13 @@ milestone:
 - **`dsplr restore --revert` by hand applies without a confirm prompt**, on
   purpose: it is the way back from a broken screen, so asking first would defeat
   it. The revert point is removed once it has been applied.
-- **The reader refuses Hyprland forms a layout cannot hold**: `preferred` and
-  `highres` modes, a mode without a refresh, `auto` positions and scales,
-  `vrr = 3` (fullscreen video and games, which a layout cannot tell from 2), any
-  setting beside `disabled = true` (including one merged from an earlier call
-  for the same output), and the SDR, luminance, `icc` and `reserved` keys. A
-  hand-written file using them cannot be imported, and `dsplr save` replaces it
-  only with `--force`, losing them and everything else in it (its catch-all and
-  its rules for monitors not connected now); a lossless pass-through of unknown
-  keys would fix the latter.
+- **Hyprland forms a layout cannot hold are not read into one**:
+  `read_monitors_lua` still refuses `preferred` and `highres` modes, a mode
+  without a refresh, `auto` positions and scales, `vrr = 3`, any setting beside
+  `disabled = true` and keys dsplr does not know. `dsplr save` loses none of
+  them (`read_rules`, plan 05's Hyprland section); only an import of a
+  hand-written `monitors.lua` as a profile would need them in a layout, and
+  there is no such command.
 - **A change to a saved file in the instant before dsplr replaces it is lost**:
   `managed::write_if_unchanged` reads the file again once the new one is written
   and flushed, and refuses (`FileError::Changed`) if it no longer holds what the
