@@ -161,12 +161,22 @@ impl Randr {
     /// that the layout did not ask for ([`super::Note`]), one line each. A
     /// server whose outputs are Xwayland's is refused, nothing sent.
     ///
-    /// On a timeout the thread is left behind with its connection, and any
-    /// server grab it holds ends when the server answers it or the
-    /// connection closes; a `SetCrtcConfig` it had sent may still take
-    /// effect then. Every read and apply of a server waits for the one
-    /// before it ([`on_server`]), so the read the apply flow makes next, to
-    /// revert or report, sees what that late apply did, or times out too.
+    /// A request may still be carried out after it timed out: a late
+    /// `SetCrtcConfig` takes effect when the server gets to it. When
+    /// crcbl-x11's reply deadline ends the work, the thread ends and lets go
+    /// of the server's lock ([`on_server`]) while that request may still be
+    /// running, so the lock is not what makes the next read see it. The
+    /// server grab is: every configuring request comes after `GrabServer`,
+    /// and each is waited for before the next is sent (a reply, or a checked
+    /// request's round trip), so at most one is outstanding; the grab holds
+    /// until the connection is dropped, after it; and the next read, the
+    /// apply flow's, to revert or report, is queued behind that grab. A
+    /// timeout before the grab leaves only a `CreateMode`, an
+    /// `AddOutputMode` or a read outstanding, none of which changes what an
+    /// output shows. While connecting or a flush is stuck, which have no
+    /// deadline, the thread still holds the lock, so the next read waits
+    /// for it, or times out too; so does a timeout of this call's own
+    /// limit, whose thread is left behind with its connection.
     ///
     /// # Errors
     ///
@@ -375,14 +385,16 @@ fn server_lock(display: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
 
 /// Runs `work` on a new connection to the server `display` names, holding
 /// that server's lock throughout: every read and apply of one server, in
-/// this process, runs after the one before it has ended. So when an apply
-/// times out and is left behind, the read that follows waits for it rather
-/// than racing it, and sees what it did. Taken on the worker thread, so the
-/// wait counts in the caller's limit.
+/// this process, runs after the one before it has ended. So when an apply's
+/// thread is left behind, stuck connecting or in a flush, which have no
+/// deadline, the read that follows waits for it rather than racing it.
+/// Taken on the worker thread, so the wait counts in the caller's limit.
 ///
 /// The connection waits for each reply at most `limit`, the operation's
 /// own: once a reply is late, crcbl-x11 abandons the connection and the
-/// work ends with its `Error::Timeout`.
+/// work ends with its `Error::Timeout`. The lock is let go then while the
+/// late request may still run; what makes the next read see an apply's late
+/// change is its server grab ([`Randr::apply`]).
 fn on_server<T>(
     display: &str,
     limit: Duration,

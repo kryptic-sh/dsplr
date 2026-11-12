@@ -220,9 +220,24 @@ async fn the_watch_wakes_for_a_change_xrandr_makes() {
     );
 }
 
-/// Sends `signal` to the harness's Xvfb.
+/// Sends `signal` to the harness's Xvfb, once its command line says it is
+/// that server: Xvfb on the harness's display, so a stale or reused pid is
+/// never signalled.
 fn signal_server(signal: &str) {
     let pid = std::env::var("DSPLR_E2E_X11_SERVER_PID").expect("set by the harness");
+    let display = std::env::var("DSPLR_E2E_X11_DISPLAY").expect("set by the harness");
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).expect("its command line");
+    let args: Vec<String> = cmdline
+        .split(|&byte| byte == 0)
+        .filter(|arg| !arg.is_empty())
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect();
+    assert!(
+        args.first()
+            .is_some_and(|program| program.ends_with("Xvfb"))
+            && args.contains(&display),
+        "pid {pid} is not the harness's Xvfb on {display}: {args:?}"
+    );
     let status = std::process::Command::new("kill")
         .args([signal, &pid])
         .status()

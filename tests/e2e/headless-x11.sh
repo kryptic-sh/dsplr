@@ -109,7 +109,20 @@ cleanup() {
   # The command's whole process group: it, and anything it started that
   # outlived it.
   [ -n "${command_pid:-}" ] && kill -- "-$command_pid" 2>/dev/null
-  kill "${xvfb_pid:-}" 2>/dev/null
+  if [ -n "${xvfb_pid:-}" ]; then
+    # A test may have left it stopped (SIGSTOP), which holds a TERM until it
+    # runs again: continued first, then given a few seconds to exit, then
+    # killed, so a stopped or stuck server cannot hold the harness up.
+    kill -CONT "$xvfb_pid" 2>/dev/null
+    kill "$xvfb_pid" 2>/dev/null
+    for _ in $(seq 50); do
+      # Gone, or exited and waiting to be reaped (state Z).
+      state=$(awk '{print $3}' "/proc/$xvfb_pid/stat" 2>/dev/null)
+      { [ -z "$state" ] || [ "$state" = Z ]; } && break
+      sleep 0.1
+    done
+    kill -KILL "$xvfb_pid" 2>/dev/null
+  fi
   wait 2>/dev/null
   # After Xvfb has exited, which is when it removes its own socket.
   x_guard_check || exit 1
