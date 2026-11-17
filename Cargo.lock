@@ -646,7 +646,7 @@ name = "dsplr-persist"
 version = "0.1.0"
 dependencies = [
  "dsplr-model",
- "hjkl-xdg 0.45.0",
+ "hjkl-xdg",
  "serde_json",
  "sha2",
  "tempfile",
@@ -828,7 +828,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5515840c9c7a020ce036e5d0e448fcfe1007a744ab3bd6227d4d9fe6a67efc3b"
 dependencies = [
  "hjkl-fs",
- "hjkl-xdg 0.46.0",
+ "hjkl-xdg",
  "serde",
  "thiserror",
  "toml",
@@ -841,20 +841,10 @@ version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ad9fa47ab2e3a10df37203f604d207f40e1956e396fb2bfac132cdcc2dfad1e"
 dependencies = [
- "hjkl-xdg 0.46.0",
+ "hjkl-xdg",
  "ignore",
  "libc",
  "windows-sys",
-]
-
-[[package]]
-name = "hjkl-xdg"
-version = "0.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90c395b26320530eb600ab42e4f44f3cfff405761ae7c164fc63af76a3afb709"
-dependencies = [
- "dirs",
- "thiserror",
 ]
 
 [[package]]
